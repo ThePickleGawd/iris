@@ -1,5 +1,29 @@
 import UIKit
 
+struct CanvasCoordinateSnapshot: Codable {
+    struct Point: Codable {
+        let x: Double
+        let y: Double
+    }
+
+    struct Size: Codable {
+        let width: Double
+        let height: Double
+    }
+
+    let documentID: String?
+    let axis: String
+    let canvasCenter: Point
+    let viewportCenterCanvas: Point
+    let viewportCenterAxis: Point
+    let viewportTopLeftAxis: Point
+    let viewportTopRightAxis: Point
+    let viewportBottomLeftAxis: Point
+    let viewportBottomRightAxis: Point
+    let viewportSizeCanvas: Size
+    let zoomScale: Double
+}
+
 struct CanvasSuggestion: Identifiable {
     let id: UUID
     let title: String
@@ -35,6 +59,74 @@ final class CanvasObjectManager: ObservableObject {
         return CGPoint(x: cv.contentOffset.x + visibleW / 2, y: cv.contentOffset.y + visibleH / 2)
     }
 
+    var documentAxisOrigin: CGPoint { CanvasState.canvasCenter }
+
+    func viewportCanvasRect() -> CGRect {
+        guard let cv = canvasView, cv.bounds.width > 0, cv.bounds.height > 0 else {
+            return CGRect(origin: documentAxisOrigin, size: .zero)
+        }
+        let visibleW = cv.bounds.width / cv.zoomScale
+        let visibleH = cv.bounds.height / cv.zoomScale
+        return CGRect(
+            x: cv.contentOffset.x,
+            y: cv.contentOffset.y,
+            width: visibleW,
+            height: visibleH
+        )
+    }
+
+    func axisPoint(forCanvasPoint p: CGPoint) -> CGPoint {
+        CGPoint(x: p.x - documentAxisOrigin.x, y: p.y - documentAxisOrigin.y)
+    }
+
+    func canvasPoint(forAxisPoint p: CGPoint) -> CGPoint {
+        CGPoint(x: p.x + documentAxisOrigin.x, y: p.y + documentAxisOrigin.y)
+    }
+
+    func makeCoordinateSnapshot(documentID: UUID?) -> CanvasCoordinateSnapshot {
+        let viewport = viewportCanvasRect()
+        let topLeftAxis = axisPoint(forCanvasPoint: viewport.origin)
+        let topRightAxis = axisPoint(
+            forCanvasPoint: CGPoint(x: viewport.maxX, y: viewport.minY)
+        )
+        let bottomLeftAxis = axisPoint(
+            forCanvasPoint: CGPoint(x: viewport.minX, y: viewport.maxY)
+        )
+        let bottomRightAxis = axisPoint(
+            forCanvasPoint: CGPoint(x: viewport.maxX, y: viewport.maxY)
+        )
+        let viewportCenter = viewportCenter
+        let viewportCenterAxis = axisPoint(forCanvasPoint: viewportCenter)
+        guard let cv = canvasView else {
+            return CanvasCoordinateSnapshot(
+                documentID: documentID?.uuidString,
+                axis: "document_axis",
+                canvasCenter: .init(x: documentAxisOrigin.x, y: documentAxisOrigin.y),
+                viewportCenterCanvas: .init(x: viewportCenter.x, y: viewportCenter.y),
+                viewportCenterAxis: .init(x: viewportCenterAxis.x, y: viewportCenterAxis.y),
+                viewportTopLeftAxis: .init(x: topLeftAxis.x, y: topLeftAxis.y),
+                viewportTopRightAxis: .init(x: topRightAxis.x, y: topRightAxis.y),
+                viewportBottomLeftAxis: .init(x: bottomLeftAxis.x, y: bottomLeftAxis.y),
+                viewportBottomRightAxis: .init(x: bottomRightAxis.x, y: bottomRightAxis.y),
+                viewportSizeCanvas: .init(width: viewport.width, height: viewport.height),
+                zoomScale: 1
+            )
+        }
+        return CanvasCoordinateSnapshot(
+            documentID: documentID?.uuidString,
+            axis: "document_axis",
+            canvasCenter: .init(x: documentAxisOrigin.x, y: documentAxisOrigin.y),
+            viewportCenterCanvas: .init(x: viewportCenter.x, y: viewportCenter.y),
+            viewportCenterAxis: .init(x: viewportCenterAxis.x, y: viewportCenterAxis.y),
+            viewportTopLeftAxis: .init(x: topLeftAxis.x, y: topLeftAxis.y),
+            viewportTopRightAxis: .init(x: topRightAxis.x, y: topRightAxis.y),
+            viewportBottomLeftAxis: .init(x: bottomLeftAxis.x, y: bottomLeftAxis.y),
+            viewportBottomRightAxis: .init(x: bottomRightAxis.x, y: bottomRightAxis.y),
+            viewportSizeCanvas: .init(width: viewport.width, height: viewport.height),
+            zoomScale: cv.zoomScale
+        )
+    }
+
     @discardableResult
     func place(
         html: String,
@@ -65,6 +157,10 @@ final class CanvasObjectManager: ObservableObject {
         widget.onResizeEnded = { [weak self] id, frame in
             self?.objects[id]?.position = frame.origin
             self?.objects[id]?.size = frame.size
+        }
+
+        widget.onCloseRequested = { [weak self] id in
+            self?.remove(id: id)
         }
 
         canvasView.widgetContainerView().addSubview(widget)
