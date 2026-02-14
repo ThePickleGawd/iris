@@ -18,7 +18,6 @@ struct ContentView: View {
         self.document = document
         self.onBack = onBack
     }
-    @State private var sessionRegistered = false
 
     var body: some View {
         ZStack(alignment: .top) {

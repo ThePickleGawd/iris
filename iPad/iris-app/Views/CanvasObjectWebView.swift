@@ -7,10 +7,11 @@ final class CanvasObjectWebView: UIView {
 
     var onDragEnded: ((UUID, CGPoint) -> Void)?
     var onResizeEnded: ((UUID, CGRect) -> Void)?
+    var onCloseRequested: ((UUID) -> Void)?
 
     private let minSize = CGSize(width: 220, height: 150)
-    private let titleBar = UIView()
-    private let titleLabel = UILabel()
+    private let topBar = UIView()
+    private let closeButton = UIButton(type: .system)
     private let resizeHandle = UIView()
     private var startFrame: CGRect = .zero
     private var zoomScale: CGFloat = 1.0
@@ -38,18 +39,16 @@ final class CanvasObjectWebView: UIView {
         webView.layer.masksToBounds = true
         addSubview(webView)
 
-        titleBar.backgroundColor = UIColor(white: 1.0, alpha: 0.95)
-        titleBar.layer.cornerRadius = 10
-        titleBar.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
-        titleBar.layer.borderWidth = 1
-        titleBar.layer.borderColor = UIColor(white: 0.86, alpha: 1).cgColor
-        addSubview(titleBar)
+        topBar.backgroundColor = UIColor(white: 1.0, alpha: 0.01)
+        addSubview(topBar)
 
-        titleLabel.text = "Widget"
-        titleLabel.font = UIFont.systemFont(ofSize: 11, weight: .semibold)
-        titleLabel.textColor = UIColor(white: 0.32, alpha: 1)
-        titleLabel.textAlignment = .center
-        titleBar.addSubview(titleLabel)
+        closeButton.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
+        closeButton.tintColor = UIColor(white: 0.35, alpha: 0.95)
+        closeButton.backgroundColor = UIColor.white.withAlphaComponent(0.92)
+        closeButton.layer.cornerRadius = 11
+        closeButton.layer.masksToBounds = true
+        closeButton.addTarget(self, action: #selector(handleCloseTapped), for: .touchUpInside)
+        addSubview(closeButton)
 
         resizeHandle.backgroundColor = UIColor(white: 0.95, alpha: 0.95)
         resizeHandle.layer.cornerRadius = 8
@@ -58,7 +57,7 @@ final class CanvasObjectWebView: UIView {
         addSubview(resizeHandle)
 
         let dragPan = UIPanGestureRecognizer(target: self, action: #selector(handleDrag(_:)))
-        titleBar.addGestureRecognizer(dragPan)
+        topBar.addGestureRecognizer(dragPan)
 
         let resizePan = UIPanGestureRecognizer(target: self, action: #selector(handleResize(_:)))
         resizeHandle.addGestureRecognizer(resizePan)
@@ -73,9 +72,13 @@ final class CanvasObjectWebView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         webView.frame = bounds
-        titleBar.frame = CGRect(x: 0, y: 0, width: bounds.width, height: min(30, bounds.height))
-        titleLabel.frame = titleBar.bounds
+        topBar.frame = CGRect(x: 0, y: 0, width: bounds.width, height: min(34, bounds.height))
+        closeButton.frame = CGRect(x: max(6, bounds.width - 28), y: 6, width: 22, height: 22)
         resizeHandle.frame = CGRect(x: max(0, bounds.width - 22), y: max(0, bounds.height - 22), width: 18, height: 18)
+    }
+
+    @objc private func handleCloseTapped() {
+        onCloseRequested?(objectID)
     }
 
     private func loadHTML(_ content: String) {

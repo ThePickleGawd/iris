@@ -166,50 +166,63 @@ class AgentHTTPServer {
 
         let resource = segs[2]
         let resourceID: String? = segs.count >= 4 ? segs[3] : nil
+        let resourceAction: String? = segs.count >= 5 ? segs[4] : nil
 
-        switch (req.method, resource, resourceID) {
+        switch (req.method, resource, resourceID, resourceAction) {
 
-        case ("GET", "health", nil):
+        case ("GET", "health", nil, nil):
             respondJSON(conn, status: 200, body: [
                 "status": "ok",
                 "service": "iris-canvas",
                 "version": "1.0"
             ])
 
-        case ("GET", "canvas", nil):
+        case ("GET", "canvas", nil, nil):
             handleCanvasInfo(conn)
 
-        case ("GET", "design-system.css", nil):
+        case ("GET", "design-system.css", nil, nil):
             handleDesignSystemCSS(conn)
 
-        case ("POST", "objects", nil):
+        case ("POST", "objects", nil, nil):
             handlePlaceObject(req, conn)
 
-        case ("GET", "objects", nil):
+        case ("GET", "objects", nil, nil):
             handleListObjects(conn)
 
-        case ("GET", "objects", .some(let id)):
+        case ("GET", "objects", .some(let id), nil):
             handleGetObject(id, conn)
 
-        case ("DELETE", "objects", .some(let id)):
+        case ("DELETE", "objects", .some(let id), nil):
             handleDeleteObject(id, conn)
 
-        case ("DELETE", "objects", nil):
+        case ("DELETE", "objects", nil, nil):
             handleDeleteAllObjects(conn)
 
-        case ("GET", "device", nil):
+        case ("POST", "suggestions", nil, nil):
+            handleCreateSuggestion(req, conn)
+
+        case ("GET", "suggestions", nil, nil):
+            handleListSuggestions(conn)
+
+        case ("POST", "suggestions", .some(let id), .some("approve")):
+            handleApproveSuggestion(id, conn)
+
+        case ("POST", "suggestions", .some(let id), .some("reject")):
+            handleRejectSuggestion(id, conn)
+
+        case ("GET", "device", nil, nil):
             handleDeviceInfo(conn)
 
-        case ("POST", "cursor", nil):
+        case ("POST", "cursor", nil, nil):
             handleCursorCommand(req, conn)
 
-        case ("POST", "link", nil):
+        case ("POST", "link", nil, nil):
             handleLink(req, conn)
 
-        case ("GET", "link", nil):
+        case ("GET", "link", nil, nil):
             handleListLinked(conn)
 
-        case ("DELETE", "link", .some(let id)):
+        case ("DELETE", "link", .some(let id), nil):
             handleUnlink(id, conn)
 
         default:
@@ -266,8 +279,6 @@ class AgentHTTPServer {
             let size = CGSize(width: w, height: h)
 
             let obj = await mgr.place(html: html, at: canvasPos, size: size, animated: anim)
-
-            let center = CanvasState.canvasCenter
             self?.respondJSON(conn, status: 201, body: [
                 "id": obj.id.uuidString,
                 "x": x, "y": y,
@@ -360,6 +371,132 @@ class AgentHTTPServer {
             for id in ids { mgr.remove(id: id) }
 
             self.respondJSON(conn, status: 200, body: ["deleted_count": ids.count])
+        }
+    }
+
+    // MARK: - Suggestion Handlers
+
+    private func handleCreateSuggestion(_ req: HTTPRequest, _ conn: NWConnection) {
+        guard let json = req.jsonBody else {
+            respondJSON(conn, status: 400, body: ["error": "Missing JSON body"])
+            return
+        }
+        guard let html = json["html"] as? String else {
+            respondJSON(conn, status: 400, body: ["error": "Missing required field: 'html' (string)"])
+            return
+        }
+
+        let title = (json["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = (json["summary"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let x = numericValue(json["x"]) ?? 0
+        let y = numericValue(json["y"]) ?? 0
+        let w = numericValue(json["width"]) ?? 360
+        let h = numericValue(json["height"]) ?? 220
+        let animateOnPlace = (json["animate"] as? Bool) ?? true
+
+        guard let mgr = objectManager else {
+            respondJSON(conn, status: 503, body: ["error": "Canvas not ready — open a document first"])
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let viewport = mgr.viewportCenter
+            let canvasPos = CGPoint(x: viewport.x + x, y: viewport.y + y)
+            let finalTitle = ((title?.isEmpty == false) ? title : nil) ?? "Suggested Widget"
+            let finalSummary = ((summary?.isEmpty == false) ? summary : nil) ?? "Agent suggests adding this widget here."
+            let suggestion = mgr.addSuggestion(
+                title: finalTitle,
+                summary: finalSummary,
+                html: html,
+                at: canvasPos,
+                size: CGSize(width: w, height: h),
+                animateOnPlace: animateOnPlace
+            )
+
+            self.respondJSON(conn, status: 201, body: [
+                "id": suggestion.id.uuidString,
+                "title": suggestion.title,
+                "summary": suggestion.summary,
+                "x": x,
+                "y": y,
+                "width": w,
+                "height": h,
+                "viewport_center": ["x": viewport.x, "y": viewport.y],
+                "canvas_position": ["x": canvasPos.x, "y": canvasPos.y],
+                "status": "pending"
+            ])
+        }
+    }
+
+    private func handleListSuggestions(_ conn: NWConnection) {
+        Task { @MainActor [weak self] in
+            guard let self, let mgr = self.objectManager else {
+                self?.respondJSON(conn, status: 503, body: ["error": "Canvas not ready"])
+                return
+            }
+
+            let center = CanvasState.canvasCenter
+            let list: [[String: Any]] = mgr.suggestions.values.sorted(by: { $0.createdAt < $1.createdAt }).map { suggestion in
+                [
+                    "id": suggestion.id.uuidString,
+                    "title": suggestion.title,
+                    "summary": suggestion.summary,
+                    "x": suggestion.position.x - center.x,
+                    "y": suggestion.position.y - center.y,
+                    "width": suggestion.size.width,
+                    "height": suggestion.size.height,
+                    "status": "pending",
+                    "created_at": ISO8601DateFormatter().string(from: suggestion.createdAt)
+                ]
+            }
+
+            self.respondJSON(conn, status: 200, body: ["suggestions": list, "count": list.count])
+        }
+    }
+
+    private func handleApproveSuggestion(_ idString: String, _ conn: NWConnection) {
+        guard let uuid = UUID(uuidString: idString) else {
+            respondJSON(conn, status: 400, body: ["error": "Invalid UUID format"])
+            return
+        }
+
+        guard let mgr = objectManager else {
+            respondJSON(conn, status: 503, body: ["error": "Canvas not ready — open a document first"])
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard let placed = await mgr.approveSuggestion(id: uuid) else {
+                self.respondJSON(conn, status: 404, body: ["error": "Suggestion not found"])
+                return
+            }
+            self.respondJSON(conn, status: 200, body: [
+                "approved": uuid.uuidString,
+                "placed_object_id": placed.id.uuidString
+            ])
+        }
+    }
+
+    private func handleRejectSuggestion(_ idString: String, _ conn: NWConnection) {
+        guard let uuid = UUID(uuidString: idString) else {
+            respondJSON(conn, status: 400, body: ["error": "Invalid UUID format"])
+            return
+        }
+
+        guard let mgr = objectManager else {
+            respondJSON(conn, status: 503, body: ["error": "Canvas not ready — open a document first"])
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard mgr.rejectSuggestion(id: uuid) else {
+                self.respondJSON(conn, status: 404, body: ["error": "Suggestion not found"])
+                return
+            }
+            self.respondJSON(conn, status: 200, body: ["rejected": uuid.uuidString])
         }
     }
 

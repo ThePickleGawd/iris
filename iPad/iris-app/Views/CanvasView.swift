@@ -77,6 +77,7 @@ struct CanvasView: UIViewRepresentable {
             guard let canvas = scrollView as? NoteCanvasView else { return }
             canvas.updateWidgetOverlayTransform()
             parent.objectManager.updateZoomScale(canvas.zoomScale)
+            parent.objectManager.notifyViewportChanged()
             DispatchQueue.main.async {
                 self.parent.canvasState.currentZoomScale = canvas.zoomScale
             }
@@ -84,6 +85,7 @@ struct CanvasView: UIViewRepresentable {
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
             (scrollView as? NoteCanvasView)?.updateWidgetOverlayTransform()
+            parent.objectManager.notifyViewportChanged()
         }
 
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
