@@ -26,3 +26,21 @@ Iris is an always-on AI that spans your Apple devices. It watches your screens, 
 **Visual** — sketch a rough diagram, get back a polished image or video.
 
 Iris is **all-to-all** — every device in your Apple ecosystem can see, talk to, and control every other device. The AI doesn't live on one screen. It lives across all of them.
+
+## Prerequisites
+
+- **D2** — diagram renderer for flowcharts, architecture, and sequence diagrams:
+  ```
+  brew install d2
+  ```
+
+- **TinyTeX** — lightweight LaTeX distribution needed by Manim for math rendering:
+  ```
+  curl -sL "https://tinytex.yihui.org/install-bin-unix.sh" | sh
+  tlmgr install standalone preview doublestroke relsize fundus-calligra wasysym physics dvisvgm rsfs wasy setspace babel-english
+  ```
+
+- **Backend Python dependencies** (Flask, Manim, etc.) — managed with [uv](https://docs.astral.sh/uv/):
+  ```
+  cd backend && uv sync
+  ```
