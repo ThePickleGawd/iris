@@ -142,48 +142,58 @@ export class DeviceDiscovery extends EventEmitter {
       return
     }
 
-    const host = addresses[0]
     const port = service.port
+    const preferred = [...addresses].sort((a, b) => this.addressRank(a) - this.addressRank(b))
 
-    console.log(`[iris-discovery] Found: ${service.name} at ${host}:${port}`)
-
-    // Probe the device info endpoint
-    try {
-      const deviceInfo = await this.fetchJSON<{
-        id: string
-        name: string
-        model: string
-        system: string
-        port: number
-      }>(`http://${host}:${port}/api/v1/device`)
-
-      const device: IrisDevice = {
-        id: deviceInfo.id,
-        name: deviceInfo.name,
-        model: deviceInfo.model,
-        system: deviceInfo.system,
-        host,
-        port,
-        addresses,
-        linked: false,
-        lastSeen: Date.now()
+    let probedHost: string | null = null
+    let deviceInfo: { id: string; name: string; model: string; system: string; port: number } | null = null
+    for (const host of preferred) {
+      console.log(`[iris-discovery] Probing ${service.name} at ${host}:${port}`)
+      try {
+        const info = await this.fetchJSON<{
+          id: string
+          name: string
+          model: string
+          system: string
+          port: number
+        }>(`http://${host}:${port}/api/v1/device`)
+        probedHost = host
+        deviceInfo = info
+        break
+      } catch (err) {
+        console.log(`[iris-discovery] Probe failed ${host}:${port}:`, err)
       }
-
-      const existing = this.devices.get(device.id)
-      this.devices.set(device.id, device)
-
-      if (!existing) {
-        console.log(`[iris-discovery] New device: ${device.name} (${device.model})`)
-        this.emit("device-found", device)
-      } else {
-        this.emit("device-updated", device)
-      }
-
-      // Auto-link: register this Mac with the iPad
-      await this.linkWithDevice(device)
-    } catch (err) {
-      console.log(`[iris-discovery] Failed to probe ${host}:${port}:`, err)
     }
+
+    if (!probedHost || !deviceInfo) {
+      console.log(`[iris-discovery] Failed to probe any address for ${service.name}`)
+      return
+    }
+
+    const device: IrisDevice = {
+      id: deviceInfo.id,
+      name: deviceInfo.name,
+      model: deviceInfo.model,
+      system: deviceInfo.system,
+      host: probedHost,
+      port,
+      addresses,
+      linked: false,
+      lastSeen: Date.now()
+    }
+
+    const existing = this.devices.get(device.id)
+    this.devices.set(device.id, device)
+
+    if (!existing) {
+      console.log(`[iris-discovery] New device: ${device.name} (${device.model}) via ${probedHost}`)
+      this.emit("device-found", device)
+    } else {
+      this.emit("device-updated", device)
+    }
+
+    // Auto-link: register this Mac with the iPad
+    await this.linkWithDevice(device)
   }
 
   private async linkWithDevice(device: IrisDevice): Promise<void> {
@@ -350,5 +360,12 @@ export class DeviceDiscovery extends EventEmitter {
       if (body) req.write(body)
       req.end()
     })
+  }
+
+  private addressRank(ip: string): number {
+    // Prefer routable/private LAN addresses over link-local.
+    if (ip.startsWith("10.") || ip.startsWith("192.168.") || ip.startsWith("172.")) return 0
+    if (ip.startsWith("169.254.")) return 2
+    return 1
   }
 }
