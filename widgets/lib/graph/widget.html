@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body {
@@ -11,6 +11,7 @@
     font-family: -apple-system, 'SF Pro Display', 'Helvetica Neue', sans-serif;
     overflow: hidden;
     color: #fff;
+    touch-action: manipulation;
   }
   .container {
     display: flex;
@@ -99,9 +100,9 @@
   <div class="presets">
     <button class="preset active" onclick="setFn(this, 'sin(x)')">sin(x)</button>
     <button class="preset" onclick="setFn(this, 'cos(x)')">cos(x)</button>
-    <button class="preset" onclick="setFn(this, 'x^2')">x²</button>
+    <button class="preset" onclick="setFn(this, 'x^2')">x&sup2;</button>
     <button class="preset" onclick="setFn(this, 'tan(x)')">tan(x)</button>
-    <button class="preset" onclick="setFn(this, 'sqrt(abs(x))')">√|x|</button>
+    <button class="preset" onclick="setFn(this, 'sqrt(abs(x))')">&#x221A;|x|</button>
     <button class="preset" onclick="setFn(this, '1/x')">1/x</button>
   </div>
 </div>
