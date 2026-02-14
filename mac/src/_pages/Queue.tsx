@@ -252,6 +252,13 @@ const Queue: React.FC = () => {
     await handleNewChat(CLAUDE_CODE_MODEL_ID, { claude_code_conversation_id: conversationId })
   }, [handleNewChat])
 
+  const handleCreateNewClaudeCodeSession = useCallback(async () => {
+    setShowClaudeCodeSessionPicker(false)
+    setShowCodexSessionPicker(false)
+    setShowSessionDrawer(false)
+    await handleNewChat(CLAUDE_CODE_MODEL_ID)
+  }, [handleNewChat])
+
   const handlePickCodexSession = useCallback(async (conversationId: string, cwd?: string) => {
     setShowCodexSessionPicker(false)
     setShowClaudeCodeSessionPicker(false)
@@ -410,15 +417,28 @@ const Queue: React.FC = () => {
     })
   }, [sessions])
 
+  const timestampMs = useCallback((value?: string) => {
+    if (!value) return 0
+    const parsed = Date.parse(value)
+    return Number.isNaN(parsed) ? 0 : parsed
+  }, [])
+
   const claudeCodeLinkChoices = useMemo(() => {
     const byId = new Map<string, { conversationId: string; sessionName: string; updatedAt: string }>()
+    const upsert = (choice: { conversationId: string; sessionName: string; updatedAt: string }) => {
+      const existing = byId.get(choice.conversationId)
+      if (!existing || timestampMs(choice.updatedAt) >= timestampMs(existing.updatedAt)) {
+        byId.set(choice.conversationId, choice)
+      }
+    }
+
     for (const s of sessions) {
       const conversationId = (
         s.metadata?.claude_code_conversation_id ||
         (s.model === CLAUDE_CODE_MODEL_ID ? s.id : "")
       ).trim()
-      if (!conversationId || byId.has(conversationId)) continue
-      byId.set(conversationId, {
+      if (!conversationId) continue
+      upsert({
         conversationId,
         sessionName: s.name || "Untitled",
         updatedAt: (s as any).updated_at || (s as any).created_at || ""
@@ -427,8 +447,8 @@ const Queue: React.FC = () => {
 
     for (const discovered of claudeCodeSessions) {
       const conversationId = (discovered.id || "").trim()
-      if (!conversationId || byId.has(conversationId)) continue
-      byId.set(conversationId, {
+      if (!conversationId) continue
+      upsert({
         conversationId,
         sessionName: discovered.title || "Claude Code Session",
         updatedAt: discovered.timestamp || ""
@@ -436,19 +456,26 @@ const Queue: React.FC = () => {
     }
 
     const choices = [...byId.values()]
-    choices.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    return choices
-  }, [sessions, claudeCodeSessions])
+    choices.sort((a, b) => timestampMs(b.updatedAt) - timestampMs(a.updatedAt))
+    return choices.slice(0, 10)
+  }, [sessions, claudeCodeSessions, timestampMs])
 
   const codexLinkChoices = useMemo(() => {
     const byId = new Map<string, { conversationId: string; sessionName: string; cwd?: string; updatedAt: string }>()
+    const upsert = (choice: { conversationId: string; sessionName: string; cwd?: string; updatedAt: string }) => {
+      const existing = byId.get(choice.conversationId)
+      if (!existing || timestampMs(choice.updatedAt) >= timestampMs(existing.updatedAt)) {
+        byId.set(choice.conversationId, choice)
+      }
+    }
+
     for (const s of sessions) {
       const conversationId = (
         s.metadata?.codex_conversation_id ||
         (s.model === CODEX_MODEL_ID ? s.id : "")
       ).trim()
-      if (!conversationId || byId.has(conversationId)) continue
-      byId.set(conversationId, {
+      if (!conversationId) continue
+      upsert({
         conversationId,
         sessionName: s.name || "Untitled",
         cwd: s.metadata?.codex_cwd,
@@ -458,8 +485,8 @@ const Queue: React.FC = () => {
 
     for (const discovered of codexSessions) {
       const conversationId = (discovered.id || "").trim()
-      if (!conversationId || byId.has(conversationId)) continue
-      byId.set(conversationId, {
+      if (!conversationId) continue
+      upsert({
         conversationId,
         sessionName: discovered.title || "Codex Session",
         cwd: discovered.cwd,
@@ -468,9 +495,9 @@ const Queue: React.FC = () => {
     }
 
     const choices = [...byId.values()]
-    choices.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    return choices
-  }, [sessions, codexSessions])
+    choices.sort((a, b) => timestampMs(b.updatedAt) - timestampMs(a.updatedAt))
+    return choices.slice(0, 10)
+  }, [sessions, codexSessions, timestampMs])
 
   const sendChatMessage = async (message: string) => {
     const trimmed = message.trim()
@@ -730,6 +757,14 @@ const Queue: React.FC = () => {
         >
           <div className="iris-agent-picker" onClick={(e) => e.stopPropagation()}>
             <div className="iris-agent-picker-title">Link Claude Code Session</div>
+            <button
+              type="button"
+              className="iris-agent-picker-option interactive"
+              onClick={handleCreateNewClaudeCodeSession}
+            >
+              <span className="iris-agent-picker-name">New Claude Code Session</span>
+              <span className="iris-agent-picker-sub">Start a fresh Claude session</span>
+            </button>
             {claudeCodeLinkChoices.length === 0 ? (
               <div className="iris-session-empty">No linked Claude Code sessions found yet.</div>
             ) : (
@@ -741,7 +776,7 @@ const Queue: React.FC = () => {
                   onClick={() => handlePickClaudeCodeSession(choice.conversationId)}
                 >
                   <span className="iris-agent-picker-name">{choice.sessionName}</span>
-                  <span className="iris-agent-picker-sub">{choice.conversationId.slice(0, 8)}</span>
+                  <span className="iris-agent-picker-sub">{choice.conversationId}</span>
                 </button>
               ))
             )}
@@ -767,7 +802,7 @@ const Queue: React.FC = () => {
                   onClick={() => handlePickCodexSession(choice.conversationId, choice.cwd)}
                 >
                   <span className="iris-agent-picker-name">{choice.sessionName}</span>
-                  <span className="iris-agent-picker-sub">{choice.conversationId.slice(0, 8)}</span>
+                  <span className="iris-agent-picker-sub">{choice.conversationId}</span>
                 </button>
               ))
             )}

@@ -1,4 +1,5 @@
 import Foundation
+import PencilKit
 import UIKit
 
 struct CanvasCoordinateSnapshot: Codable {
@@ -50,6 +51,7 @@ struct CanvasSuggestion: Identifiable {
 final class CanvasObjectManager: ObservableObject {
     @Published private(set) var objects: [UUID: CanvasObject] = [:]
     @Published private(set) var suggestions: [UUID: CanvasSuggestion] = [:]
+    @Published var isAnimatingDraw: Bool = false
     private(set) var objectViews: [UUID: CanvasObjectWebView] = [:]
 
     let httpServer = AgentHTTPServer()
@@ -360,5 +362,50 @@ final class CanvasObjectManager: ObservableObject {
             canvasView.drawHierarchy(in: canvasView.bounds, afterScreenUpdates: true)
         }
         return image.pngData()
+    }
+
+    // MARK: - SVG Drawing
+
+    /// Parses an SVG string and animates it onto the canvas with cursor tracking.
+    /// Returns the number of strokes parsed.
+    @discardableResult
+    func drawSVG(
+        svg: String,
+        at position: CGPoint,
+        scale: CGFloat = 1.0,
+        color: UIColor = UIColor(red: 0.10, green: 0.12, blue: 0.16, alpha: 1),
+        strokeWidth: CGFloat = 3,
+        speed: Double = 1.0
+    ) async -> Int {
+        guard let canvasView, let cursor else { return 0 }
+
+        let parser = SVGPathParser()
+        let result = parser.parse(svgString: svg)
+        guard !result.strokes.isEmpty else { return 0 }
+
+        isAnimatingDraw = true
+        defer { isAnimatingDraw = false }
+
+        let animator = SVGStrokeAnimator(
+            canvasView: canvasView,
+            cursor: cursor,
+            objectManager: self
+        )
+
+        await animator.animate(
+            strokes: result.strokes,
+            origin: position,
+            scale: scale,
+            color: color,
+            strokeWidth: strokeWidth,
+            speed: speed
+        )
+
+        // Trigger final save by notifying drawing changed
+        if let recentStroke = canvasView.drawing.strokes.last {
+            updateMostRecentStrokeBounds(recentStroke.renderBounds)
+        }
+
+        return result.strokes.count
     }
 }

@@ -16,6 +16,8 @@
 		739597A0936612FBA354DB5E /* IrisApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483EDD123E3B6F607D24A94F /* IrisApp.swift */; };
 		80629157E40AE845EA46F40B /* iris-design-system.css in Resources */ = {isa = PBXBuildFile; fileRef = 500965FF3D6545FC19025F45 /* iris-design-system.css */; };
 		8773A20F8DBAE4749602EF4E /* CanvasObjectManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E09763122009619753BA1136 /* CanvasObjectManager.swift */; };
+		AA1B2C3D4E5F6A7B8C9D0E01 /* SVGPathParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1B2C3D4E5F6A7B8C9D0E02 /* SVGPathParser.swift */; };
+		AA1B2C3D4E5F6A7B8C9D0E03 /* SVGStrokeAnimator.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1B2C3D4E5F6A7B8C9D0E04 /* SVGStrokeAnimator.swift */; };
 		8E30310AD5F2757AEDE01DCB /* UIColor+Compare.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9FEAD6A33D7DDB32C018D67 /* UIColor+Compare.swift */; };
 		8E4801B41004DED9CAB70CE8 /* CanvasObject.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEA1A265F40648670A08EB43 /* CanvasObject.swift */; };
 		986114D967F1F157EAA23A40 /* CanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21D7011A03C852C41F3FFB14 /* CanvasView.swift */; };
@@ -41,6 +43,8 @@
 		6C88B51901C84B66AB5446F2 /* App.local.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = App.local.xcconfig.example; sourceTree = "<group>"; };
 		85533FD0A237F2DC940E1E85 /* AgentHTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHTTPServer.swift; sourceTree = "<group>"; };
 		92AF51999DEF219ECD85152E /* AudioCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureService.swift; sourceTree = "<group>"; };
+		AA1B2C3D4E5F6A7B8C9D0E02 /* SVGPathParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SVGPathParser.swift; sourceTree = "<group>"; };
+		AA1B2C3D4E5F6A7B8C9D0E04 /* SVGStrokeAnimator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SVGStrokeAnimator.swift; sourceTree = "<group>"; };
 		96D736B18FC1B35992674D11 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A4F3E2D1C0B9A8F7E6D5C4B3 /* SpeechTranscriber.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechTranscriber.swift; sourceTree = "<group>"; };
 		BFCC9ADAF74286DBEC5E706A /* AgentCursorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentCursorView.swift; sourceTree = "<group>"; };
@@ -136,6 +140,8 @@
 				92AF51999DEF219ECD85152E /* AudioCaptureService.swift */,
 				E09763122009619753BA1136 /* CanvasObjectManager.swift */,
 				A4F3E2D1C0B9A8F7E6D5C4B3 /* SpeechTranscriber.swift */,
+				AA1B2C3D4E5F6A7B8C9D0E02 /* SVGPathParser.swift */,
+				AA1B2C3D4E5F6A7B8C9D0E04 /* SVGStrokeAnimator.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -233,6 +239,8 @@
 				739597A0936612FBA354DB5E /* IrisApp.swift in Sources */,
 				6420C1C3CC855A0F9960CF45 /* SiriGlowView.swift in Sources */,
 				B3C4D5E6F7A8B9C0D1E2F3A4 /* SpeechTranscriber.swift in Sources */,
+				AA1B2C3D4E5F6A7B8C9D0E01 /* SVGPathParser.swift in Sources */,
+				AA1B2C3D4E5F6A7B8C9D0E03 /* SVGStrokeAnimator.swift in Sources */,
 				3AAEF8B9B2F499BD02C92897 /* ToolbarView.swift in Sources */,
 				8E30310AD5F2757AEDE01DCB /* UIColor+Compare.swift in Sources */,
 			);

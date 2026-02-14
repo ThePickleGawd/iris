@@ -305,6 +305,42 @@ private struct AgentPickerOverlay: View {
                 .foregroundColor(.white.opacity(0.72))
                 .fixedSize(horizontal: false, vertical: true)
 
+            if sessionPickerModelID == "claude_code" {
+                Button {
+                    createNewClaudeSession()
+                } label: {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("New Claude Code Session")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                            Text("Start a fresh Claude session")
+                                .font(.system(size: 12))
+                                .foregroundColor(.white.opacity(0.62))
+                                .lineLimit(1)
+                        }
+
+                        Spacer(minLength: 0)
+
+                        Image(systemName: "plus")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.4))
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color.white.opacity(0.08))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+
             if loadingSessions {
                 HStack {
                     Spacer()
@@ -430,7 +466,7 @@ private struct AgentPickerOverlay: View {
         let isClaudeCode = modelID == "claude_code"
         let metadataKey = isClaudeCode ? "claude_code_conversation_id" : "codex_conversation_id"
 
-        return items.compactMap { item in
+        let matches: [RemoteSession] = items.compactMap { item -> RemoteSession? in
             let model = (item["model"] as? String ?? "").lowercased()
             let metadata = item["metadata"] as? [String: Any] ?? [:]
             let hasConversationID = {
@@ -456,6 +492,40 @@ private struct AgentPickerOverlay: View {
 
             return RemoteSession(id: id, name: name, model: model, updatedAt: updatedAt, preview: preview)
         }
+
+        let sorted = matches.sorted {
+            sessionTimestamp($0.updatedAt) > sessionTimestamp($1.updatedAt)
+        }
+        return Array(sorted.prefix(10))
+    }
+
+    private static let timestampFormatterWithFractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let timestampFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    private static func sessionTimestamp(_ value: String) -> Date {
+        if let parsed = timestampFormatterWithFractional.date(from: value) {
+            return parsed
+        }
+        if let parsed = timestampFormatter.date(from: value) {
+            return parsed
+        }
+        return .distantPast
+    }
+
+    private func createNewClaudeSession() {
+        let doc = documentStore.addDocument(name: "", model: "claude_code")
+        isPresented = false
+        onCreated(doc)
+        registerSessionOnBackend(doc)
     }
 
     private func selectRemoteSession(_ session: RemoteSession) {

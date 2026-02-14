@@ -213,6 +213,9 @@ class AgentHTTPServer {
         case ("GET", "device", nil, nil):
             handleDeviceInfo(conn)
 
+        case ("POST", "draw", nil, nil):
+            handleDraw(req, conn)
+
         case ("POST", "cursor", nil, nil):
             handleCursorCommand(req, conn)
 
@@ -555,6 +558,80 @@ class AgentHTTPServer {
         }
     }
 
+    // MARK: - Draw Handler
+
+    private func handleDraw(_ req: HTTPRequest, _ conn: NWConnection) {
+        guard let json = req.jsonBody, let svg = json["svg"] as? String, !svg.isEmpty else {
+            respondJSON(conn, status: 400, body: ["error": "Missing required field: 'svg' (string)"])
+            return
+        }
+
+        let x = numericValue(json["x"]) ?? 0
+        let y = numericValue(json["y"]) ?? 0
+        let coordinateSpace = (json["coordinate_space"] as? String ?? "viewport_offset").lowercased()
+        let scale = numericValue(json["scale"]) ?? 1.0
+        let speed = numericValue(json["speed"]) ?? 1.0
+        let strokeWidth = numericValue(json["stroke_width"]) ?? 3
+        let colorHex = json["color"] as? String
+
+        guard let mgr = objectManager else {
+            respondJSON(conn, status: 503, body: ["error": "Canvas not ready — open a document first"])
+            return
+        }
+
+        // Parse stroke count upfront for the response
+        let parser = SVGPathParser()
+        let parsed = parser.parse(svgString: svg)
+        let strokeCount = parsed.strokes.count
+
+        guard strokeCount > 0 else {
+            respondJSON(conn, status: 400, body: ["error": "SVG contains no drawable strokes"])
+            return
+        }
+
+        // Estimate duration: ~30 points/sec per stroke, with pauses
+        let totalPoints = parsed.strokes.reduce(0) { $0 + $1.points.count }
+        let drawTime = Double(totalPoints) / (30.0 * max(speed, 0.1))
+        let pauseTime = Double(strokeCount) * 0.15
+        let estimatedDuration = (drawTime + pauseTime).rounded(toPlaces: 1)
+
+        // Respond immediately (202), then animate asynchronously
+        respondJSON(conn, status: 202, body: [
+            "status": "drawing",
+            "stroke_count": strokeCount,
+            "estimated_duration_seconds": estimatedDuration
+        ])
+
+        Task { @MainActor in
+            let viewport = mgr.viewportCenter
+            let canvasPos: CGPoint
+            switch coordinateSpace {
+            case "canvas_absolute":
+                canvasPos = CGPoint(x: x, y: y)
+            case "document_axis":
+                canvasPos = mgr.canvasPoint(forAxisPoint: CGPoint(x: x, y: y))
+            default:
+                canvasPos = CGPoint(x: viewport.x + x, y: viewport.y + y)
+            }
+
+            let color: UIColor
+            if let hex = colorHex {
+                color = UIColor(hex: hex)
+            } else {
+                color = UIColor(red: 0.10, green: 0.12, blue: 0.16, alpha: 1)
+            }
+
+            await mgr.drawSVG(
+                svg: svg,
+                at: canvasPos,
+                scale: CGFloat(scale),
+                color: color,
+                strokeWidth: CGFloat(strokeWidth),
+                speed: speed
+            )
+        }
+    }
+
     // MARK: - Cursor Handler
 
     private func handleCursorCommand(_ req: HTTPRequest, _ conn: NWConnection) {
@@ -734,6 +811,7 @@ class AgentHTTPServer {
         switch code {
         case 200: "OK"
         case 201: "Created"
+        case 202: "Accepted"
         case 204: "No Content"
         case 400: "Bad Request"
         case 413: "Payload Too Large"
@@ -803,5 +881,39 @@ private struct HTTPRequest {
         }
 
         return HTTPRequest(method: tokens[0], path: tokens[1], headers: headers, body: bodyData)
+    }
+}
+
+// MARK: - Helpers
+
+private extension UIColor {
+    convenience init(hex: String) {
+        let cleaned = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "#", with: "")
+        var rgb: UInt64 = 0
+        Scanner(string: cleaned).scanHexInt64(&rgb)
+        let r, g, b, a: CGFloat
+        switch cleaned.count {
+        case 6:
+            r = CGFloat((rgb >> 16) & 0xFF) / 255
+            g = CGFloat((rgb >> 8) & 0xFF) / 255
+            b = CGFloat(rgb & 0xFF) / 255
+            a = 1
+        case 8:
+            r = CGFloat((rgb >> 24) & 0xFF) / 255
+            g = CGFloat((rgb >> 16) & 0xFF) / 255
+            b = CGFloat((rgb >> 8) & 0xFF) / 255
+            a = CGFloat(rgb & 0xFF) / 255
+        default:
+            r = 0.10; g = 0.12; b = 0.16; a = 1
+        }
+        self.init(red: r, green: g, blue: b, alpha: a)
+    }
+}
+
+private extension Double {
+    func rounded(toPlaces places: Int) -> Double {
+        let factor = pow(10.0, Double(places))
+        return (self * factor).rounded() / factor
     }
 }

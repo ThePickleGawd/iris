@@ -97,7 +97,12 @@ struct CanvasView: UIViewRepresentable {
         }
 
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
+            // Always keep canvasState.drawing in sync for UI
             parent.canvasState.drawing = canvasView.drawing
+
+            // During SVG draw animation, skip save timers and proactive triggers
+            if parent.objectManager.isAnimatingDraw { return }
+
             parent.canvasState.undoManager = canvasView.undoManager
             parent.canvasState.canUndo = canvasView.undoManager?.canUndo ?? false
             parent.canvasState.canRedo = canvasView.undoManager?.canRedo ?? false
