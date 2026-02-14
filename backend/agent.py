@@ -235,6 +235,11 @@ TOOLS = [
                         "type": "string",
                         "description": "A unique identifier for this widget. Use a descriptive slug.",
                     },
+                    "target": {
+                        "type": "string",
+                        "enum": ["ipad", "mac", "both"],
+                        "description": "Destination device for this widget. Defaults to 'mac'.",
+                    },
                     "width": {
                         "type": "number",
                         "description": "Widget width in points. Default 320.",

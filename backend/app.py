@@ -6,6 +6,7 @@ import os
 import hashlib
 import subprocess
 import tempfile
+import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1393,6 +1394,14 @@ def v1_agent() -> Any:
     try:
         result = agent_module.run(context, enriched_message, model=model)
     except Exception as exc:
+        app.logger.error(
+            "v1_agent failed session_id=%s model=%s ephemeral=%s error=%s\n%s",
+            session_id,
+            model,
+            ephemeral,
+            str(exc),
+            traceback.format_exc(),
+        )
         return jsonify(
             {
                 "error": "agent_failed",
