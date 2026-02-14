@@ -260,7 +260,8 @@ enum BackendClient {
         deviceID: String,
         backendURL: URL,
         sessionID: String? = nil,
-        notes: String? = nil
+        notes: String? = nil,
+        coordinateSnapshot: [String: Any]? = nil
     ) async throws -> String {
         let endpoint = backendURL.appendingPathComponent("api/screenshots")
         var request = URLRequest(url: endpoint)
@@ -274,7 +275,8 @@ enum BackendClient {
             boundary: boundary,
             deviceID: deviceID,
             sessionID: sessionID,
-            notes: notes
+            notes: notes,
+            coordinateSnapshot: coordinateSnapshot
         )
         request.httpBody = body
         request.setValue(String(body.count), forHTTPHeaderField: "Content-Length")
@@ -303,7 +305,8 @@ enum BackendClient {
         boundary: String,
         deviceID: String,
         sessionID: String?,
-        notes: String?
+        notes: String?,
+        coordinateSnapshot: [String: Any]?
     ) -> Data {
         var body = Data()
 
@@ -329,6 +332,14 @@ enum BackendClient {
             append("--\(boundary)\r\n")
             append("Content-Disposition: form-data; name=\"notes\"\r\n\r\n")
             append("\(notes)\r\n")
+        }
+        if let coordinateSnapshot,
+           let snapshotData = try? JSONSerialization.data(withJSONObject: coordinateSnapshot),
+           let snapshotJSON = String(data: snapshotData, encoding: .utf8),
+           !snapshotJSON.isEmpty {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"coordinate_snapshot\"\r\n\r\n")
+            append("\(snapshotJSON)\r\n")
         }
 
         append("--\(boundary)\r\n")

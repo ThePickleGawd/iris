@@ -10,6 +10,13 @@ from typing import Any
 
 from flask import Flask, jsonify, request, send_file
 from werkzeug.utils import secure_filename
+from orchestration import (
+    apply_arrow_tip_policy,
+    build_widget_events,
+    normalize_widget_specs,
+    requests_widget,
+    sanitize_coordinate_snapshot,
+)
 
 def _load_root_env() -> None:
     """Load environment variables from repository root .env if present."""
@@ -141,6 +148,7 @@ def _spatial_context_text(metadata: dict[str, Any] | None) -> str:
         )
     except (TypeError, ValueError):
         return ""
+
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +388,13 @@ def upload_screenshot() -> Any:
     session_id = (request.form.get("session_id") or "").strip() or None
     source = request.form.get("source")
     notes = request.form.get("notes")
+    coordinate_snapshot_raw = request.form.get("coordinate_snapshot")
+    coordinate_snapshot: dict[str, Any] | None = None
+    if isinstance(coordinate_snapshot_raw, str) and coordinate_snapshot_raw.strip():
+        try:
+            coordinate_snapshot = sanitize_coordinate_snapshot(json.loads(coordinate_snapshot_raw))
+        except json.JSONDecodeError:
+            coordinate_snapshot = None
 
     ext = Path(secure_filename(shot.filename)).suffix or ".png"
     safe_device = secure_filename(device_id or "unknown")
@@ -397,6 +412,7 @@ def upload_screenshot() -> Any:
         "mime_type": mime,
         "file_path": str(file_path),
         "notes": notes,
+        "coordinate_snapshot": coordinate_snapshot,
     }
     _save_screenshot(row)
     return jsonify(row), 201
@@ -450,9 +466,7 @@ def proactive_describe_screenshot() -> Any:
     if not fp.exists():
         return jsonify({"error": "screenshot file missing"}), 410
 
-    coordinate_snapshot = body.get("coordinate_snapshot")
-    if not isinstance(coordinate_snapshot, dict):
-        coordinate_snapshot = None
+    coordinate_snapshot = sanitize_coordinate_snapshot(body.get("coordinate_snapshot"))
 
     previous_description = body.get("previous_description")
     if not isinstance(previous_description, dict):
@@ -540,6 +554,11 @@ def v1_agent() -> Any:
     model = (body.get("model") or "").strip() or "gpt-5.2"
     device = body.get("device") or {}
     metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    metadata = dict(metadata)
+    coordinate_snapshot_valid = False
+    if "coordinate_snapshot" in metadata:
+        metadata["coordinate_snapshot"] = sanitize_coordinate_snapshot(metadata.get("coordinate_snapshot"))
+        coordinate_snapshot_valid = isinstance(metadata.get("coordinate_snapshot"), dict)
 
     # Load or create session
     session = _load_session(session_id)
@@ -579,7 +598,27 @@ def v1_agent() -> Any:
         augmented_message = f"{augmented_message}\n\n{spatial_note}"
 
     # Call agent
-    result = agent_module.run(context, augmented_message, model=model)
+    preferred_device = "ipad" if str(device.get("platform", "")).lower().startswith("ipad") else "mac"
+    result = agent_module.run(
+        context,
+        augmented_message,
+        model=model,
+        session_id=session_id,
+        preferred_device=preferred_device,
+    )
+
+    # Deterministic fallback for explicit widget asks: never silently "describe" without creating.
+    widget_forced = False
+    if requests_widget(message) and not result.get("widgets"):
+        fallback_widget = agent_module.generate_widget_from_prompt(
+            context=context,
+            user_message=augmented_message,
+            model=model,
+            preferred_device=preferred_device,
+        )
+        if fallback_widget:
+            result.setdefault("widgets", []).append(fallback_widget)
+            widget_forced = True
 
     # Append assistant response
     ts = _now()
@@ -603,36 +642,19 @@ def v1_agent() -> Any:
             "kind": "tool_call",
             "tool_call": tc,
         })
-    for w in result.get("widgets", []):
-        widget_record = {
-            "id": w.get("widget_id", str(uuid.uuid4())),
-            "html": w.get("html", ""),
-            "target": w.get("target", "mac"),
-            "width": w.get("width", 320),
-            "height": w.get("height", 220),
-            "x": w.get("x", 0),
-            "y": w.get("y", 0),
-            "coordinate_space": w.get("coordinate_space", "viewport_offset"),
-            "anchor": w.get("anchor", "top_left"),
-            "created_at": ts,
-        }
+    fallback_target = "ipad" if str(device.get("platform", "")).lower().startswith("ipad") else "mac"
+    normalized_widgets = normalize_widget_specs(result.get("widgets", []), fallback_target=fallback_target)
+    arrow_policy = apply_arrow_tip_policy(
+        normalized_widgets,
+        message=message,
+        device=fallback_target,
+        session_id=session_id,
+    )
+    widget_records, widget_events = build_widget_events(normalized_widgets)
+    for widget_record in widget_records:
+        widget_record["created_at"] = ts
         session.setdefault("widgets", []).append(widget_record)
-
-        events.append({
-            "kind": "widget.open",
-            "widget": {
-                "kind": "html",
-                "id": widget_record["id"],
-                "target": widget_record["target"],
-                "payload": {"html": widget_record["html"]},
-                "width": widget_record["width"],
-                "height": widget_record["height"],
-                "x": widget_record["x"],
-                "y": widget_record["y"],
-                "coordinate_space": widget_record["coordinate_space"],
-                "anchor": widget_record["anchor"],
-            },
-        })
+    events.extend(widget_events)
 
     session["updated_at"] = ts
     _save_session(session)
@@ -644,6 +666,13 @@ def v1_agent() -> Any:
         "model": model,
         "text": result["text"],
         "events": events,
+        "meta": {
+            "widget_forced": widget_forced,
+            "coordinate_snapshot_valid": coordinate_snapshot_valid,
+            "widget_count": len(widget_records),
+            "tool_call_count": len(result.get("tool_calls", [])),
+            "arrow_policy": arrow_policy,
+        },
         "timestamp": _now(),
     })
 

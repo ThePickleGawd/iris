@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from pathlib import Path
 import urllib.error
 import urllib.request
 from typing import Any
@@ -24,16 +26,39 @@ SYSTEM_PROMPT = """\
 You are Iris, a visual assistant across iPad and Mac.
 
 Tools:
+- read_screenshot: inspect the latest screenshot and summarize visual content.
 - read_arrows: inspect latest screenshot arrow detections and endpoints.
 - push_widget: create HTML widgets, optionally at coordinates.
 
 Behavior policy:
 - Strongly default to NOT placing widgets unless explicitly requested.
+- For visual requests, call read_screenshot before deciding.
 - If user asks to place at arrow end/tip, call read_arrows first.
 - Prefer tip_document_axis when available.
 """
 
 TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "read_screenshot",
+            "description": "Read latest screenshot and return a visual description plus metadata.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "device": {
+                        "type": "string",
+                        "description": "Device id filter, e.g. 'ipad' or 'mac'.",
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional session id filter.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -126,6 +151,62 @@ def run(
                 f"Anthropic failed: {anthropic_error}; OpenAI fallback failed: {openai_exc}"
             ) from openai_exc
         raise
+
+
+def generate_widget_from_prompt(
+    *,
+    context: list[dict[str, Any]],
+    user_message: str,
+    model: str | None = None,
+    preferred_device: str | None = None,
+) -> dict[str, Any] | None:
+    """Deterministic fallback path: force a single widget spec from prompt."""
+    prompt = (
+        "Create exactly one UI widget for this request.\n"
+        "Return strict JSON only:\n"
+        '{"html":"<html...>","width":320,"height":220,"coordinate_space":"viewport_offset","x":0,"y":0}\n'
+        "Rules: HTML only in html field, no markdown fences, no prose."
+    )
+    ctx_tail = context[-6:] if context else []
+    compact_context = "\n".join(
+        f"{m.get('role','user')}: {str(m.get('content',''))[:500]}"
+        for m in ctx_tail
+    )
+    full_user = f"{prompt}\n\nContext:\n{compact_context}\n\nRequest:\n{user_message}"
+
+    # Prefer Anthropic, fallback OpenAI.
+    try:
+        text = _generate_text_anthropic(full_user)
+    except Exception:
+        try:
+            text = _generate_text_openai(full_user, model=(model or DEFAULT_MODEL))
+        except Exception:
+            text = ""
+
+    parsed = _parse_widget_json(text)
+    if not parsed:
+        # Hard fallback widget to keep behavior deterministic.
+        snippet = re.sub(r"\s+", " ", user_message).strip()[:320]
+        html = (
+            "<div style='font-family:-apple-system,system-ui,sans-serif;padding:14px;"
+            "border-radius:14px;background:#111827;color:#f9fafb;border:1px solid #374151;'>"
+            "<div style='font-size:12px;opacity:.75;margin-bottom:6px;'>Iris Widget</div>"
+            f"<div style='font-size:14px;line-height:1.35;'>{_escape_html(snippet)}</div>"
+            "</div>"
+        )
+        parsed = {"html": html, "width": 360, "height": 220, "x": 0, "y": 0, "coordinate_space": "viewport_offset"}
+
+    return {
+        "widget_id": f"forced-{os.urandom(4).hex()}",
+        "html": str(parsed.get("html") or ""),
+        "width": _clamp(parsed.get("width"), 320),
+        "height": _clamp(parsed.get("height"), 220),
+        "x": _optional_float(parsed.get("x")) or 0.0,
+        "y": _optional_float(parsed.get("y")) or 0.0,
+        "coordinate_space": str(parsed.get("coordinate_space") or "viewport_offset"),
+        "target_device": str(preferred_device or "ipad").lower(),
+        "target": str(preferred_device or "ipad").lower(),
+    }
 
 
 def _run_openai(
@@ -250,6 +331,12 @@ def _handle_tool_call(
         grounded = detect_latest_arrows(device=device, session_id=sid)
         return json.dumps(grounded.to_json(), ensure_ascii=False)
 
+    if name == "read_screenshot":
+        device = str(args.get("device") or preferred_device or "ipad").strip() or "ipad"
+        sid = str(args.get("session_id") or session_id or "").strip() or None
+        payload = _read_latest_screenshot(device=device, session_id=sid)
+        return json.dumps(payload, ensure_ascii=False)
+
     if name == "push_widget":
         widget_id = str(args.get("widget_id") or "widget")
         html = str(args.get("html") or "")
@@ -306,6 +393,11 @@ def _anthropic_tools() -> list[dict]:
             "description": TOOLS[1]["function"]["description"],
             "input_schema": TOOLS[1]["function"]["parameters"],
         },
+        {
+            "name": TOOLS[2]["function"]["name"],
+            "description": TOOLS[2]["function"]["description"],
+            "input_schema": TOOLS[2]["function"]["parameters"],
+        },
     ]
 
 
@@ -326,6 +418,162 @@ def _anthropic_post(path: str, body: dict[str, Any], api_key: str) -> dict[str, 
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
         raise RuntimeError(f"Anthropic HTTP {exc.code}: {detail[:300]}") from exc
+
+
+def _generate_text_anthropic(user_message: str) -> str:
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY is not set")
+    model = os.environ.get("ANTHROPIC_MODEL", DEFAULT_ANTHROPIC_MODEL).strip() or DEFAULT_ANTHROPIC_MODEL
+    data = _anthropic_post(
+        "/v1/messages",
+        {
+            "model": model,
+            "max_tokens": 2000,
+            "messages": [{"role": "user", "content": user_message}],
+        },
+        api_key,
+    )
+    content_blocks = data.get("content", [])
+    return "".join(
+        block.get("text", "")
+        for block in content_blocks
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
+
+
+def _generate_text_openai(user_message: str, *, model: str) -> str:
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not set")
+    client = OpenAI(api_key=api_key)
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    return resp.choices[0].message.content or ""
+
+
+def _parse_widget_json(text: str) -> dict[str, Any] | None:
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1] if "\n" in raw else raw
+        raw = raw.rsplit("```", 1)[0]
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _escape_html(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+def _read_latest_screenshot(*, device: str | None, session_id: str | None) -> dict[str, Any]:
+    rows = _list_screenshot_rows()
+    selected: dict[str, Any] | None = None
+    for row in rows:
+        if device and str(row.get("device_id") or "").strip() != device:
+            continue
+        if session_id and str(row.get("session_id") or "").strip() != session_id:
+            continue
+        selected = row
+        break
+
+    if not selected:
+        return {
+            "ok": False,
+            "reason": "no screenshot found",
+            "device_id": device,
+            "session_id": session_id,
+        }
+
+    file_path = Path(str(selected.get("file_path") or ""))
+    if not file_path.exists():
+        return {
+            "ok": False,
+            "reason": "screenshot file missing",
+            "screenshot_id": selected.get("id"),
+            "device_id": selected.get("device_id"),
+            "session_id": selected.get("session_id"),
+        }
+
+    description = _describe_image_for_tool(file_path, str(selected.get("mime_type") or "image/png"))
+    return {
+        "ok": True,
+        "screenshot_id": selected.get("id"),
+        "device_id": selected.get("device_id"),
+        "session_id": selected.get("session_id"),
+        "created_at": selected.get("created_at"),
+        "coordinate_snapshot": selected.get("coordinate_snapshot"),
+        "description": description,
+    }
+
+
+def _list_screenshot_rows() -> list[dict[str, Any]]:
+    meta_dir = Path(__file__).resolve().parent / "data" / "screenshot_meta"
+    if not meta_dir.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for p in meta_dir.glob("*.json"):
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict):
+            rows.append(data)
+    rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    return rows
+
+
+def _describe_image_for_tool(file_path: Path, mime_type: str) -> str:
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        return "Screenshot available, but visual analysis unavailable (ANTHROPIC_API_KEY not set)."
+
+    try:
+        import base64
+        b64 = base64.b64encode(file_path.read_bytes()).decode("ascii")
+    except OSError:
+        return "Screenshot file unreadable."
+
+    prompt = (
+        "Describe exactly what is visible in this screenshot. "
+        "Focus on text, diagrams, arrows, and spatial layout relevant to assistant actions."
+    )
+    body = {
+        "model": os.environ.get("ANTHROPIC_MODEL", DEFAULT_ANTHROPIC_MODEL).strip() or DEFAULT_ANTHROPIC_MODEL,
+        "max_tokens": 1200,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image", "source": {"type": "base64", "media_type": mime_type, "data": b64}},
+                ],
+            }
+        ],
+    }
+    try:
+        data = _anthropic_post("/v1/messages", body, api_key)
+        content_blocks = data.get("content", [])
+        text = "".join(
+            block.get("text", "")
+            for block in content_blocks
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+        return text.strip() or "Screenshot analyzed, but model returned no description."
+    except Exception as exc:
+        return f"Screenshot available, analysis failed: {exc}"
 
 
 def _clamp(value: object, default: int) -> int:
