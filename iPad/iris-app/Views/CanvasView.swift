@@ -13,7 +13,7 @@ struct CanvasView: UIViewRepresentable {
         view.delegate = context.coordinator
         view.objectManager = objectManager
 
-        view.backgroundColor = UIColor(red: 0.96, green: 0.97, blue: 0.99, alpha: 1)
+        view.backgroundColor = Self.makeDotPattern()
         view.isOpaque = true
         view.drawingPolicy = .pencilOnly
         view.overrideUserInterfaceStyle = .light
@@ -65,6 +65,26 @@ struct CanvasView: UIViewRepresentable {
         case .lasso:
             canvasView.tool = PKLassoTool()
         }
+    }
+
+    private static func makeDotPattern() -> UIColor {
+        let spacing: CGFloat = 28
+        let dotRadius: CGFloat = 1.5
+        let size = CGSize(width: spacing, height: spacing)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let image = renderer.image { ctx in
+            UIColor(red: 0.96, green: 0.97, blue: 0.99, alpha: 1).setFill()
+            ctx.fill(CGRect(origin: .zero, size: size))
+
+            UIColor(white: 0.72, alpha: 1).setFill()
+            ctx.cgContext.fillEllipse(in: CGRect(
+                x: spacing / 2 - dotRadius,
+                y: spacing / 2 - dotRadius,
+                width: dotRadius * 2,
+                height: dotRadius * 2
+            ))
+        }
+        return UIColor(patternImage: image)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -177,7 +197,6 @@ struct CanvasView: UIViewRepresentable {
 }
 
 final class NoteCanvasView: PKCanvasView {
-    private let gridView = InfiniteCanvasBackgroundView()
     private let widgetOverlay = WidgetOverlayView()
 
     weak var objectManager: CanvasObjectManager?
@@ -193,10 +212,6 @@ final class NoteCanvasView: PKCanvasView {
     }
 
     private func setup() {
-        gridView.isUserInteractionEnabled = false
-        gridView.layer.zPosition = -2
-        insertSubview(gridView, at: 0)
-
         widgetOverlay.isUserInteractionEnabled = true
         widgetOverlay.backgroundColor = .clear
         widgetOverlay.layer.zPosition = 10
@@ -208,15 +223,20 @@ final class NoteCanvasView: PKCanvasView {
     func configureForInfiniteCanvas() {
         let size = CanvasState.canvasSize
         contentSize = CGSize(width: size, height: size)
-        gridView.frame = CGRect(x: 0, y: 0, width: size, height: size)
         widgetOverlay.frame = CGRect(origin: .zero, size: bounds.size)
         updateWidgetOverlayTransform()
     }
 
     func centerViewport() {
         let center = CanvasState.canvasCenter
-        let ox = center.x - bounds.width / 2
-        let oy = center.y - bounds.height / 2
+        let visibleW = bounds.width / max(zoomScale, 0.0001)
+        let visibleH = bounds.height / max(zoomScale, 0.0001)
+        let visibleOrigin = CGPoint(
+            x: center.x - visibleW / 2,
+            y: center.y - visibleH / 2
+        )
+        let ox = visibleOrigin.x - adjustedContentInset.left
+        let oy = visibleOrigin.y - adjustedContentInset.top
         setContentOffset(CGPoint(x: ox, y: oy), animated: false)
         updateWidgetOverlayTransform()
     }
@@ -233,8 +253,8 @@ final class NoteCanvasView: PKCanvasView {
 
     func updateWidgetOverlayTransform() {
         let z = zoomScale
-        let ox = contentOffset.x
-        let oy = contentOffset.y
+        let ox = contentOffset.x + adjustedContentInset.left
+        let oy = contentOffset.y + adjustedContentInset.top
         widgetOverlay.transform = CGAffineTransform(a: z, b: 0, c: 0, d: z, tx: -ox * z, ty: -oy * z)
     }
 
@@ -266,31 +286,5 @@ final class WidgetOverlayView: UIView {
             if subview.point(inside: p, with: event) { return true }
         }
         return false
-    }
-}
-
-final class InfiniteCanvasBackgroundView: UIView {
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        backgroundColor = Self.makeGrid()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        backgroundColor = Self.makeGrid()
-    }
-
-    private static func makeGrid() -> UIColor {
-        let spacing: CGFloat = 24
-        let size = CGSize(width: spacing, height: spacing)
-        let renderer = UIGraphicsImageRenderer(size: size)
-        let image = renderer.image { ctx in
-            UIColor(red: 0.96, green: 0.97, blue: 0.99, alpha: 1).setFill()
-            ctx.fill(CGRect(origin: .zero, size: size))
-
-            UIColor(white: 0.80, alpha: 1).setFill()
-            ctx.cgContext.fillEllipse(in: CGRect(x: spacing/2 - 1, y: spacing/2 - 1, width: 2, height: 2))
-        }
-        return UIColor(patternImage: image)
     }
 }
