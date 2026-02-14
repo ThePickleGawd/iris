@@ -28,5 +28,14 @@ sleep 2
 bash mac/run.sh &
 MAC_PID=$!
 
-# Wait for any child to exit, then cleanup triggers
-wait -n
+# Bash 3.2 (default on macOS) does not support `wait -n`.
+# Poll child processes and exit when either one dies; trap will cleanup both.
+while true; do
+    if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+        break
+    fi
+    if ! kill -0 "$MAC_PID" 2>/dev/null; then
+        break
+    fi
+    sleep 1
+done
