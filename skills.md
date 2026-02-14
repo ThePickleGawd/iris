@@ -1,197 +1,146 @@
-# Iris Widget Skills Context
+# Iris Agent Skills Reference
 
-This file is shared context for `claude code`, `codex`, and any orchestrator agent that needs to create or route Iris widgets.
+## Tools
 
-## 1) Canonical Widget Object
+The Iris agent has 4 tools: `draw`, `push_widget`, `read_screenshot`, and `read_widget`.
 
-Use this shape as the source of truth for widget payloads:
+---
 
-```json
-{
-  "id": "optional-stable-id",
-  "title": "Optional title",
-  "kind": "html | markdown | text | image | chart",
-  "width": 520,
-  "height": 420,
-  "css": "optional css string",
-  "payload": {
-    "html": "for kind=html",
-    "markdown": "for kind=markdown",
-    "text": "for kind=text",
-    "imageUrl": "for kind=image",
-    "chartConfig": {}
-  }
-}
-```
+### draw
 
-Validation rules:
-- `kind` must be one of: `html`, `markdown`, `text`, `image`, `chart`.
-- Unknown/invalid widget objects are ignored.
-- `payload` keys should match `kind`.
+Draw a diagram onto the PencilKit canvas with animated cursor tracing. The AI cursor follows each stroke as it appears — as if drawing by hand. **This is the primary tool for all diagrams.**
 
-## 2) How Widgets Open In Iris
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `svg` | string | **yes** | SVG string content (rendered from D2 or hand-crafted) |
+| `scale` | number | no | Scale factor for SVG coordinates (default 1.0, use 1.5-2.0 for readable size) |
+| `speed` | number | no | Animation speed multiplier (default 1.0) |
+| `color` | string | no | Hex color for strokes (default `#1A1F28`) |
+| `stroke_width` | number | no | PencilKit stroke width (default 3) |
+| `x` | number | no | X position offset (default 0) |
+| `y` | number | no | Y position offset (default 0) |
+| `coordinate_space` | string | no | `"viewport_offset"` (default), `"canvas_absolute"`, `"document_axis"` |
 
-There are two supported paths:
+**Workflow:** Write D2 source -> render with `d2` CLI -> send SVG to draw endpoint.
 
-1. Stream event path (`widget.open`):
-- Backend/orchestrator emits an event like:
-```json
-{ "kind": "widget.open", "widget": { "...WidgetSpec..." } }
-```
-- Mac app normalizes and opens it immediately.
-
-2. Inline text path (`iris-widget` fenced JSON):
-- Agent final text can include fenced blocks:
-```iris-widget
-{ "...WidgetSpec..." }
-```
-- Mac app extracts blocks, opens widgets, and keeps any remaining text.
-
-## 3) Agent-Specific Rules
-
-### Iris agent (`agents/iris_agent.py`)
-- Can use tool `push_widget(html, target, widget_id, width?, height?)`.
-- Can use tool `run_bash(command, cwd?, timeout_seconds?, max_output_chars?)`.
-- Can use tool `web_search(query, max_results?)`.
-- Can use tool `read_screenshot(device)` and `read_transcript(limit?)`.
-- Tool currently posts to iPad canvas API (`POST /api/v1/objects`).
-- On success, stream includes `widget.open` with:
-  - `kind: "html"`
-  - `id: widget_id`
-  - `payload.html`
-
-### Claude Code + Codex adapters (`agents/claude_code.py`, `agents/codex_agent.py`)
-- No widget tool integration in current adapters.
-- To open a widget in Mac UI, return valid `iris-widget` fenced JSON in final text.
-- If no widget block is returned, output is treated as plain assistant text.
-
-### Orchestrator/backend agent
-- Should emit supported stream events: `status`, `message.delta`, `message.final`, `tool.call`, `tool.result`, `widget.open`, `error`.
-- For widget delivery, emit `widget.open` with a valid `WidgetSpec`.
-- SSE (`data: {...}`) and NDJSON (`{...}` per line) are both supported.
-
-## 4) iPad Widget Contract
-
-iPad API endpoint:
-- `POST /api/v1/objects`
-
-Body:
-- `html` (required)
-- `x` (default `0`) offset from current viewport center
-- `y` (default `0`) offset from current viewport center
-- `width` (default `320`)
-- `height` (default `220`)
-- `animate` (default `true`)
-
-Behavior:
-- iPad injects design-system CSS into widget HTML automatically.
-- Placement coordinates are viewport-relative on create.
-- Listing/query returns canvas-center-relative coordinates.
-- Widget internals are not touch-interactive on iPad (`WKWebView` interaction disabled); users can drag widget containers on canvas.
-
-## 5) Mac Widget Contract
-
-Mac opens widgets through Electron `open-widget` IPC using `WidgetSpec`.
-
-Behavior:
-- Supported kinds: `html`, `markdown`, `text`, `image`, `chart`.
-- Defaults: `width=520`, `height=420`, min size `280x200`.
-- Reusing an existing `id` focuses the existing widget window instead of creating a duplicate.
-- `css` is appended to window styles and can theme the widget.
-
-## 6) Authoring Guidance For Reliable Widgets
-
-- Prefer `kind: "html"` unless another kind is clearly better.
-- Keep widget output self-contained (inline HTML/CSS/JS).
-- Include explicit `width` and `height` for predictable sizing.
-- Use stable `id` values for widgets that should be updated/focused.
-- Avoid large external dependencies for critical flows.
-- Keep fallback text outside widget blocks minimal and useful.
-
-## 6.1) Visual Quality Bar (iPad Widgets)
-
-Default to a polished, premium UI direction similar to a modern glassy dashboard, not plain utility HTML.
-
-Required style expectations:
-- Use layered depth: gradient/atmospheric background + translucent cards (`backdrop-filter` when available) + soft inner/outer borders.
-- Use clear visual hierarchy: strong headline, secondary metadata, subtle tertiary labels.
-- Use purposeful spacing: 12/16/24 rhythm, generous padding, no cramped edges.
-- Use rounded geometry: 16-24px card radii, consistent corner language.
-- Use high-contrast typography with refined neutrals; avoid washed-out gray-on-gray text.
-- Prefer componentized card layouts (hero panel + supporting metric cards) over one dense block of text.
-- Include tasteful visual accents (status pills, progress bars, mini charts, avatars, icon chips) when relevant.
-- Keep interactions lightweight and reliable (hover/tap states optional, no heavy framework dependencies).
-
-Avoid:
-- Bare white cards with default browser typography.
-- Unstyled tables/lists as the primary presentation.
-- Random color usage or mismatched spacing/radii.
-- Generic "AI slop" layouts with no visual focal point.
-
-Recommended implementation pattern:
-- Define CSS tokens in `:root` (colors, radius, spacing, shadows).
-- Compose reusable classes like `.panel`, `.metric`, `.badge`, `.muted`, `.kpi`.
-- Start with semantic HTML, then layer visual treatment.
-
-## 7) Copy/Paste Templates
-
-Template: `iris-widget` block (for Claude Code/Codex text output)
-
-```iris-widget
-{
-  "id": "task-summary",
-  "title": "Task Summary",
-  "kind": "html",
-  "width": 700,
-  "height": 520,
-  "payload": {
-    "html": "<div class='card'><h2>Summary</h2><p>Ready.</p></div>"
-  }
-}
-```
-
-Template: orchestrator stream event
+**Supported SVG elements:** path (all commands), rect, line, polyline, polygon, circle, ellipse. Text is skipped. Filled polygons (e.g. arrowheads) are rasterized as PencilKit strokes.
 
 ```json
 {
-  "kind": "widget.open",
-  "widget": {
-    "id": "task-summary",
-    "title": "Task Summary",
-    "kind": "html",
-    "width": 700,
-    "height": 520,
-    "payload": {
-      "html": "<div class='card'><h2>Summary</h2><p>Ready.</p></div>"
-    }
-  }
+  "svg": "<svg viewBox='0 0 300 200'>...</svg>",
+  "scale": 2.0,
+  "speed": 1.5,
+  "color": "#1A1F28",
+  "stroke_width": 3
 }
 ```
 
-Template: Iris tool call intent
-
+Returns 202:
 ```json
 {
-  "name": "push_widget",
-  "arguments": {
-    "target": "ipad",
-    "widget_id": "task-summary",
-    "width": 320,
-    "height": 220,
-    "html": "<div class='card'><h3>Summary</h3><p>Ready.</p></div>"
-  }
+  "status": "drawing",
+  "stroke_count": 13,
+  "estimated_duration_seconds": 5.1
 }
 ```
 
-## 8) Source Files (Implementation Truth)
+---
 
-- `agents/tools/widget.py`
-- `agents/iris_agent.py`
-- `agents/server.py`
-- `mac/src/lib/widgetProtocol.ts`
-- `mac/src/lib/agentProtocol.ts`
-- `mac/src/lib/agentTransport.ts`
-- `mac/electron/WidgetWindowManager.ts`
-- `iPad/README.md`
-- `iPad/iris-app/Services/AgentHTTPServer.swift`
-- `iPad/iris-app/Views/CanvasObjectWebView.swift`
+### push_widget
+
+Push an interactive HTML widget to a target device. Use for **interactive content only** (calculators, timers, documents with LaTeX) — NOT for diagrams.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `widget_id` | string | **yes** | Unique identifier (descriptive slug, e.g. `"formula-ref-1"`) |
+| `target` | string | **yes** | `"mac"` (desktop overlay) or `"ipad"` (canvas widget) |
+| `type` | string | no | `"html"` (default), `"document"`, `"animation"` |
+| `source` | string | no | Content for `document` (Markdown+LaTeX) or `animation` (Manim) |
+| `html` | string | no | Raw HTML for `html` type only (self-contained, inline CSS/JS) |
+| `width` | number | no | Width in points (default 320) |
+| `height` | number | no | Height in points (default 220) |
+| `x` | number | no | X position in coordinate_space (default 0) |
+| `y` | number | no | Y position in coordinate_space (default 0) |
+| `coordinate_space` | string | no | `"viewport_offset"` (default), `"canvas_absolute"`, `"document_axis"` |
+| `anchor` | string | no | `"top_left"` (default) or `"center"` |
+
+#### Widget Types
+
+**`document`** — Markdown + LaTeX rendering
+- Set `source` to Markdown. `$...$` for inline math, `$$...$$` for display math.
+
+**`animation`** — Manim (ManimCE) scene
+- Set `source` to a Python class extending `Scene` with `construct()`.
+- Only use when motion genuinely aids understanding.
+
+**`html`** — Raw interactive HTML (default)
+- Set `html` to self-contained HTML (inline CSS/JS only).
+- Use for: timers, calculators, games, anything needing JS interactivity.
+
+---
+
+### read_screenshot
+
+Analyze the latest device screenshot for spatial cues and placement guidance.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `device_id` | string | no | Filter by device (`"ipad"`, `"mac"`) |
+| `session_id` | string | no | Filter by session |
+| `question` | string | no | Spatial question to answer about the screenshot |
+
+---
+
+### read_widget
+
+Load a pre-built widget from the library by name.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | **yes** | Widget slug (e.g. `"calculator"`, `"graph"`, `"timer"`) |
+
+Available: `calculator` (320x520), `graph` (420x380), `timer` (320x340).
+
+---
+
+## When to Use What
+
+| Content | Tool | Why |
+|---------|------|-----|
+| Flowchart, architecture, tree, graph | **draw** | Drawn as PencilKit strokes with cursor animation |
+| Any D2 diagram | **draw** | D2 -> SVG -> draw |
+| Any SVG content | **draw** | Parsed and drawn as strokes |
+| Calculator, timer, interactive tool | **push_widget** (html) | Needs JS interactivity |
+| Math equations, explanations | **push_widget** (document) | Needs KaTeX rendering |
+| Step-by-step animation | **push_widget** (animation) | Needs Manim video playback |
+
+## Device Targeting
+
+| Scenario | Target |
+|----------|--------|
+| Diagram on canvas | **draw** (always iPad) |
+| Widget aiding canvas work | `push_widget` target `"ipad"` |
+| Self-contained tool (timer, calc) | `push_widget` target `"mac"` |
+| Conversational request at Mac | `push_widget` target `"mac"` |
+
+## Coordinate Spaces
+
+- **`viewport_offset`** — (0,0) = center of user's current view
+- **`document_axis`** — Stable canvas geometry, persistent across zoom/pan
+- **`canvas_absolute`** — Raw canvas coordinates (rarely needed)
+
+## Style Reference (Apple iOS/macOS widgets)
+
+- Background: `#1c1c1e` (dark). No borders.
+- Corner radius: `20px`. Padding: 16-20px.
+- Font: `-apple-system, SF Pro`. Labels 11-12px uppercase. Hero 34-48px bold. Body 13-14px muted.
+- Accent: one per widget — red `#ff3b30`, orange `#ff9500`, green `#34c759`, blue `#007aff`, purple `#af52de`.
+- No gradients, shadows, or hover effects.
+
+## Key Rules
+
+1. **Diagrams = draw, always** — never place diagrams as WebView widgets.
+2. **Widgets = interactive HTML only** — calculators, timers, documents, not diagrams.
+3. **Prefer library widgets** — `read_widget` -> adapt -> `push_widget`.
+4. **Always specify coordinates** — `x`, `y`, `coordinate_space` for every placement.
+5. **Widget must contain the answer** — no restating the problem.

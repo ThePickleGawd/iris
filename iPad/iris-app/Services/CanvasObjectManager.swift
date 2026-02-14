@@ -71,7 +71,9 @@ final class CanvasObjectManager: ObservableObject {
         guard let cv = canvasView, cv.bounds.width > 0 else { return CanvasState.canvasCenter }
         let visibleW = cv.bounds.width / cv.zoomScale
         let visibleH = cv.bounds.height / cv.zoomScale
-        return CGPoint(x: cv.contentOffset.x + visibleW / 2, y: cv.contentOffset.y + visibleH / 2)
+        let originX = cv.contentOffset.x + cv.adjustedContentInset.left
+        let originY = cv.contentOffset.y + cv.adjustedContentInset.top
+        return CGPoint(x: originX + visibleW / 2, y: originY + visibleH / 2)
     }
 
     var documentAxisOrigin: CGPoint { CanvasState.canvasCenter }
@@ -82,9 +84,11 @@ final class CanvasObjectManager: ObservableObject {
         }
         let visibleW = cv.bounds.width / cv.zoomScale
         let visibleH = cv.bounds.height / cv.zoomScale
+        let originX = cv.contentOffset.x + cv.adjustedContentInset.left
+        let originY = cv.contentOffset.y + cv.adjustedContentInset.top
         return CGRect(
-            x: cv.contentOffset.x,
-            y: cv.contentOffset.y,
+            x: originX,
+            y: originY,
             width: visibleW,
             height: visibleH
         )
@@ -190,19 +194,18 @@ final class CanvasObjectManager: ObservableObject {
         guard let canvasView else { return object }
 
         if animated, let cursor {
-            let cursorSize = CGSize(width: 20, height: 30)
             let widgetCenterCanvas = CGPoint(
                 x: position.x + (size.width * 0.5),
                 y: position.y + (size.height * 0.5)
             )
-            let widgetCenterScreen = canvasView.screenPoint(forCanvasPoint: widgetCenterCanvas)
-            let cursorOrigin = CGPoint(
-                x: widgetCenterScreen.x - (cursorSize.width * 0.5),
-                y: widgetCenterScreen.y - (cursorSize.height * 0.5)
+            let targetScreen = canvasView.screenPoint(forCanvasPoint: widgetCenterCanvas)
+            let startScreen = CGPoint(
+                x: targetScreen.x - 52,
+                y: targetScreen.y - 64
             )
-            cursor.appear(at: cursorOrigin)
+            cursor.appear(at: startScreen)
             try? await Task.sleep(nanoseconds: 160_000_000)
-            cursor.moveTo(cursorOrigin, duration: 0.34)
+            cursor.moveTo(targetScreen, duration: 0.34)
             try? await Task.sleep(nanoseconds: 300_000_000)
             cursor.click()
         }

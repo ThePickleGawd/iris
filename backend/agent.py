@@ -721,9 +721,13 @@ def _coerce_float(value: object, default: float = 0.0) -> float:
 
 def _normalize_coordinate_space(value: object) -> str:
     raw = str(value or "viewport_offset").strip().lower()
-    if raw in {"viewport_offset", "canvas_absolute", "document_axis"}:
+    if raw in {"viewport_offset", "viewport_center_offset", "viewport_center"}:
+        return "viewport_center_offset"
+    if raw in {"viewport_local", "viewport_top_left", "viewport_topleft"}:
+        return "viewport_local"
+    if raw in {"canvas_absolute", "document_axis"}:
         return raw
-    return "viewport_offset"
+    return "viewport_center_offset"
 
 
 def _normalize_anchor(value: object) -> str:

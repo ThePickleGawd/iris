@@ -958,6 +958,9 @@ struct ContentView: View {
             base = objectManager.canvasPoint(
                 forAxisPoint: CGPoint(x: widget.x, y: widget.y)
             )
+        case "viewport_local", "viewport_top_left", "viewport_topleft":
+            let viewportRect = objectManager.viewportCanvasRect()
+            base = CGPoint(x: viewportRect.minX + widget.x, y: viewportRect.minY + widget.y)
         default:
             let viewport = objectManager.viewportCenter
             base = CGPoint(x: viewport.x + widget.x, y: viewport.y + widget.y)

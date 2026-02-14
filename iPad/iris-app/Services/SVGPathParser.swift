@@ -29,8 +29,9 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
     private var svgWidth: CGFloat = 0
     private var svgHeight: CGFloat = 0
 
-    // Track nested <g> transform/style inheritance if needed
+    // Track nested style/transform inheritance.
     private var groupStyleStack: [(stroke: String?, strokeWidth: String?)] = []
+    private var transformStack: [CGAffineTransform] = []
 
     func parse(svgString: String) -> SVGParseResult {
         strokes = []
@@ -38,6 +39,7 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
         svgWidth = 0
         svgHeight = 0
         groupStyleStack = []
+        transformStack = []
 
         guard let data = svgString.data(using: .utf8) else {
             return SVGParseResult(strokes: [], viewBox: .zero)
@@ -52,6 +54,8 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
             viewBox = CGRect(x: 0, y: 0, width: svgWidth, height: svgHeight)
         }
 
+        normalizeToViewBoxOrigin()
+
         return SVGParseResult(strokes: strokes, viewBox: viewBox)
     }
 
@@ -64,10 +68,14 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
         switch element.lowercased() {
         case "svg":
             parseSVGRoot(attrs)
+            let parent = transformStack.last ?? .identity
+            transformStack.append(parent.concatenating(parseTransform(attrs["transform"])))
         case "g":
             let stroke = attrs["stroke"] ?? styleValue("stroke", from: attrs["style"])
             let sw = attrs["stroke-width"] ?? styleValue("stroke-width", from: attrs["style"])
             groupStyleStack.append((stroke: stroke, strokeWidth: sw))
+            let parent = transformStack.last ?? .identity
+            transformStack.append(parent.concatenating(parseTransform(attrs["transform"])))
         case "path":
             parsePath(attrs)
         case "rect":
@@ -89,8 +97,12 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
 
     func parser(_ parser: XMLParser, didEndElement element: String,
                 namespaceURI: String?, qualifiedName: String?) {
-        if element.lowercased() == "g" {
+        let lower = element.lowercased()
+        if lower == "g" {
             _ = groupStyleStack.popLast()
+        }
+        if lower == "g" || lower == "svg" {
+            _ = transformStack.popLast()
         }
     }
 
@@ -119,9 +131,16 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
     private func parsePath(_ attrs: [String: String]) {
         guard let d = attrs["d"], !d.isEmpty else { return }
         let (color, width) = resolveStyle(attrs)
+        guard hasVisibleStroke(color: color, width: width) else { return }
+        let strokeWidth = resolvedStrokeWidth(width)
+        let transform = elementTransform(attrs)
         let paths = SVGPathCommandParser.parse(d)
         for points in paths where points.count >= 2 {
-            strokes.append(SVGStroke(points: points, color: color, strokeWidth: width))
+            strokes.append(SVGStroke(
+                points: applyTransform(points, transform: transform),
+                color: color,
+                strokeWidth: strokeWidth
+            ))
         }
     }
 
@@ -141,6 +160,9 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
         ry = min(ry, h / 2)
 
         let (color, width) = resolveStyle(attrs)
+        guard hasVisibleStroke(color: color, width: width) else { return }
+        let strokeWidth = resolvedStrokeWidth(width)
+        let transform = elementTransform(attrs)
 
         var points: [CGPoint] = []
         if rx > 0 && ry > 0 {
@@ -182,7 +204,11 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
             ]
         }
 
-        strokes.append(SVGStroke(points: points, color: color, strokeWidth: width))
+        strokes.append(SVGStroke(
+            points: applyTransform(points, transform: transform),
+            color: color,
+            strokeWidth: strokeWidth
+        ))
     }
 
     private func parseLine(_ attrs: [String: String]) {
@@ -191,9 +217,12 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
         let x2 = cgFloat(attrs["x2"]) ?? 0
         let y2 = cgFloat(attrs["y2"]) ?? 0
         let (color, width) = resolveStyle(attrs)
+        guard hasVisibleStroke(color: color, width: width) else { return }
+        let strokeWidth = resolvedStrokeWidth(width)
+        let transform = elementTransform(attrs)
         strokes.append(SVGStroke(
-            points: [CGPoint(x: x1, y: y1), CGPoint(x: x2, y: y2)],
-            color: color, strokeWidth: width
+            points: applyTransform([CGPoint(x: x1, y: y1), CGPoint(x: x2, y: y2)], transform: transform),
+            color: color, strokeWidth: strokeWidth
         ))
     }
 
@@ -205,27 +234,38 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
             points.append(first)
         }
 
-        let fill = attrs["fill"] ?? styleValue("fill", from: attrs["style"])
-        let hasStroke = attrs["stroke"] ?? styleValue("stroke", from: attrs["style"])
-        let hasFill = fill != nil && fill != "none"
-        let hasExplicitStroke = hasStroke != nil && hasStroke != "none"
-
         let (color, width) = resolveStyle(attrs)
+        let fill = attrs["fill"] ?? styleValue("fill", from: attrs["style"])
+        let hasFill = isVisibleFill(fill)
+        let hasVisibleOutline = hasVisibleStroke(color: color, width: width)
+        let transform = elementTransform(attrs)
 
         // If filled (and closed), generate scanline fill strokes
         if closed && hasFill {
             let fillStrokes = scanlineFill(polygon: points, color: fill)
-            strokes.append(contentsOf: fillStrokes)
+            if transform.isIdentity {
+                strokes.append(contentsOf: fillStrokes)
+            } else {
+                let transformed = fillStrokes.map { stroke in
+                    SVGStroke(
+                        points: applyTransform(stroke.points, transform: transform),
+                        color: stroke.color,
+                        strokeWidth: stroke.strokeWidth,
+                        isFill: stroke.isFill
+                    )
+                }
+                strokes.append(contentsOf: transformed)
+            }
         }
 
-        // Also draw the outline — for filled shapes this gives crisp edges
-        if hasExplicitStroke || hasFill {
-            let outlineColor = hasExplicitStroke ? color : fill
-            let outlineWidth = width ?? 1.0
-            strokes.append(SVGStroke(points: points, color: outlineColor, strokeWidth: outlineWidth))
-        } else {
-            // No fill and no stroke — draw outline with default
-            strokes.append(SVGStroke(points: points, color: color, strokeWidth: width))
+        // Draw outline only when an actual visible stroke exists.
+        if hasVisibleOutline {
+            let outlineWidth = resolvedStrokeWidth(width)
+            strokes.append(SVGStroke(
+                points: applyTransform(points, transform: transform),
+                color: color,
+                strokeWidth: outlineWidth
+            ))
         }
     }
 
@@ -235,8 +275,15 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
         let r = cgFloat(attrs["r"]) ?? 0
         guard r > 0 else { return }
         let (color, width) = resolveStyle(attrs)
+        guard hasVisibleStroke(color: color, width: width) else { return }
+        let strokeWidth = resolvedStrokeWidth(width)
+        let transform = elementTransform(attrs)
         let points = sampleEllipse(cx: cx, cy: cy, rx: r, ry: r, samples: 24)
-        strokes.append(SVGStroke(points: points, color: color, strokeWidth: width))
+        strokes.append(SVGStroke(
+            points: applyTransform(points, transform: transform),
+            color: color,
+            strokeWidth: strokeWidth
+        ))
     }
 
     private func parseEllipse(_ attrs: [String: String]) {
@@ -246,8 +293,15 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
         let ry = cgFloat(attrs["ry"]) ?? 0
         guard rx > 0, ry > 0 else { return }
         let (color, width) = resolveStyle(attrs)
+        guard hasVisibleStroke(color: color, width: width) else { return }
+        let strokeWidth = resolvedStrokeWidth(width)
+        let transform = elementTransform(attrs)
         let points = sampleEllipse(cx: cx, cy: cy, rx: rx, ry: ry, samples: 24)
-        strokes.append(SVGStroke(points: points, color: color, strokeWidth: width))
+        strokes.append(SVGStroke(
+            points: applyTransform(points, transform: transform),
+            color: color,
+            strokeWidth: strokeWidth
+        ))
     }
 
     // MARK: - Style Resolution
@@ -262,10 +316,9 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
             if width == nil, let sw = group.strokeWidth { width = cgFloat(sw) }
         }
 
-        // Fall back to fill color when no stroke is specified (e.g. filled arrowheads)
-        if color == nil || color == "none" {
+        if color == nil || color?.lowercased() == "none" || color?.lowercased() == "transparent" {
             let fill = attrs["fill"] ?? styleValue("fill", from: attrs["style"])
-            if let fill, fill != "none" {
+            if let fill, fill.lowercased() != "none", fill.lowercased() != "transparent" {
                 color = fill
             }
         }
@@ -282,6 +335,41 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
             }
         }
         return nil
+    }
+
+    private func resolvedStrokeWidth(_ width: CGFloat?) -> CGFloat {
+        let w = width ?? 1
+        return max(0, w)
+    }
+
+    private func hasVisibleStroke(color: String?, width: CGFloat?) -> Bool {
+        guard let raw = color?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return false
+        }
+        let normalized = raw.lowercased()
+        if normalized == "none" || normalized == "transparent" {
+            return false
+        }
+        return resolvedStrokeWidth(width) > 0.001
+    }
+
+    private func isVisibleFill(_ fill: String?) -> Bool {
+        guard let raw = fill?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return false
+        }
+        let normalized = raw.lowercased()
+        return normalized != "none" && normalized != "transparent"
+    }
+
+    private func elementTransform(_ attrs: [String: String]) -> CGAffineTransform {
+        let inherited = transformStack.last ?? .identity
+        let local = parseTransform(attrs["transform"])
+        return inherited.concatenating(local)
+    }
+
+    private func applyTransform(_ points: [CGPoint], transform: CGAffineTransform) -> [CGPoint] {
+        guard !transform.isIdentity else { return points }
+        return points.map { $0.applying(transform) }
     }
 
     // MARK: - Polygon Scanline Fill
@@ -384,6 +472,96 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
             i += 2
         }
         return points
+    }
+
+    private func normalizeToViewBoxOrigin() {
+        guard viewBox != .zero else { return }
+        guard abs(viewBox.minX) > 0.0001 || abs(viewBox.minY) > 0.0001 else { return }
+
+        let shift = CGAffineTransform(translationX: -viewBox.minX, y: -viewBox.minY)
+        strokes = strokes.map { stroke in
+            SVGStroke(
+                points: applyTransform(stroke.points, transform: shift),
+                color: stroke.color,
+                strokeWidth: stroke.strokeWidth,
+                isFill: stroke.isFill
+            )
+        }
+        viewBox = CGRect(x: 0, y: 0, width: viewBox.width, height: viewBox.height)
+    }
+
+    private func parseTransform(_ value: String?) -> CGAffineTransform {
+        guard let value else { return .identity }
+        let input = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !input.isEmpty else { return .identity }
+
+        guard let regex = try? NSRegularExpression(pattern: #"([a-zA-Z]+)\s*\(([^)]*)\)"#) else {
+            return .identity
+        }
+        let ns = input as NSString
+        let matches = regex.matches(in: input, range: NSRange(location: 0, length: ns.length))
+        if matches.isEmpty { return .identity }
+
+        var transform = CGAffineTransform.identity
+        for match in matches where match.numberOfRanges >= 3 {
+            let name = ns.substring(with: match.range(at: 1)).lowercased()
+            let params = parseTransformNumbers(ns.substring(with: match.range(at: 2)))
+
+            let op: CGAffineTransform
+            switch name {
+            case "translate":
+                let tx = params.count > 0 ? params[0] : 0
+                let ty = params.count > 1 ? params[1] : 0
+                op = CGAffineTransform(translationX: tx, y: ty)
+            case "scale":
+                guard let sx = params.first else { continue }
+                let sy = params.count > 1 ? params[1] : sx
+                op = CGAffineTransform(scaleX: sx, y: sy)
+            case "rotate":
+                guard let degrees = params.first else { continue }
+                let radians = degrees * .pi / 180
+                if params.count >= 3 {
+                    let cx = params[1]
+                    let cy = params[2]
+                    op = CGAffineTransform(translationX: cx, y: cy)
+                        .concatenating(CGAffineTransform(rotationAngle: radians))
+                        .concatenating(CGAffineTransform(translationX: -cx, y: -cy))
+                } else {
+                    op = CGAffineTransform(rotationAngle: radians)
+                }
+            case "matrix":
+                guard params.count >= 6 else { continue }
+                op = CGAffineTransform(a: params[0], b: params[1], c: params[2], d: params[3], tx: params[4], ty: params[5])
+            case "skewx":
+                guard let degrees = params.first else { continue }
+                let tanValue = tan(degrees * .pi / 180)
+                op = CGAffineTransform(a: 1, b: 0, c: tanValue, d: 1, tx: 0, ty: 0)
+            case "skewy":
+                guard let degrees = params.first else { continue }
+                let tanValue = tan(degrees * .pi / 180)
+                op = CGAffineTransform(a: 1, b: tanValue, c: 0, d: 1, tx: 0, ty: 0)
+            default:
+                continue
+            }
+
+            transform = transform.concatenating(op)
+        }
+        return transform
+    }
+
+    private func parseTransformNumbers(_ input: String) -> [CGFloat] {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?"#
+        ) else {
+            return []
+        }
+        let ns = input as NSString
+        let matches = regex.matches(in: input, range: NSRange(location: 0, length: ns.length))
+        return matches.compactMap { match -> CGFloat? in
+            let token = ns.substring(with: match.range)
+            guard let value = Double(token), value.isFinite else { return nil }
+            return CGFloat(value)
+        }
     }
 }
 

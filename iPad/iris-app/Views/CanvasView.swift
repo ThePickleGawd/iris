@@ -40,6 +40,16 @@ struct CanvasView: UIViewRepresentable {
         pencilInteraction.delegate = context.coordinator
         view.addInteraction(pencilInteraction)
 
+        let twoFingerTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTwoFingerTap))
+        twoFingerTap.numberOfTouchesRequired = 2
+        twoFingerTap.numberOfTapsRequired = 1
+        view.addGestureRecognizer(twoFingerTap)
+
+        let threeFingerTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleThreeFingerTap))
+        threeFingerTap.numberOfTouchesRequired = 3
+        threeFingerTap.numberOfTapsRequired = 1
+        view.addGestureRecognizer(threeFingerTap)
+
         DispatchQueue.main.async {
             view.centerViewport()
             view.setZoomScale(1.0, animated: false)
@@ -93,9 +103,7 @@ struct CanvasView: UIViewRepresentable {
         var parent: CanvasView
         private var saveTimer: Timer?
         private var squeezePreviousTool: DrawingTool?
-        private var tapSequenceCount: Int = 0
-        private var tapSequenceWorkItem: DispatchWorkItem?
-        private let tapSequenceWindow: TimeInterval = 0.35
+        private var previousToolBeforeEraser: DrawingTool?
 
         init(_ parent: CanvasView) {
             self.parent = parent
@@ -138,17 +146,25 @@ struct CanvasView: UIViewRepresentable {
             }
         }
 
-        deinit {
-            tapSequenceWorkItem?.cancel()
+        // MARK: - Finger tap gestures
+
+        @objc func handleTwoFingerTap() {
+            parent.canvasState.undo()
         }
 
+        @objc func handleThreeFingerTap() {
+            parent.canvasState.redo()
+        }
+
+        // MARK: - Pencil interaction
+
         func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
-            registerPencilTap()
+            toggleEraser()
         }
 
         @available(iOS 17.5, *)
         func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveTap tap: UIPencilInteraction.Tap) {
-            registerPencilTap()
+            toggleEraser()
         }
 
         @available(iOS 17.5, *)
@@ -171,26 +187,15 @@ struct CanvasView: UIViewRepresentable {
             }
         }
 
-        private func registerPencilTap() {
+        private func toggleEraser() {
             DispatchQueue.main.async {
-                self.tapSequenceCount += 1
-                self.tapSequenceWorkItem?.cancel()
-
-                let workItem = DispatchWorkItem { [weak self] in
-                    guard let self else { return }
-                    switch self.tapSequenceCount {
-                    case 1:
-                        self.parent.canvasState.undo()
-                    case 2:
-                        self.parent.canvasState.redo()
-                    default:
-                        break
-                    }
-                    self.tapSequenceCount = 0
-                    self.tapSequenceWorkItem = nil
+                if self.parent.canvasState.currentTool == .eraser {
+                    self.parent.canvasState.currentTool = self.previousToolBeforeEraser ?? .pen
+                    self.previousToolBeforeEraser = nil
+                } else {
+                    self.previousToolBeforeEraser = self.parent.canvasState.currentTool
+                    self.parent.canvasState.currentTool = .eraser
                 }
-                self.tapSequenceWorkItem = workItem
-                DispatchQueue.main.asyncAfter(deadline: .now() + self.tapSequenceWindow, execute: workItem)
             }
         }
     }

@@ -261,9 +261,19 @@ class AgentHTTPServer {
 
             let coordinateInfo: [String: Any] = [
                 "default_post_space": "viewport_offset",
-                "supported_spaces": ["viewport_offset", "canvas_absolute", "document_axis"],
+                "recommended_post_space": "viewport_local",
+                "supported_spaces": [
+                    "viewport_offset",
+                    "viewport_center_offset",
+                    "viewport_local",
+                    "viewport_top_left",
+                    "canvas_absolute",
+                    "document_axis"
+                ],
                 "document_axis_origin_canvas": ["x": center.x, "y": center.y],
                 "document_axis_description": "document_axis x/y where (0,0) is canvas center. Positive x=right, positive y=down.",
+                "viewport_offset_description": "viewport_offset (alias viewport_center_offset): x/y offsets from the current viewport center.",
+                "viewport_local_description": "viewport_local (alias viewport_top_left): x/y offsets from the current viewport top-left.",
                 "viewport_bounds_document_axis": [
                     "top_left": topLeft,
                     "top_right": topRight,
@@ -310,17 +320,14 @@ class AgentHTTPServer {
         }
 
         Task { @MainActor [weak self] in
+            let canonicalSpace = self?.canonicalCoordinateSpace(coordinateSpace) ?? "viewport_center_offset"
+            let canvasPos = self?.resolveCanvasPoint(
+                x: x,
+                y: y,
+                coordinateSpace: canonicalSpace,
+                manager: mgr
+            ) ?? mgr.viewportCenter
             let viewport = mgr.viewportCenter
-            let canvasPos: CGPoint
-            switch coordinateSpace {
-            case "canvas_absolute":
-                canvasPos = CGPoint(x: x, y: y)
-            case "document_axis":
-                canvasPos = mgr.canvasPoint(forAxisPoint: CGPoint(x: x, y: y))
-            default:
-                // Place relative to where the user is currently looking
-                canvasPos = CGPoint(x: viewport.x + x, y: viewport.y + y)
-            }
             let size = CGSize(width: w, height: h)
 
             let obj = await mgr.place(html: html, at: canvasPos, size: size, animated: anim)
@@ -328,7 +335,7 @@ class AgentHTTPServer {
             self?.respondJSON(conn, status: 201, body: [
                 "id": obj.id.uuidString,
                 "x": x, "y": y,
-                "coordinate_space_used": coordinateSpace,
+                "coordinate_space_used": canonicalSpace,
                 "width": w, "height": h,
                 "viewport_center": ["x": viewport.x, "y": viewport.y],
                 "canvas_position": ["x": canvasPos.x, "y": canvasPos.y],
@@ -451,6 +458,7 @@ class AgentHTTPServer {
         let w = numericValue(json["width"]) ?? 360
         let h = numericValue(json["height"]) ?? 220
         let animateOnPlace = (json["animate"] as? Bool) ?? true
+        let coordinateSpace = (json["coordinate_space"] as? String ?? "viewport_offset").lowercased()
 
         guard let mgr = objectManager else {
             respondJSON(conn, status: 503, body: ["error": "Canvas not ready — open a document first"])
@@ -459,8 +467,14 @@ class AgentHTTPServer {
 
         Task { @MainActor [weak self] in
             guard let self else { return }
+            let canonicalSpace = self.canonicalCoordinateSpace(coordinateSpace)
+            let canvasPos = self.resolveCanvasPoint(
+                x: x,
+                y: y,
+                coordinateSpace: canonicalSpace,
+                manager: mgr
+            )
             let viewport = mgr.viewportCenter
-            let canvasPos = CGPoint(x: viewport.x + x, y: viewport.y + y)
             let finalTitle = ((title?.isEmpty == false) ? title : nil) ?? "Suggested Widget"
             let finalSummary = ((summary?.isEmpty == false) ? summary : nil) ?? "Agent suggests adding this widget here."
             let suggestion = mgr.addSuggestion(
@@ -478,6 +492,7 @@ class AgentHTTPServer {
                 "summary": suggestion.summary,
                 "x": x,
                 "y": y,
+                "coordinate_space_used": canonicalSpace,
                 "width": w,
                 "height": h,
                 "viewport_center": ["x": viewport.x, "y": viewport.y],
@@ -603,16 +618,13 @@ class AgentHTTPServer {
         ])
 
         Task { @MainActor in
-            let viewport = mgr.viewportCenter
-            let canvasPos: CGPoint
-            switch coordinateSpace {
-            case "canvas_absolute":
-                canvasPos = CGPoint(x: x, y: y)
-            case "document_axis":
-                canvasPos = mgr.canvasPoint(forAxisPoint: CGPoint(x: x, y: y))
-            default:
-                canvasPos = CGPoint(x: viewport.x + x, y: viewport.y + y)
-            }
+            let canonicalSpace = self.canonicalCoordinateSpace(coordinateSpace)
+            let canvasPos = self.resolveCanvasPoint(
+                x: x,
+                y: y,
+                coordinateSpace: canonicalSpace,
+                manager: mgr
+            )
 
             let color: UIColor
             if let hex = colorHex {
@@ -642,6 +654,7 @@ class AgentHTTPServer {
 
         let x = numericValue(json["x"]) ?? 0
         let y = numericValue(json["y"]) ?? 0
+        let coordinateSpace = (json["coordinate_space"] as? String ?? "viewport_offset").lowercased()
 
         guard let mgr = objectManager else {
             respondJSON(conn, status: 503, body: ["error": "Canvas not ready — open a document first"])
@@ -649,8 +662,14 @@ class AgentHTTPServer {
         }
 
         Task { @MainActor [weak self] in
-            let viewport = mgr.viewportCenter
-            let canvasPoint = CGPoint(x: viewport.x + x, y: viewport.y + y)
+            guard let self else { return }
+            let canonicalSpace = self.canonicalCoordinateSpace(coordinateSpace)
+            let canvasPoint = self.resolveCanvasPoint(
+                x: x,
+                y: y,
+                coordinateSpace: canonicalSpace,
+                manager: mgr
+            )
 
             switch action {
             case "appear":
@@ -662,11 +681,16 @@ class AgentHTTPServer {
             case "disappear":
                 mgr.cursorDisappear()
             default:
-                self?.respondJSON(conn, status: 400, body: ["error": "Unknown action: \(action). Use: appear, move, click, disappear"])
+                self.respondJSON(conn, status: 400, body: ["error": "Unknown action: \(action). Use: appear, move, click, disappear"])
                 return
             }
 
-            self?.respondJSON(conn, status: 200, body: ["action": action, "x": x, "y": y])
+            self.respondJSON(conn, status: 200, body: [
+                "action": action,
+                "x": x,
+                "y": y,
+                "coordinate_space_used": canonicalSpace
+            ])
         }
     }
 
@@ -804,7 +828,44 @@ class AgentHTTPServer {
         if let n = val as? NSNumber { return n.doubleValue }
         if let n = val as? Double { return n }
         if let n = val as? Int { return Double(n) }
+        if let s = val as? String, let n = Double(s) { return n }
         return nil
+    }
+
+    private func canonicalCoordinateSpace(_ raw: String) -> String {
+        switch raw.lowercased() {
+        case "canvas_absolute":
+            return "canvas_absolute"
+        case "document_axis":
+            return "document_axis"
+        case "viewport_local", "viewport_top_left", "viewport_topleft":
+            return "viewport_local"
+        case "viewport_offset", "viewport_center_offset", "viewport_center":
+            return "viewport_center_offset"
+        default:
+            return "viewport_center_offset"
+        }
+    }
+
+    @MainActor
+    private func resolveCanvasPoint(
+        x: Double,
+        y: Double,
+        coordinateSpace: String,
+        manager: CanvasObjectManager
+    ) -> CGPoint {
+        switch coordinateSpace {
+        case "canvas_absolute":
+            return CGPoint(x: x, y: y)
+        case "document_axis":
+            return manager.canvasPoint(forAxisPoint: CGPoint(x: x, y: y))
+        case "viewport_local":
+            let viewportRect = manager.viewportCanvasRect()
+            return CGPoint(x: viewportRect.minX + x, y: viewportRect.minY + y)
+        default:
+            let center = manager.viewportCenter
+            return CGPoint(x: center.x + x, y: center.y + y)
+        }
     }
 
     private static func statusText(_ code: Int) -> String {

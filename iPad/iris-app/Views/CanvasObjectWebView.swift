@@ -14,10 +14,6 @@ final class CanvasObjectWebView: UIView, WKNavigationDelegate {
     private let topBar = UIView()
     private let closeButton = UIButton(type: .system)
     private let resizeHandle = UIView()
-    private let topLeftLabel = UILabel()
-    private let topRightLabel = UILabel()
-    private let bottomLeftLabel = UILabel()
-    private let bottomRightLabel = UILabel()
     private var startFrame: CGRect = .zero
     private var zoomScale: CGFloat = 1.0
     private var hasAppliedInitialContentFit = false
@@ -63,10 +59,6 @@ final class CanvasObjectWebView: UIView, WKNavigationDelegate {
         resizeHandle.layer.borderColor = UIColor(white: 0.72, alpha: 1).cgColor
         addSubview(resizeHandle)
 
-        for label in [topLeftLabel, topRightLabel, bottomLeftLabel, bottomRightLabel] {
-            styleCornerLabel(label)
-            addSubview(label)
-        }
 
         let dragPan = UIPanGestureRecognizer(target: self, action: #selector(handleDrag(_:)))
         topBar.addGestureRecognizer(dragPan)
@@ -87,8 +79,6 @@ final class CanvasObjectWebView: UIView, WKNavigationDelegate {
         topBar.frame = CGRect(x: 0, y: 0, width: bounds.width, height: min(34, bounds.height))
         closeButton.frame = CGRect(x: max(6, bounds.width - 28), y: 6, width: 22, height: 22)
         resizeHandle.frame = CGRect(x: max(0, bounds.width - 22), y: max(0, bounds.height - 22), width: 18, height: 18)
-        layoutCornerLabels()
-        updateCornerLabelText()
     }
 
     @objc private func handleCloseTapped() {
@@ -232,36 +222,4 @@ final class CanvasObjectWebView: UIView, WKNavigationDelegate {
         zoomScale = scale
     }
 
-    private func styleCornerLabel(_ label: UILabel) {
-        label.isUserInteractionEnabled = false
-        label.font = UIFont.monospacedSystemFont(ofSize: 9, weight: .semibold)
-        label.textColor = UIColor(white: 0.15, alpha: 0.95)
-        label.backgroundColor = UIColor.white.withAlphaComponent(0.92)
-        label.layer.cornerRadius = 6
-        label.layer.masksToBounds = true
-        label.textAlignment = .center
-    }
-
-    private func layoutCornerLabels() {
-        let labelSize = CGSize(width: 88, height: 18)
-        topLeftLabel.frame = CGRect(x: 6, y: 6, width: labelSize.width, height: labelSize.height)
-        topRightLabel.frame = CGRect(x: max(6, bounds.width - labelSize.width - 32), y: 6, width: labelSize.width, height: labelSize.height)
-        bottomLeftLabel.frame = CGRect(x: 6, y: max(6, bounds.height - labelSize.height - 6), width: labelSize.width, height: labelSize.height)
-        bottomRightLabel.frame = CGRect(x: max(6, bounds.width - labelSize.width - 6), y: max(6, bounds.height - labelSize.height - 6), width: labelSize.width, height: labelSize.height)
-        bringSubviewToFront(closeButton)
-        bringSubviewToFront(resizeHandle)
-    }
-
-    private func updateCornerLabelText() {
-        let center = CanvasState.canvasCenter
-        let tl = CGPoint(x: frame.minX - center.x, y: frame.minY - center.y)
-        let tr = CGPoint(x: frame.maxX - center.x, y: frame.minY - center.y)
-        let bl = CGPoint(x: frame.minX - center.x, y: frame.maxY - center.y)
-        let br = CGPoint(x: frame.maxX - center.x, y: frame.maxY - center.y)
-
-        topLeftLabel.text = "TL \(Int(tl.x)),\(Int(tl.y))"
-        topRightLabel.text = "TR \(Int(tr.x)),\(Int(tr.y))"
-        bottomLeftLabel.text = "BL \(Int(bl.x)),\(Int(bl.y))"
-        bottomRightLabel.text = "BR \(Int(br.x)),\(Int(br.y))"
-    }
 }

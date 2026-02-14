@@ -4,7 +4,14 @@ import math
 import uuid
 from typing import Any
 
-VALID_COORD_SPACES = {"viewport_offset", "canvas_absolute", "document_axis"}
+VALID_COORD_SPACES = {
+    "viewport_offset",
+    "viewport_center_offset",
+    "viewport_local",
+    "viewport_top_left",
+    "canvas_absolute",
+    "document_axis",
+}
 VALID_ANCHORS = {"top_left", "center"}
 
 
@@ -28,6 +35,17 @@ def _safe_int(v: Any, default: int, *, lo: int, hi: int) -> int:
     return i
 
 
+def _normalize_coord_space(raw: Any) -> str:
+    s = str(raw or "viewport_offset").strip().lower()
+    if s in {"viewport_offset", "viewport_center_offset", "viewport_center"}:
+        return "viewport_center_offset"
+    if s in {"viewport_local", "viewport_top_left", "viewport_topleft"}:
+        return "viewport_local"
+    if s in {"canvas_absolute", "document_axis"}:
+        return s
+    return "viewport_center_offset"
+
+
 def _resolve_target(widget: dict[str, Any], fallback_target: str) -> str:
     target = widget.get("target") or widget.get("target_device") or fallback_target
     t = str(target or fallback_target).strip().lower()
@@ -43,9 +61,7 @@ def normalize_widget_specs(raw_widgets: list[Any], *, fallback_target: str) -> l
         if not html:
             continue
 
-        coord_space = str(raw.get("coordinate_space") or "viewport_offset").strip().lower()
-        if coord_space not in VALID_COORD_SPACES:
-            coord_space = "viewport_offset"
+        coord_space = _normalize_coord_space(raw.get("coordinate_space"))
 
         anchor = str(raw.get("anchor") or "top_left").strip().lower()
         if anchor not in VALID_ANCHORS:
@@ -97,4 +113,3 @@ def build_widget_events(normalized_widgets: list[dict[str, Any]]) -> tuple[list[
             },
         })
     return records, events
-
