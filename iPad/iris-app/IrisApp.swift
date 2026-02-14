@@ -2,12 +2,12 @@ import SwiftUI
 
 @main
 struct IrisApp: App {
-    @StateObject private var documentStore = DocumentStore()
+    @StateObject private var canvasState = CanvasState()
 
     var body: some Scene {
         WindowGroup {
             HomeView()
-                .environmentObject(documentStore)
+                .environmentObject(canvasState)
         }
     }
 }

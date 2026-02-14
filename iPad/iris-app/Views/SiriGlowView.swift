@@ -68,10 +68,3 @@ struct SiriGlowView: View {
             .opacity(opacity)
     }
 }
-
-#Preview {
-    ZStack {
-        Color(white: 0.92)
-        SiriGlowView(isActive: true, audioLevel: 0.2)
-    }
-}
