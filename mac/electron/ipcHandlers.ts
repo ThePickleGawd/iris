@@ -288,7 +288,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   }
 
   function requestAgentServer(
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "DELETE",
     path: string,
     body?: unknown,
     timeoutMs: number = AGENT_GET_TIMEOUT_MS
