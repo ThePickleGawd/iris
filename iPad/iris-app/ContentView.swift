@@ -294,7 +294,6 @@ struct ContentView: View {
 
         proactiveRunInFlight = true
         defer { proactiveRunInFlight = false }
-        var uploadedScreenshotID: String?
 
         do {
             let coordinateSnapshot = currentCoordinateSnapshotDict()
@@ -306,7 +305,6 @@ struct ContentView: View {
                 notes: "Proactive monitor capture",
                 coordinateSnapshot: coordinateSnapshot
             )
-            uploadedScreenshotID = screenshotID
             proactiveCapturedIdleCycleID = proactiveIdleCycleID
 
             await AgentClient.registerSession(
@@ -324,7 +322,7 @@ struct ContentView: View {
                 previousDescription: previousDescription
             )
             let suggestionLimit = proactiveTestSingleSuggestionPerScreenshot ? 1 : proactiveMaxSuggestionsPerTick
-            let keepScreenshot = shouldKeepProactiveScreenshot(
+            _ = shouldKeepProactiveScreenshot(
                 descriptionResult.description,
                 previousDescription: previousDescription
             )
@@ -333,9 +331,6 @@ struct ContentView: View {
                 || shouldForceProactiveSuggestion(descriptionResult.description)
 
             if processedProactiveScreenshotIDs.contains(screenshotID) {
-                if !keepScreenshot {
-                    try? await BackendClient.deleteScreenshot(screenshotID: screenshotID, backendURL: backendURL)
-                }
                 return
             }
 
@@ -373,14 +368,14 @@ struct ContentView: View {
             \(forceSuggestionRequired ? "- This task has persisted too long. You must output at least one push_widget suggestion." : "")
             """
 
-            async let triageResponseTask = AgentClient.sendMessage(
+            async let triageResponseTask: AgentResponse? = try? await AgentClient.sendMessage(
                 triagePrompt,
                 model: proactiveTriageModel,
                 chatID: document.id.uuidString,
                 coordinateSnapshot: coordinateSnapshot,
                 serverURL: serverURL
             )
-            async let widgetResponseTask = AgentClient.sendMessage(
+            async let widgetResponseTask: AgentResponse? = try? await AgentClient.sendMessage(
                 widgetPrompt,
                 model: proactiveWidgetModel,
                 chatID: document.id.uuidString,
@@ -389,9 +384,17 @@ struct ContentView: View {
                 serverURL: serverURL
             )
 
-            let (triageResponse, widgetResponse) = try await (triageResponseTask, widgetResponseTask)
+            let triageResponse = await triageResponseTask
+            let widgetResponse = await widgetResponseTask
 
-            var triage = parseProactiveDecision(triageResponse.text) ?? ProactiveDecision(
+            if triageResponse == nil {
+                print("Proactive triage agent call failed; using local fallback suggestions.")
+            }
+            if widgetResponse == nil {
+                print("Proactive widget agent call failed; using fallback suggestion HTML.")
+            }
+
+            var triage = parseProactiveDecision(triageResponse?.text ?? "") ?? ProactiveDecision(
                 shouldSuggest: true,
                 reason: "",
                 suggestions: []
@@ -404,10 +407,6 @@ struct ContentView: View {
                     suggestions: fallback.isEmpty ? triage.suggestions : fallback
                 )
             }
-            if !keepScreenshot {
-                try? await BackendClient.deleteScreenshot(screenshotID: screenshotID, backendURL: backendURL)
-            }
-
             // Every saved proactive screenshot must produce a suggestion.
             // If triage fails to propose one, synthesize from the screenshot description.
             var selected = Array(triage.suggestions.prefix(suggestionLimit))
@@ -439,7 +438,7 @@ struct ContentView: View {
             selected = Array(selected.prefix(suggestionLimit))
             processedProactiveScreenshotIDs.insert(screenshotID)
 
-            let chips = Array(widgetResponse.widgets.prefix(suggestionLimit))
+            let chips = Array((widgetResponse?.widgets ?? []).prefix(suggestionLimit))
             if chips.isEmpty {
                 for meta in selected {
                     let fallbackSize = CGSize(width: 290, height: 150)
@@ -485,9 +484,6 @@ struct ContentView: View {
                 renderedSuggestionSignatures.insert(signature)
             }
         } catch {
-            if let screenshotID = uploadedScreenshotID {
-                try? await BackendClient.deleteScreenshot(screenshotID: screenshotID, backendURL: backendURL)
-            }
             print("Proactive monitor failed: \(error.localizedDescription)")
         }
     }

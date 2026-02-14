@@ -16,6 +16,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from openai import OpenAI
+
 DEFAULT_MODEL = "gpt-5.2"
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-5-20250929"
 DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
@@ -236,6 +238,11 @@ TOOLS = [
                     "widget_id": {
                         "type": "string",
                         "description": "A unique identifier for this widget. Use a descriptive slug.",
+                    },
+                    "target": {
+                        "type": "string",
+                        "enum": ["ipad", "mac", "both"],
+                        "description": "Destination device for this widget. Defaults to 'mac'.",
                     },
                     "width": {
                         "type": "number",
