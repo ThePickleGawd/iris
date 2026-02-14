@@ -22,6 +22,7 @@ export interface ElectronAPI {
   moveWindowRight: () => Promise<void>
   moveWindowUp: () => Promise<void>
   moveWindowDown: () => Promise<void>
+  moveWindowBy: (dx: number, dy: number) => Promise<void>
   toggleWindow: () => Promise<void>
   analyzeAudioFromBase64: (data: string, mimeType: string) => Promise<{ text: string; timestamp: number }>
   analyzeAudioFile: (path: string) => Promise<{ text: string; timestamp: number }>
@@ -49,6 +50,7 @@ export interface ElectronAPI {
   setCurrentSession: (session: { id: string; model: string; name: string } | null) => Promise<{ success: boolean }>
   createSession: (params: { id: string; name: string; model: string }) => Promise<any>
   getSessionMessages: (sessionId: string, since?: string) => Promise<{ items: any[]; count: number }>
+  deleteSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>
   onSessionMessagesUpdate: (callback: (data: { sessionId: string; messages: any[] }) => void) => () => void
   getNetworkInfo: () => Promise<{ macIp: string; allIps: string[]; hostname: string; connectedDevices: any[] }>
   connectIpad: (host: string, port?: number) => Promise<{ success: boolean; error?: string }>

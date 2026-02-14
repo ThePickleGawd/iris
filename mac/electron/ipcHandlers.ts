@@ -391,6 +391,24 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   })
 
+  ipcMain.handle("delete-session", async (_, sessionId: string) => {
+    try {
+      await requestAgentServer("DELETE", `/sessions/${sessionId}`, undefined, AGENT_POST_TIMEOUT_MS)
+      if (currentSession?.id === sessionId) {
+        currentSession = null
+        lastMessageTimestamp = null
+        if (messagePollerInterval) {
+          clearInterval(messagePollerInterval)
+          messagePollerInterval = null
+        }
+      }
+      return { success: true }
+    } catch (error: any) {
+      console.error("Failed to delete session:", error)
+      return { success: false, error: error.message }
+    }
+  })
+
   ipcMain.handle("get-session-messages", async (_, sessionId: string, since?: string) => {
     try {
       const qs = since ? `?since=${encodeURIComponent(since)}&limit=200` : "?limit=200"
@@ -452,6 +470,10 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   ipcMain.handle("move-window-down", async () => {
     appState.moveWindowDown()
+  })
+
+  ipcMain.handle("move-window-by", async (_, dx: number, dy: number) => {
+    appState.moveWindowBy(dx, dy)
   })
 
   ipcMain.handle("center-and-show-window", async () => {

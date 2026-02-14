@@ -202,6 +202,9 @@ export class AppState {
   public moveWindowUp(): void {
     this.windowHelper.moveWindowUp()
   }
+  public moveWindowBy(dx: number, dy: number): void {
+    this.windowHelper.moveWindowBy(dx, dy)
+  }
 
   public centerAndShowWindow(): void {
     this.windowHelper.centerAndShowWindow()

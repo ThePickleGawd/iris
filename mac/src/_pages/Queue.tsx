@@ -77,6 +77,15 @@ const Queue: React.FC = () => {
   const messageListRef = useRef<HTMLDivElement>(null)
   const chatInputRef = useRef<HTMLInputElement>(null)
   const activeStreamRequestRef = useRef<string | null>(null)
+  const sessionToggleDragRef = useRef<{
+    moved: boolean
+    startX: number
+    startY: number
+    lastX: number
+    lastY: number
+    moveHandler: (event: MouseEvent) => void
+    upHandler: () => void
+  } | null>(null)
 
   const showToast = (title: string, description: string, variant: ToastVariant) => {
     setToastMessage({ title, description, variant })
@@ -116,7 +125,22 @@ const Queue: React.FC = () => {
   const refreshSessions = useCallback(async () => {
     try {
       const data = await window.electronAPI.getSessions()
-      setSessions((data?.items || []) as SessionInfo[])
+      const items = (data?.items || []) as SessionInfo[]
+      setSessions(items)
+
+      // Auto-select the most recently updated session if none is selected
+      setCurrentSession((prev) => {
+        if (prev) return prev
+        if (items.length === 0) return null
+        const sorted = [...items].sort((a, b) => {
+          const ta = (a as any).updated_at || (a as any).created_at || ""
+          const tb = (b as any).updated_at || (b as any).created_at || ""
+          return tb.localeCompare(ta)
+        })
+        const best = sorted[0]
+        window.electronAPI.setCurrentSession({ id: best.id, model: best.model, name: best.name }).catch(() => {})
+        return { id: best.id, model: best.model, name: best.name }
+      })
     } catch {
       // Session API unavailable is non-fatal.
     }
@@ -145,7 +169,7 @@ const Queue: React.FC = () => {
   }, [])
 
   const handleNewChat = useCallback(async (model = "gpt-5.2") => {
-    const id = `mac-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    const id = crypto.randomUUID().toUpperCase()
     const name = `Chat ${new Date().toLocaleTimeString()}`
 
     try {
@@ -170,6 +194,102 @@ const Queue: React.FC = () => {
     setShowSessionDrawer(false)
     await handleSelectSession(session)
   }, [handleSelectSession])
+
+  const handleDeleteSession = useCallback(async (e: React.MouseEvent, sessionId: string) => {
+    e.stopPropagation()
+    try {
+      await window.electronAPI.deleteSession(sessionId)
+      if (currentSession?.id === sessionId) {
+        setCurrentSession(null)
+        setChatMessages([])
+      }
+      await refreshSessions()
+    } catch {
+      // non-fatal
+    }
+  }, [currentSession, refreshSessions])
+
+  const clearSessionToggleDrag = useCallback(() => {
+    const drag = sessionToggleDragRef.current
+    if (!drag) return
+    window.removeEventListener("mousemove", drag.moveHandler)
+    window.removeEventListener("mouseup", drag.upHandler)
+    sessionToggleDragRef.current = null
+  }, [])
+
+  const startWindowDragOrAction = useCallback((
+    event: React.MouseEvent<HTMLElement>,
+    onClickWithoutDrag: () => void
+  ) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+
+    const drag = {
+      moved: false,
+      startX: event.screenX,
+      startY: event.screenY,
+      lastX: event.screenX,
+      lastY: event.screenY,
+      moveHandler: (_moveEvent: MouseEvent) => {},
+      upHandler: () => {}
+    }
+
+    drag.moveHandler = (moveEvent: MouseEvent) => {
+      const active = sessionToggleDragRef.current
+      if (!active) return
+
+      const dx = moveEvent.screenX - active.lastX
+      const dy = moveEvent.screenY - active.lastY
+      if (dx === 0 && dy === 0) return
+
+      active.lastX = moveEvent.screenX
+      active.lastY = moveEvent.screenY
+
+      const movedDistance = Math.abs(moveEvent.screenX - active.startX) + Math.abs(moveEvent.screenY - active.startY)
+      if (movedDistance >= 2) {
+        active.moved = true
+      }
+
+      if (active.moved) {
+        window.electronAPI.moveWindowBy(dx, dy).catch(() => {})
+      }
+    }
+
+    drag.upHandler = () => {
+      const active = sessionToggleDragRef.current
+      clearSessionToggleDrag()
+      if (!active?.moved) {
+        onClickWithoutDrag()
+      }
+    }
+
+    clearSessionToggleDrag()
+    sessionToggleDragRef.current = drag
+    window.addEventListener("mousemove", drag.moveHandler)
+    window.addEventListener("mouseup", drag.upHandler, { once: true })
+  }, [clearSessionToggleDrag])
+
+  const handleSessionToggleMouseDown = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    startWindowDragOrAction(event, () => setShowSessionDrawer((v) => !v))
+  }, [startWindowDragOrAction])
+
+  const handleCollapsedExpandMouseDown = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    startWindowDragOrAction(event, () => setIsExpanded(true))
+  }, [startWindowDragOrAction])
+
+  const handleCollapsedExpandKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault()
+      setIsExpanded(true)
+    }
+  }, [])
+
+  const handleSessionToggleKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault()
+      setShowSessionDrawer((v) => !v)
+    }
+  }, [])
 
   const sortedSessions = useMemo(() => {
     return [...sessions].sort((a, b) => {
@@ -283,6 +403,27 @@ const Queue: React.FC = () => {
     return () => clearInterval(interval)
   }, [refreshSessions])
 
+  // Load messages when auto-selected session changes and chat is empty
+  useEffect(() => {
+    if (!currentSession || chatMessages.length > 0) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const data = await window.electronAPI.getSessionMessages(currentSession.id)
+        if (cancelled) return
+        const msgs = (data?.items || []).map((m: any) => ({
+          role: m.role as "user" | "assistant",
+          text: m.content,
+          _id: m.id
+        }))
+        if (msgs.length > 0) setChatMessages(msgs)
+      } catch {
+        // non-fatal
+      }
+    })()
+    return () => { cancelled = true }
+  }, [currentSession?.id])  // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     const cleanup = window.electronAPI.onSessionMessagesUpdate((data: { sessionId: string; messages: any[] }) => {
       if (!currentSession || data.sessionId !== currentSession.id) return
@@ -309,6 +450,10 @@ const Queue: React.FC = () => {
     if (!messageListRef.current) return
     messageListRef.current.scrollTop = messageListRef.current.scrollHeight
   }, [chatMessages, chatLoading])
+
+  useEffect(() => {
+    return () => clearSessionToggleDrag()
+  }, [clearSessionToggleDrag])
 
   useEffect(() => {
     const updateDimensions = () => {
@@ -372,7 +517,8 @@ const Queue: React.FC = () => {
           <button
             type="button"
             className="iris-toggle interactive"
-            onClick={() => setIsExpanded(true)}
+            onMouseDown={handleCollapsedExpandMouseDown}
+            onKeyDown={handleCollapsedExpandKeyDown}
             aria-label="Expand"
           >
             <ChevronDown size={13} />
@@ -393,8 +539,10 @@ const Queue: React.FC = () => {
             <button
               type="button"
               className={`iris-session-toggle interactive ${showSessionDrawer ? "active" : ""}`}
-              onClick={() => setShowSessionDrawer((v) => !v)}
+              onMouseDown={handleSessionToggleMouseDown}
+              onKeyDown={handleSessionToggleKeyDown}
               title="Browse sessions"
+              aria-label="Browse sessions"
             >
               <MessageSquare size={10} />
               <span className="iris-session-toggle-label">
@@ -441,6 +589,14 @@ const Queue: React.FC = () => {
                             {formatRelativeTime(ts)}
                           </span>
                         )}
+                        <button
+                          type="button"
+                          className="iris-session-row-delete"
+                          onClick={(e) => handleDeleteSession(e, s.id)}
+                          aria-label="Delete session"
+                        >
+                          <X size={10} />
+                        </button>
                       </button>
                     )
                   })

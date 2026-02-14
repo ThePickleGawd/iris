@@ -172,6 +172,8 @@ private struct AgentPickerOverlay: View {
                             )
                             isPresented = false
                             onCreated(doc)
+                            // Register on backend immediately so other devices see it
+                            registerSessionOnBackend(doc)
                         } label: {
                             HStack(spacing: 12) {
                                 ZStack {
@@ -231,6 +233,19 @@ private struct AgentPickerOverlay: View {
             )
             .shadow(color: Color.black.opacity(0.3), radius: 22, x: 0, y: 12)
             .padding(24)
+        }
+    }
+
+    private func registerSessionOnBackend(_ doc: Document) {
+        guard let urlStr = UserDefaults.standard.string(forKey: "iris_agent_server_url"),
+              let serverURL = URL(string: urlStr) else { return }
+        Task {
+            await AgentClient.registerSession(
+                id: doc.id.uuidString,
+                name: doc.name.isEmpty ? "Untitled" : doc.name,
+                model: doc.resolvedModel,
+                serverURL: serverURL
+            )
         }
     }
 

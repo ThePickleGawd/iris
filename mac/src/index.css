@@ -614,7 +614,7 @@ body {
   color: var(--text-dim);
 }
 
-/* ─── Session Toggle (header button) ─── */
+/* ─── Session Toggle (header control) ─── */
 
 .iris-session-toggle {
   display: inline-flex;
@@ -630,7 +630,7 @@ body {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.03em;
-  cursor: pointer;
+  cursor: grab;
   transition: all 150ms ease;
   text-align: left;
 }
@@ -802,6 +802,31 @@ body {
   color: var(--text-ghost);
   letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
+}
+
+.iris-session-row-delete {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--r-sm);
+  border: none;
+  background: transparent;
+  color: var(--text-ghost);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 120ms ease;
+}
+
+.iris-session-row:hover .iris-session-row-delete {
+  opacity: 1;
+}
+
+.iris-session-row-delete:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
 }
 
 /* ─── Electron Window Drag ─── */

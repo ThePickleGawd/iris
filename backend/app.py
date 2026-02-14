@@ -1,4 +1,4 @@
-"""Iris backend — sessions, messages, screenshots, agent, devices."""
+"""Iris backend — single-JSON-per-session storage."""
 from __future__ import annotations
 
 import json
@@ -19,10 +19,10 @@ import agent as agent_module
 # ---------------------------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
-STORE_DIR = DATA_DIR / "store"
+SESSIONS_DIR = DATA_DIR / "sessions"
 SCREENSHOTS_DIR = DATA_DIR / "screenshots"
 
-for d in [STORE_DIR / "sessions", STORE_DIR / "messages", SCREENSHOTS_DIR]:
+for d in [SESSIONS_DIR, SCREENSHOTS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
@@ -31,39 +31,40 @@ for d in [STORE_DIR / "sessions", STORE_DIR / "messages", SCREENSHOTS_DIR]:
 device_registry: dict[str, dict] = {}
 
 # ---------------------------------------------------------------------------
-# JSON file storage helpers
+# Session storage — one JSON file per session
+#
+# Each file: {
+#   "id", "name", "model", "created_at", "updated_at",
+#   "messages": [{"id", "role", "content", "created_at", "device_id"}, ...]
+# }
 # ---------------------------------------------------------------------------
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _entity_path(entity: str, item_id: str) -> Path:
-    return STORE_DIR / entity / f"{item_id}.json"
+def _session_path(session_id: str) -> Path:
+    return SESSIONS_DIR / f"{session_id}.json"
 
 
-def _read(entity: str, item_id: str) -> dict | None:
+def _load_session(session_id: str) -> dict | None:
     try:
-        data = json.loads(_entity_path(entity, item_id).read_text())
+        data = json.loads(_session_path(session_id).read_text())
         return data if isinstance(data, dict) else None
     except (FileNotFoundError, json.JSONDecodeError):
         return None
 
 
-def _save(entity: str, row: dict) -> None:
-    path = _entity_path(entity, row["id"])
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _save_session(session: dict) -> None:
+    path = _session_path(session["id"])
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
+    tmp.write_text(json.dumps(session, ensure_ascii=False, indent=2))
     tmp.replace(path)
 
 
-def _list(entity: str) -> list[dict]:
+def _list_sessions() -> list[dict]:
     rows = []
-    entity_dir = STORE_DIR / entity
-    if not entity_dir.exists():
-        return rows
-    for p in entity_dir.glob("*.json"):
+    for p in SESSIONS_DIR.glob("*.json"):
         try:
             data = json.loads(p.read_text())
             if isinstance(data, dict):
@@ -73,12 +74,72 @@ def _list(entity: str) -> list[dict]:
     return rows
 
 
-def _delete(entity: str, item_id: str) -> bool:
+def _delete_session(session_id: str) -> bool:
     try:
-        _entity_path(entity, item_id).unlink()
+        _session_path(session_id).unlink()
         return True
     except FileNotFoundError:
         return False
+
+
+def _make_session(session_id: str, name: str = "Untitled", model: str = "gpt-5.2") -> dict:
+    ts = _now()
+    return {
+        "id": session_id,
+        "name": name,
+        "model": model,
+        "created_at": ts,
+        "updated_at": ts,
+        "messages": [],
+    }
+
+
+def _session_summary(session: dict) -> dict:
+    """Return session metadata without the full messages array (for listings)."""
+    return {
+        "id": session["id"],
+        "name": session.get("name", "Untitled"),
+        "model": session.get("model", "gpt-5.2"),
+        "created_at": session.get("created_at", ""),
+        "updated_at": session.get("updated_at", ""),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Screenshot storage helpers (kept simple — separate files)
+# ---------------------------------------------------------------------------
+SCREENSHOTS_META_DIR = DATA_DIR / "screenshot_meta"
+SCREENSHOTS_META_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _screenshot_meta_path(screenshot_id: str) -> Path:
+    return SCREENSHOTS_META_DIR / f"{screenshot_id}.json"
+
+
+def _load_screenshot(screenshot_id: str) -> dict | None:
+    try:
+        return json.loads(_screenshot_meta_path(screenshot_id).read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def _save_screenshot(row: dict) -> None:
+    path = _screenshot_meta_path(row["id"])
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(row, ensure_ascii=False))
+    tmp.replace(path)
+
+
+def _list_screenshots() -> list[dict]:
+    rows = []
+    for p in SCREENSHOTS_META_DIR.glob("*.json"):
+        try:
+            data = json.loads(p.read_text())
+            if isinstance(data, dict):
+                rows.append(data)
+        except (json.JSONDecodeError, OSError):
+            continue
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +174,7 @@ def health() -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Sessions (served at /api/sessions and /sessions for client compat)
+# Sessions
 # ---------------------------------------------------------------------------
 
 @app.post("/api/sessions")
@@ -124,35 +185,26 @@ def create_session() -> Any:
     model = (body.get("model") or body.get("agent") or "gpt-5.2").strip()
     name = (body.get("name") or "Untitled").strip()
 
-    existing = _read("sessions", session_id)
+    existing = _load_session(session_id)
     if existing:
         existing["updated_at"] = _now()
         if body.get("name"):
             existing["name"] = name
         if body.get("model") or body.get("agent"):
             existing["model"] = model
-        _save("sessions", existing)
-        return jsonify(existing), 201
+        _save_session(existing)
+        return jsonify(_session_summary(existing)), 201
 
-    ts = _now()
-    row = {
-        "id": session_id,
-        "created_at": ts,
-        "updated_at": ts,
-        "name": name,
-        "model": model,
-        "status": "active",
-        "last_message_at": None,
-    }
-    _save("sessions", row)
-    return jsonify(row), 201
+    session = _make_session(session_id, name, model)
+    _save_session(session)
+    return jsonify(_session_summary(session)), 201
 
 
 @app.get("/api/sessions")
 @app.get("/sessions")
 def list_sessions() -> Any:
     limit = min(int(request.args.get("limit", 50)), 200)
-    rows = _list("sessions")
+    rows = [_session_summary(s) for s in _list_sessions()]
     rows.sort(key=lambda r: r.get("updated_at", ""), reverse=True)
     return jsonify({"items": rows[:limit], "count": min(len(rows), limit)})
 
@@ -160,26 +212,23 @@ def list_sessions() -> Any:
 @app.get("/api/sessions/<session_id>")
 @app.get("/sessions/<session_id>")
 def get_session(session_id: str) -> Any:
-    row = _read("sessions", session_id)
-    if not row:
+    session = _load_session(session_id)
+    if not session:
         return jsonify({"error": "session not found"}), 404
-    return jsonify(row)
+    return jsonify(session)
 
 
 @app.delete("/api/sessions/<session_id>")
 @app.delete("/sessions/<session_id>")
 def delete_session(session_id: str) -> Any:
-    if not _read("sessions", session_id):
+    if not _load_session(session_id):
         return jsonify({"error": "session not found"}), 404
-    for msg in _list("messages"):
-        if msg.get("session_id") == session_id:
-            _delete("messages", msg["id"])
-    _delete("sessions", session_id)
+    _delete_session(session_id)
     return jsonify({"id": session_id, "deleted": True})
 
 
 # ---------------------------------------------------------------------------
-# Messages
+# Messages (read/write from the session's messages array)
 # ---------------------------------------------------------------------------
 
 @app.post("/api/sessions/<session_id>/messages")
@@ -193,38 +242,29 @@ def create_message(session_id: str) -> Any:
     if not isinstance(content, str) or not content.strip():
         return jsonify({"error": "content is required"}), 400
 
-    msg_id = body.get("id") or str(uuid.uuid4())
-    existing = _read("messages", msg_id)
-    if existing:
-        return jsonify(existing), 201
+    session = _load_session(session_id)
+    if not session:
+        session = _make_session(session_id)
 
-    # Auto-create session if needed
-    if not _read("sessions", session_id):
-        ts = _now()
-        _save("sessions", {
-            "id": session_id, "created_at": ts, "updated_at": ts,
-            "name": "Untitled", "model": "gpt-5.2", "status": "active",
-            "last_message_at": None,
-        })
+    msg_id = body.get("id") or str(uuid.uuid4())
+
+    # Dedup by id
+    if any(m.get("id") == msg_id for m in session.get("messages", [])):
+        existing_msg = next(m for m in session["messages"] if m.get("id") == msg_id)
+        return jsonify(existing_msg), 201
 
     ts = _now()
-    row = {
+    msg = {
         "id": msg_id,
-        "session_id": session_id,
-        "created_at": ts,
         "role": role,
         "content": content.strip(),
+        "created_at": ts,
         "device_id": body.get("device_id"),
     }
-    _save("messages", row)
-
-    session = _read("sessions", session_id)
-    if session:
-        session["last_message_at"] = ts
-        session["updated_at"] = ts
-        _save("sessions", session)
-
-    return jsonify(row), 201
+    session.setdefault("messages", []).append(msg)
+    session["updated_at"] = ts
+    _save_session(session)
+    return jsonify(msg), 201
 
 
 @app.get("/api/sessions/<session_id>/messages")
@@ -232,11 +272,16 @@ def create_message(session_id: str) -> Any:
 def list_messages(session_id: str) -> Any:
     limit = min(int(request.args.get("limit", 200)), 200)
     since = request.args.get("since")
-    rows = [m for m in _list("messages") if m.get("session_id") == session_id]
+
+    session = _load_session(session_id)
+    if not session:
+        return jsonify({"items": [], "count": 0})
+
+    msgs = session.get("messages", [])
     if since:
-        rows = [m for m in rows if m.get("created_at", "") > since]
-    rows.sort(key=lambda m: m.get("created_at", ""))
-    return jsonify({"items": rows[:limit], "count": min(len(rows), limit)})
+        msgs = [m for m in msgs if m.get("created_at", "") > since]
+
+    return jsonify({"items": msgs[:limit], "count": min(len(msgs), limit)})
 
 
 # ---------------------------------------------------------------------------
@@ -278,16 +323,16 @@ def upload_screenshot() -> Any:
         "file_path": str(file_path),
         "notes": notes,
     }
-    _save("screenshots", row)
+    _save_screenshot(row)
     return jsonify(row), 201
 
 
 @app.get("/api/screenshots")
-def list_screenshots() -> Any:
+def list_screenshots_endpoint() -> Any:
     limit = min(int(request.args.get("limit", 50)), 200)
     device_id = request.args.get("device_id")
     session_id = (request.args.get("session_id") or "").strip() or None
-    rows = _list("screenshots")
+    rows = _list_screenshots()
     if device_id:
         rows = [r for r in rows if r.get("device_id") == device_id]
     if session_id:
@@ -298,7 +343,7 @@ def list_screenshots() -> Any:
 
 @app.get("/api/screenshots/<screenshot_id>")
 def get_screenshot(screenshot_id: str) -> Any:
-    row = _read("screenshots", screenshot_id)
+    row = _load_screenshot(screenshot_id)
     if not row:
         return jsonify({"error": "not found"}), 404
     return jsonify(row)
@@ -306,7 +351,7 @@ def get_screenshot(screenshot_id: str) -> Any:
 
 @app.get("/api/screenshots/<screenshot_id>/file")
 def get_screenshot_file(screenshot_id: str) -> Any:
-    row = _read("screenshots", screenshot_id)
+    row = _load_screenshot(screenshot_id)
     if not row:
         return jsonify({"error": "not found"}), 404
     fp = Path(row.get("file_path", ""))
@@ -317,13 +362,22 @@ def get_screenshot_file(screenshot_id: str) -> Any:
 
 @app.delete("/api/screenshots/<screenshot_id>")
 def delete_screenshot(screenshot_id: str) -> Any:
-    row = _read("screenshots", screenshot_id)
+    row = _load_screenshot(screenshot_id)
     if not row:
         return jsonify({"error": "not found"}), 404
-    _delete("screenshots", screenshot_id)
+    _screenshot_meta_path(screenshot_id).unlink(missing_ok=True)
     fp = Path(row.get("file_path", ""))
     fp.unlink(missing_ok=True)
     return jsonify({"id": screenshot_id, "deleted": True})
+
+
+# ---------------------------------------------------------------------------
+# Transcripts (no-op — iPad sends these, we just accept and discard)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/transcripts")
+def ingest_transcript() -> Any:
+    return jsonify({"ok": True}), 201
 
 
 # ---------------------------------------------------------------------------
@@ -400,21 +454,14 @@ def v1_agent() -> Any:
 
     model = (body.get("model") or "").strip() or "gpt-5.2"
     device = body.get("device") or {}
-    device_platform = (device.get("platform") or "").lower()
 
-    # Ensure session exists
-    if not _read("sessions", session_id):
-        ts = _now()
-        _save("sessions", {
-            "id": session_id, "created_at": ts, "updated_at": ts,
-            "name": session_id, "model": model, "status": "active",
-            "last_message_at": None,
-        })
+    # Load or create session
+    session = _load_session(session_id)
+    if not session:
+        session = _make_session(session_id, session_id, model)
 
-    # Load message history
-    all_msgs = [m for m in _list("messages") if m.get("session_id") == session_id]
-    all_msgs.sort(key=lambda m: m.get("created_at", ""))
-    context = [{"role": m["role"], "content": m["content"]} for m in all_msgs]
+    # Build context from session messages
+    context = [{"role": m["role"], "content": m["content"]} for m in session.get("messages", [])]
 
     # If empty and caller sent context, seed from it
     if not context:
@@ -425,44 +472,36 @@ def v1_agent() -> Any:
             if role in ("user", "assistant") and text:
                 context.append({"role": role, "content": text})
 
-    # Save user message
+    # Append user message
     ts = _now()
-    _save("messages", {
+    session.setdefault("messages", []).append({
         "id": str(uuid.uuid4()),
-        "session_id": session_id,
-        "created_at": ts,
         "role": "user",
         "content": message,
+        "created_at": ts,
         "device_id": device.get("id"),
     })
 
     # Call agent
     result = agent_module.run(context, message, model=model)
 
-    # Save assistant response
+    # Append assistant response
     ts = _now()
-    _save("messages", {
+    session["messages"].append({
         "id": str(uuid.uuid4()),
-        "session_id": session_id,
-        "created_at": ts,
         "role": "assistant",
         "content": result["text"],
+        "created_at": ts,
         "device_id": None,
     })
 
-    # Update session
-    session = _read("sessions", session_id)
-    if session:
-        session["updated_at"] = ts
-        session["last_message_at"] = ts
-        _save("sessions", session)
+    session["updated_at"] = ts
+    _save_session(session)
 
     # Build widget events + deliver
     events: list[dict] = []
     for w in result.get("widgets", []):
-        # Always try iPad delivery if any iPad is registered
         _deliver_widget_to_ipad(w)
-
         events.append({
             "kind": "widget.open",
             "widget": {

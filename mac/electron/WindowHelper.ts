@@ -344,4 +344,18 @@ export class WindowHelper {
       Math.round(this.currentY)
     )
   }
+
+  public moveWindowBy(dx: number, dy: number): void {
+    if (!this.mainWindow) return
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return
+
+    const bounds = this.mainWindow.getBounds()
+    const nextX = Math.round(bounds.x + dx)
+    const nextY = Math.round(bounds.y + dy)
+    this.mainWindow.setPosition(nextX, nextY)
+
+    this.windowPosition = { x: nextX, y: nextY }
+    this.currentX = nextX
+    this.currentY = nextY
+  }
 }
