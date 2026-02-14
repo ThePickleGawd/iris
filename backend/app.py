@@ -343,6 +343,14 @@ def agent_status_to_dict(row: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def make_agent_chat_text(headline: Any, detail: Any) -> str:
+    head = headline.strip() if isinstance(headline, str) else ""
+    det = detail.strip() if isinstance(detail, str) else ""
+    if head and det:
+        return f"{head}\n{det}"
+    return head or det
+
+
 def parse_status_list(raw_statuses: str | None, default_statuses: set[str]) -> list[str]:
     if raw_statuses is None or not raw_statuses.strip():
         return sorted(default_statuses)
@@ -960,6 +968,89 @@ def create_app() -> Flask:
             "pending_by_device": pending_devices,
             "recent_inputs": recent_inputs,
             "server_ts": now_iso(),
+        })
+
+    @app.get("/api/agent-chat")
+    def list_agent_chat() -> Any:
+        try:
+            limit = parse_list_limit(request.args.get("limit"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        try:
+            cursor_ts, cursor_id = parse_paging_cursor(request.args.get("cursor"), request.args.get("since"))
+        except ValueError:
+            return jsonify({"error": "cursor/since must be a valid value"}), 400
+
+        session_id = (request.args.get("session_id") or "").strip() or None
+
+        entries: list[dict[str, Any]] = []
+
+        for row in list_records("transcripts"):
+            if session_id is not None and row.get("session_id") != session_id:
+                continue
+            sort_ts = row.get("captured_at") or row.get("created_at") or now_iso()
+            item_id = str(row.get("id", ""))
+            if not cursor_allows(sort_ts, item_id, cursor_ts, cursor_id):
+                continue
+            text = row.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            entries.append({
+                "id": row.get("id"),
+                "entry_type": "transcript",
+                "role": "user",
+                "event_ts": sort_ts,
+                "created_at": row.get("created_at"),
+                "updated_at": row.get("updated_at"),
+                "session_id": row.get("session_id"),
+                "source_device_id": row.get("device_id"),
+                "source": row.get("source"),
+                "text": text.strip(),
+            })
+
+        for row in list_records("agent_status"):
+            if session_id is not None and row.get("session_id") != session_id:
+                continue
+            sort_ts = row.get("updated_at") or row.get("created_at") or now_iso()
+            item_id = str(row.get("id", ""))
+            if not cursor_allows(sort_ts, item_id, cursor_ts, cursor_id):
+                continue
+            text = make_agent_chat_text(row.get("headline"), row.get("detail"))
+            if not text:
+                continue
+            entries.append({
+                "id": row.get("id"),
+                "entry_type": "agent_status",
+                "role": "assistant",
+                "event_ts": sort_ts,
+                "created_at": row.get("created_at"),
+                "updated_at": row.get("updated_at"),
+                "session_id": row.get("session_id"),
+                "source_device_id": row.get("source_device_id"),
+                "source": "agent",
+                "text": text,
+            })
+
+        entries.sort(
+            key=lambda row: (
+                to_dt(row.get("event_ts")),
+                to_dt(row.get("created_at")),
+                str(row.get("id", "")),
+            )
+        )
+        if cursor_ts is None:
+            entries = entries[-limit:]
+        else:
+            entries = entries[:limit]
+
+        next_since = entries[-1]["event_ts"] if entries else cursor_ts
+        next_cursor = make_cursor(next_since, str(entries[-1]["id"])) if entries and next_since else None
+        return jsonify({
+            "items": entries,
+            "count": len(entries),
+            "next_since": next_since,
+            "next_cursor": next_cursor,
         })
 
     @app.get("/api/events")
