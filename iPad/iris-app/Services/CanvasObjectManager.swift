@@ -140,4 +140,21 @@ class CanvasObjectManager: ObservableObject {
         let y = (canvasPoint.y - scrollView.contentOffset.y) * scrollView.zoomScale
         return CGPoint(x: x, y: y)
     }
+
+    /// Captures the currently visible canvas viewport as PNG data.
+    func captureViewportPNGData() -> Data? {
+        guard let canvasView, canvasView.bounds.width > 0, canvasView.bounds.height > 0 else {
+            return nil
+        }
+
+        let format = UIGraphicsImageRendererFormat.default()
+        format.opaque = true
+        format.scale = UIScreen.main.scale
+
+        let renderer = UIGraphicsImageRenderer(size: canvasView.bounds.size, format: format)
+        let image = renderer.image { _ in
+            canvasView.drawHierarchy(in: canvasView.bounds, afterScreenUpdates: false)
+        }
+        return image.pngData()
+    }
 }

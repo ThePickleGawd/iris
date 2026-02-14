@@ -31,3 +31,6 @@ agents/tools/__pycache__/
 iPhone/.DerivedData/
 iPhone/**/*.xcuserdatad/
 iPhone/**/*.xcworkspace/xcuserdata/
+
+# iPad app - local Xcode artifacts
+iPad/.derived

@@ -12,6 +12,8 @@ struct ContentView: View {
 
     @State private var isProcessing = false
     @State private var lastResponse: String?
+    @State private var showingTextComposer = false
+    @State private var textPrompt = ""
 
     var body: some View {
         GeometryReader { geo in
@@ -24,6 +26,7 @@ struct ContentView: View {
                 ToolbarView(
                     onBack: onBack,
                     onAITap: { canvasState.isRecording.toggle() },
+                    onAITextTap: { showingTextComposer = true },
                     isRecording: canvasState.isRecording
                 )
                 .environmentObject(canvasState)
@@ -59,6 +62,9 @@ struct ContentView: View {
         .onAppear {
             SpeechTranscriber.requestAuthorization { _ in }
         }
+        .sheet(isPresented: $showingTextComposer) {
+            textPromptSheet
+        }
     }
 
     // MARK: - Recording Flow
@@ -77,7 +83,18 @@ struct ContentView: View {
         let transcript = transcriber.stopTranscribing()
 
         guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        sendPromptToAgent(transcript, sourceLabel: "Voice command")
+    }
 
+    private func sendTextPrompt() {
+        let trimmed = textPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        textPrompt = ""
+        showingTextComposer = false
+        sendPromptToAgent(trimmed, sourceLabel: "Text prompt")
+    }
+
+    private func sendPromptToAgent(_ prompt: String, sourceLabel: String) {
         guard let serverURL = objectManager.httpServer.agentServerURL() else {
             withAnimation { lastResponse = "No linked Mac found — open the iris Mac app first." }
             autoDismissResponse()
@@ -88,8 +105,27 @@ struct ContentView: View {
 
         Task {
             do {
+                var screenshotPrompt = prompt
+                if document.agent == "iris",
+                   let backendURL = objectManager.httpServer.backendServerURL() {
+                    let screenshotID = try? await uploadCurrentCanvasScreenshot(
+                        notesContext: "\(sourceLabel): \(prompt.prefix(180))",
+                        backendURL: backendURL
+                    )
+                    if let screenshotID, !screenshotID.isEmpty {
+                        screenshotPrompt = """
+                        User \(sourceLabel.lowercased()):
+                        \(prompt)
+
+                        I uploaded a fresh iPad canvas screenshot to backend with device_id \"ipad\" and screenshot id \(screenshotID).
+                        First call read_screenshot for device \"ipad\" to inspect the drawing.
+                        Then create and push iPad widgets that match the drawing's intended system architecture flow.
+                        """
+                    }
+                }
+
                 let response = try await AgentClient.sendMessage(
-                    transcript,
+                    screenshotPrompt,
                     agent: document.agent,
                     chatID: document.id.uuidString,
                     serverURL: serverURL
@@ -107,6 +143,23 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    @MainActor
+    private func uploadCurrentCanvasScreenshot(
+        notesContext: String,
+        backendURL: URL
+    ) async throws -> String? {
+        guard let pngData = objectManager.captureViewportPNGData() else {
+            return nil
+        }
+
+        return try await BackendClient.uploadScreenshot(
+            pngData: pngData,
+            deviceID: "ipad",
+            backendURL: backendURL,
+            notes: notesContext
+        )
     }
 
     private func autoDismissResponse() {
@@ -164,6 +217,42 @@ struct ContentView: View {
             )
             .padding(.bottom, 40)
         }
+    }
+
+    private var textPromptSheet: some View {
+        NavigationStack {
+            VStack(spacing: 12) {
+                Text("Send a text prompt to Iris")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                TextEditor(text: $textPrompt)
+                    .font(.system(size: 15))
+                    .foregroundColor(.white)
+                    .scrollContentBackground(.hidden)
+                    .background(Color(white: 0.14))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .frame(minHeight: 140)
+            }
+            .padding(16)
+            .background(Color(red: 0.08, green: 0.08, blue: 0.1).ignoresSafeArea())
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") {
+                        showingTextComposer = false
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Send") {
+                        sendTextPrompt()
+                    }
+                    .disabled(textPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .toolbarColorScheme(.dark, for: .navigationBar)
+        }
+        .preferredColorScheme(.dark)
     }
 }
 

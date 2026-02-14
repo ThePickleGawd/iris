@@ -5,6 +5,7 @@ struct ToolbarView: View {
     @EnvironmentObject var canvasState: CanvasState
     var onBack: (() -> Void)?
     var onAITap: (() -> Void)?
+    var onAITextTap: (() -> Void)?
     var isRecording: Bool = false
 
     var body: some View {
@@ -59,7 +60,7 @@ struct ToolbarView: View {
             Spacer().allowsHitTesting(false)
 
             if let onAITap {
-                AIButton(isRecording: isRecording, action: onAITap)
+                AIButton(isRecording: isRecording, action: onAITap, onTextPromptTap: onAITextTap)
                     .padding(.trailing, 16)
             }
         }
@@ -110,6 +111,7 @@ struct ToolbarColorCircle: View {
 struct AIButton: View {
     let isRecording: Bool
     let action: () -> Void
+    var onTextPromptTap: (() -> Void)? = nil
 
     @State private var pulseScale: CGFloat = 1.0
 
@@ -128,6 +130,15 @@ struct AIButton: View {
                         .clipShape(Circle())
                 )
                 .scaleEffect(pulseScale)
+        }
+        .contextMenu {
+            if let onTextPromptTap {
+                Button {
+                    onTextPromptTap()
+                } label: {
+                    Label("Send Text Prompt", systemImage: "text.bubble")
+                }
+            }
         }
         .onChange(of: isRecording) { _, active in
             if active {
