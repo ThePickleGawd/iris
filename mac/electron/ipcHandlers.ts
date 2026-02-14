@@ -16,6 +16,14 @@ const AGENT_GET_TIMEOUT_MS = Number(process.env.IRIS_AGENT_GET_TIMEOUT_MS || 600
 const AGENT_POST_TIMEOUT_MS = Number(process.env.IRIS_AGENT_POST_TIMEOUT_MS || 10000)
 const AGENT_CHAT_TIMEOUT_MS = Number(process.env.IRIS_AGENT_CHAT_TIMEOUT_MS || 120000)
 const AGENT_GET_RETRIES = Number(process.env.IRIS_AGENT_GET_RETRIES || 1)
+const DEFAULT_LINKED_PROVIDER_SYSTEM_PROMPT =
+  "You are Iris. Operate as a cross-device assistant, prioritize actionable outputs, and preserve consistency across Mac, iPad, and iPhone workflows."
+
+function getLinkedProviderSystemPrompt(): string {
+  const fromEnv = String(process.env.IRIS_LINKED_PROVIDER_SYSTEM_PROMPT || "").trim()
+  if (fromEnv) return fromEnv
+  return DEFAULT_LINKED_PROVIDER_SYSTEM_PROMPT
+}
 
 interface SessionInfo {
   id: string
@@ -23,6 +31,7 @@ interface SessionInfo {
   name: string
   metadata?: {
     claude_code_conversation_id?: string
+    claude_code_cwd?: string
     codex_conversation_id?: string
     codex_cwd?: string
   }
@@ -545,6 +554,7 @@ export function initializeIpcHandlers(appState: AppState): void {
         model: string
         metadata?: {
           claude_code_conversation_id?: string
+          claude_code_cwd?: string
           codex_conversation_id?: string
           codex_cwd?: string
         }
@@ -629,6 +639,11 @@ export function initializeIpcHandlers(appState: AppState): void {
       )
 
       const args = ["exec", "--output-last-message", lastMessagePath]
+      args.push(
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-c",
+        `base_instructions=${JSON.stringify(getLinkedProviderSystemPrompt())}`
+      )
       if (cwd) {
         args.push("--cd", cwd)
       }
@@ -677,6 +692,98 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
 
       return { text }
+    }
+  )
+
+  ipcMain.handle(
+    "send-claude-code-message",
+    async (
+      _,
+      params: {
+        conversationId: string
+        prompt: string
+        cwd?: string
+      }
+    ) => {
+      const conversationId = String(params?.conversationId || "").trim()
+      const prompt = String(params?.prompt || "").trim()
+      const cwd = String(params?.cwd || "").trim()
+      if (!conversationId) {
+        throw new Error("Claude Code conversation id is required")
+      }
+      if (!prompt) {
+        throw new Error("Prompt is required")
+      }
+
+      const args = [
+        "-p",
+        "-r",
+        conversationId,
+        prompt,
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--system-prompt",
+        getLinkedProviderSystemPrompt(),
+        "--dangerously-skip-permissions",
+        "--permission-mode",
+        "bypassPermissions",
+      ]
+      if (cwd) {
+        args.push("--add-dir", cwd)
+      }
+
+      const run = await new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve, reject) => {
+        const child = spawn("claude", args, {
+          cwd: cwd || undefined,
+          env: process.env,
+        })
+        let stdout = ""
+        let stderr = ""
+        child.stdout.on("data", (chunk) => {
+          stdout += chunk.toString()
+        })
+        child.stderr.on("data", (chunk) => {
+          stderr += chunk.toString()
+        })
+        child.on("error", reject)
+        child.on("close", (code) => {
+          resolve({
+            exitCode: typeof code === "number" ? code : 1,
+            stdout,
+            stderr,
+          })
+        })
+      })
+
+      const assistantTexts: string[] = []
+      for (const rawLine of run.stdout.split(/\r?\n/)) {
+        const line = rawLine.trim()
+        if (!line || !line.startsWith("{")) continue
+        try {
+          const parsed = JSON.parse(line)
+          if (parsed?.type !== "assistant") continue
+          const text = extractClaudeCodeMessageText(parsed)
+          if (text) assistantTexts.push(text)
+        } catch {
+          // ignore malformed line
+        }
+      }
+
+      if (assistantTexts.length > 0) {
+        return { text: assistantTexts[assistantTexts.length - 1] }
+      }
+
+      const detail = extractClaudeCodeError(run.stdout) || extractClaudeCodeError(run.stderr)
+      if (detail) {
+        return { text: detail }
+      }
+
+      if (run.exitCode !== 0) {
+        throw new Error(`Claude Code exited with status ${run.exitCode}`)
+      }
+
+      throw new Error("Claude Code returned no assistant text")
     }
   )
 
@@ -812,7 +919,9 @@ export function initializeIpcHandlers(appState: AppState): void {
   function buildAgentRequestEnvelope(message: string, chatId: string, model: string) {
     const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
     const claudeCodeConversationId = currentSession?.metadata?.claude_code_conversation_id?.trim() || ""
+    const claudeCodeCwd = currentSession?.metadata?.claude_code_cwd?.trim() || ""
     const codexConversationId = currentSession?.metadata?.codex_conversation_id?.trim() || ""
+    const codexCwd = currentSession?.metadata?.codex_cwd?.trim() || ""
     return {
       protocol_version: "1.0",
       kind: "agent.request",
@@ -838,7 +947,9 @@ export function initializeIpcHandlers(appState: AppState): void {
         model,
         agent: model,
         ...(claudeCodeConversationId ? { claude_code_conversation_id: claudeCodeConversationId } : {}),
+        ...(claudeCodeCwd ? { claude_code_cwd: claudeCodeCwd } : {}),
         ...(codexConversationId ? { codex_conversation_id: codexConversationId } : {}),
+        ...(codexCwd ? { codex_cwd: codexCwd } : {}),
       }
     }
   }
@@ -953,6 +1064,55 @@ function extractCodexError(raw: string): string | null {
     }
     if (line.startsWith("WARNING:")) continue
     if (line.includes("codex_core::")) continue
+    fallback = line
+  }
+  return fallback || null
+}
+
+function extractClaudeCodeMessageText(payload: any): string {
+  const message = payload?.message
+  if (!message || typeof message !== "object") return ""
+  const content = (message as any).content
+  if (typeof content === "string") {
+    return content.trim()
+  }
+  if (!Array.isArray(content)) {
+    return ""
+  }
+  const chunks: string[] = []
+  for (const item of content) {
+    if (!item || typeof item !== "object") continue
+    if ((item as any).type !== "text") continue
+    const text = (item as any).text
+    if (typeof text === "string" && text.trim()) {
+      chunks.push(text.trim())
+    }
+  }
+  return chunks.join("\n\n").trim()
+}
+
+function extractClaudeCodeError(raw: string): string | null {
+  const lines = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  let fallback = ""
+  for (const line of lines) {
+    if (line.startsWith("{") && line.endsWith("}")) {
+      try {
+        const parsed = JSON.parse(line)
+        if (parsed?.type === "result" && typeof parsed?.result === "string" && parsed.result.trim()) {
+          fallback = parsed.result.trim()
+        }
+        if (parsed?.type === "assistant") {
+          const text = extractClaudeCodeMessageText(parsed)
+          if (text) fallback = text
+        }
+      } catch {
+        // ignore malformed line
+      }
+      continue
+    }
     fallback = line
   }
   return fallback || null
