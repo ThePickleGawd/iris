@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from "react"
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react"
 import { useQuery } from "react-query"
-import { MessageSquare, Settings, X, Mic, SendHorizontal, ListTodo, ImagePlus } from "lucide-react"
+import { MessageSquare, Settings, X, Mic, SendHorizontal, ListTodo, ImagePlus, Wifi, Monitor, Tablet } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"
@@ -133,6 +133,12 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
     provider: "claude",
     model: "claude-sonnet-4-5"
   })
+  const [macIp, setMacIp] = useState("")
+  const [ipadIpInput, setIpadIpInput] = useState("")
+  const [ipadPortInput, setIpadPortInput] = useState("8935")
+  const [connectedDevices, setConnectedDevices] = useState<any[]>([])
+  const [ipadConnecting, setIpadConnecting] = useState(false)
+  const [ipadConnectError, setIpadConnectError] = useState("")
 
   const contentRef = useRef<HTMLDivElement>(null)
   const chatInputRef = useRef<HTMLInputElement>(null)
@@ -572,6 +578,61 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
     loadCurrentModel()
   }, [])
 
+  // Load network info and connected devices
+  useEffect(() => {
+    const loadNetworkInfo = async () => {
+      try {
+        const info = await window.electronAPI.getNetworkInfo()
+        setMacIp(info.macIp)
+        setConnectedDevices(info.connectedDevices || [])
+      } catch (error) {
+        console.error("Error loading network info:", error)
+      }
+    }
+    loadNetworkInfo()
+
+    // Refresh on device events
+    const cleanups = [
+      window.electronAPI.onIrisDeviceFound(() => loadNetworkInfo()),
+      window.electronAPI.onIrisDeviceLost(() => loadNetworkInfo()),
+      window.electronAPI.onIrisDeviceUpdated(() => loadNetworkInfo()),
+    ]
+    return () => cleanups.forEach(c => c())
+  }, [])
+
+  // Restore saved iPad IP
+  useEffect(() => {
+    try {
+      const savedIp = localStorage.getItem("iris_ipad_ip")
+      const savedPort = localStorage.getItem("iris_ipad_port")
+      if (savedIp) setIpadIpInput(savedIp)
+      if (savedPort) setIpadPortInput(savedPort)
+    } catch {}
+  }, [])
+
+  const handleConnectIpad = useCallback(async () => {
+    const ip = ipadIpInput.trim()
+    if (!ip) return
+    const port = parseInt(ipadPortInput, 10) || 8935
+    setIpadConnecting(true)
+    setIpadConnectError("")
+    try {
+      localStorage.setItem("iris_ipad_ip", ip)
+      localStorage.setItem("iris_ipad_port", String(port))
+      const result = await window.electronAPI.connectIpad(ip, port)
+      if (result.success) {
+        const info = await window.electronAPI.getNetworkInfo()
+        setConnectedDevices(info.connectedDevices || [])
+      } else {
+        setIpadConnectError(result.error || "Connection failed")
+      }
+    } catch (err: any) {
+      setIpadConnectError(err?.message || "Connection failed")
+    } finally {
+      setIpadConnecting(false)
+    }
+  }, [ipadIpInput, ipadPortInput])
+
   useEffect(() => {
     try {
       const savedNotifications = localStorage.getItem("iris_notifications_enabled")
@@ -973,6 +1034,60 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
                     <span className="toggle-knob" />
                   </button>
                 </label>
+              </div>
+              <div className="panel p-3 space-y-3">
+                <div className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                  <Wifi size={14} />
+                  <span>Devices</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-slate-600">
+                  <Monitor size={12} />
+                  <span>This Mac:</span>
+                  <code className="bg-slate-100 px-1.5 py-0.5 rounded text-[11px] font-mono">{macIp || "..."}</code>
+                </div>
+
+                {connectedDevices.length > 0 && (
+                  <div className="space-y-1">
+                    {connectedDevices.map((d: any) => (
+                      <div key={d.id} className="flex items-center gap-2 text-xs text-green-700 bg-green-50 rounded px-2 py-1.5">
+                        <Tablet size={12} />
+                        <span>{d.name}</span>
+                        <code className="text-[11px] font-mono">{d.host}:{d.port}</code>
+                        {d.linked && <span className="text-[10px] bg-green-200 rounded px-1">linked</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2 text-xs text-slate-600">
+                  <Tablet size={12} />
+                  <span>iPad IP:</span>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    className="flex-1 px-3 py-2 text-xs bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-700/20 font-mono"
+                    value={ipadIpInput}
+                    onChange={(e) => setIpadIpInput(e.target.value)}
+                    placeholder="192.168.x.x"
+                  />
+                  <input
+                    className="w-16 px-2 py-2 text-xs bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-700/20 font-mono"
+                    value={ipadPortInput}
+                    onChange={(e) => setIpadPortInput(e.target.value)}
+                    placeholder="8935"
+                  />
+                  <button
+                    type="button"
+                    className="px-3 py-2 text-xs rounded border bg-teal-700 text-white border-teal-800 hover:bg-teal-600 disabled:opacity-50"
+                    onClick={handleConnectIpad}
+                    disabled={ipadConnecting || !ipadIpInput.trim()}
+                  >
+                    {ipadConnecting ? "..." : "Connect"}
+                  </button>
+                </div>
+                {ipadConnectError && (
+                  <div className="text-[11px] text-red-600">{ipadConnectError}</div>
+                )}
               </div>
               {transportMode === "direct" ? (
                 <ModelSelector onModelChange={handleModelChange} onChatOpen={() => setActivePanel("chat")} />

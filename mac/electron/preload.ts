@@ -63,6 +63,15 @@ interface ElectronAPI {
     }
   }) => Promise<{ success: boolean; id: string; error?: string }>
   
+  // Iris Device Discovery
+  getIrisDevices: () => Promise<any[]>
+  getIrisDevice: (id: string) => Promise<any | null>
+  getPrimaryIrisDevice: () => Promise<any | null>
+  getMacDeviceId: () => Promise<string>
+  onIrisDeviceFound: (callback: (device: any) => void) => () => void
+  onIrisDeviceLost: (callback: (deviceId: string) => void) => () => void
+  onIrisDeviceUpdated: (callback: (device: any) => void) => () => void
+
   invoke: (channel: string, ...args: any[]) => Promise<any>
 }
 
@@ -245,5 +254,30 @@ contextBridge.exposeInMainWorld("electronAPI", {
     }
   }) => ipcRenderer.invoke("open-widget", spec),
   
+  // ─── Network Info & Device Connection ──────────────
+  getNetworkInfo: () => ipcRenderer.invoke("get-network-info"),
+  connectIpad: (host: string, port?: number) => ipcRenderer.invoke("connect-ipad", host, port),
+
+  // ─── Iris Device Discovery ─────────────────────────
+  getIrisDevices: () => ipcRenderer.invoke("get-iris-devices"),
+  getIrisDevice: (id: string) => ipcRenderer.invoke("get-iris-device", id),
+  getPrimaryIrisDevice: () => ipcRenderer.invoke("get-primary-iris-device"),
+  getMacDeviceId: () => ipcRenderer.invoke("get-mac-device-id"),
+  onIrisDeviceFound: (callback: (device: any) => void) => {
+    const subscription = (_: any, device: any) => callback(device)
+    ipcRenderer.on("iris-device-found", subscription)
+    return () => ipcRenderer.removeListener("iris-device-found", subscription)
+  },
+  onIrisDeviceLost: (callback: (deviceId: string) => void) => {
+    const subscription = (_: any, deviceId: string) => callback(deviceId)
+    ipcRenderer.on("iris-device-lost", subscription)
+    return () => ipcRenderer.removeListener("iris-device-lost", subscription)
+  },
+  onIrisDeviceUpdated: (callback: (device: any) => void) => {
+    const subscription = (_: any, device: any) => callback(device)
+    ipcRenderer.on("iris-device-updated", subscription)
+    return () => ipcRenderer.removeListener("iris-device-updated", subscription)
+  },
+
   invoke: (channel: string, ...args: any[]) => ipcRenderer.invoke(channel, ...args)
 } as ElectronAPI)

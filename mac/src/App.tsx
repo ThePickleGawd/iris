@@ -77,6 +77,17 @@ declare global {
         }
       }) => Promise<{ success: boolean; id: string; error?: string }>
       
+      // Network & Devices
+      getNetworkInfo: () => Promise<{ macIp: string; allIps: string[]; hostname: string; connectedDevices: any[] }>
+      connectIpad: (host: string, port?: number) => Promise<{ success: boolean; error?: string }>
+      getIrisDevices: () => Promise<any[]>
+      getIrisDevice: (id: string) => Promise<any | null>
+      getPrimaryIrisDevice: () => Promise<any | null>
+      getMacDeviceId: () => Promise<string>
+      onIrisDeviceFound: (callback: (device: any) => void) => () => void
+      onIrisDeviceLost: (callback: (deviceId: string) => void) => () => void
+      onIrisDeviceUpdated: (callback: (device: any) => void) => () => void
+
       invoke: (channel: string, ...args: any[]) => Promise<any>
     }
   }

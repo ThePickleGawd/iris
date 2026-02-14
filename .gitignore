@@ -18,6 +18,11 @@ mac/pnpm-debug.log*
 mac/.vite/
 mac/.turbo/
 
+# agents server runtime data
+agents/data/
+agents/__pycache__/
+agents/tools/__pycache__/
+
 # OS/editor noise
 .DS_Store
 *.swp

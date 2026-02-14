@@ -7,6 +7,7 @@ import { app } from "electron"
 import { v4 as uuidv4 } from "uuid"
 import screenshot from "screenshot-desktop"
 import sharp from "sharp"
+import { uploadScreenshotToBackend } from "./backendUploader"
 
 export class ScreenshotHelper {
   private screenshotQueue: string[] = []
@@ -136,6 +137,12 @@ export class ScreenshotHelper {
       }
 
       await this.logCaptureWithDiff(screenshotPath, "manual")
+
+      // Upload to Backend for agent access
+      uploadScreenshotToBackend(screenshotPath, { source: "manual" }).catch(
+        (err) => console.error("[ScreenshotHelper] Backend upload failed:", err)
+      )
+
       return screenshotPath
     } catch (error) {
       console.error("Error taking screenshot:", error)

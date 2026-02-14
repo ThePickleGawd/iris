@@ -5,6 +5,7 @@ import { ScreenshotHelper } from "./ScreenshotHelper"
 import { ShortcutsHelper } from "./shortcuts"
 import { ProcessingHelper } from "./ProcessingHelper"
 import { ScreenMonitor } from "./ScreenMonitor"
+import { DeviceDiscovery } from "./DeviceDiscovery"
 
 export class AppState {
   private static instance: AppState | null = null
@@ -14,6 +15,7 @@ export class AppState {
   public shortcutsHelper: ShortcutsHelper
   public processingHelper: ProcessingHelper
   private screenMonitor: ScreenMonitor
+  public deviceDiscovery: DeviceDiscovery
   private tray: Tray | null = null
 
   // View management
@@ -62,6 +64,9 @@ export class AppState {
 
     // Initialize ScreenMonitor
     this.screenMonitor = new ScreenMonitor(this)
+
+    // Initialize DeviceDiscovery (Bonjour browser for iPad)
+    this.deviceDiscovery = new DeviceDiscovery()
   }
 
   public static getInstance(): AppState {
@@ -301,6 +306,7 @@ async function initializeApp() {
     // Register global shortcuts using ShortcutsHelper
     appState.shortcutsHelper.registerGlobalShortcuts()
     appState.startScreenMonitor()
+    appState.deviceDiscovery.start()
   })
 
   app.on("activate", () => {
@@ -319,6 +325,7 @@ async function initializeApp() {
 
   app.on("before-quit", () => {
     appState.stopScreenMonitor()
+    appState.deviceDiscovery.stop()
   })
 
   app.dock?.hide() // Hide dock icon (optional)

@@ -4,6 +4,7 @@ import { execFile } from "node:child_process"
 import screenshot from "screenshot-desktop"
 import sharp from "sharp"
 import type { AppState } from "./main"
+import { uploadScreenshotToBackend } from "./backendUploader"
 
 export class ScreenMonitor {
   private readonly appState: AppState
@@ -98,6 +99,15 @@ export class ScreenMonitor {
               diffScore
             })
           }
+
+          // Upload to Backend for agent access
+          uploadScreenshotToBackend(capturePath, {
+            deviceId: this.appState.deviceDiscovery.getDeviceId(),
+            source: "screen-monitor",
+          }).catch((err) =>
+            console.error("[ScreenMonitor] Backend upload failed:", err)
+          )
+
           console.log(
             `[ScreenMonitor] Major change detected (score=${diffScore.toFixed(3)}): ${capturePath}`
           )
