@@ -742,6 +742,47 @@ def _normalize_anchor(value: object) -> str:
     return "top_left"
 
 
+def _looks_like_html_markup(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    return (
+        "<html" in t
+        or "<body" in t
+        or "<div" in t
+        or "<p" in t
+        or "<span" in t
+        or "<table" in t
+        or "<!doctype" in t
+    )
+
+
+def _looks_like_markdown_or_latex(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    markdown_signals = [
+        "```",
+        "\n# ",
+        "\n## ",
+        "\n- ",
+        "\n* ",
+        "\n1. ",
+        "|---",
+        "**",
+        "__",
+    ]
+    latex_signals = ["$$", "\\(", "\\)", "\\[", "\\]", "\\frac", "\\sum", "\\int", "\\sqrt"]
+    if any(sig in t for sig in markdown_signals):
+        return True
+    if any(sig in t for sig in latex_signals):
+        return True
+    # Single-dollar inline math is common in model outputs.
+    if t.count("$") >= 2:
+        return True
+    return False
+
+
 def _render_document_html(source: str) -> str:
     """Render Markdown + LaTeX source into a self-contained HTML document."""
     escaped = html_module.escape(source)
@@ -805,6 +846,21 @@ def _render_document_html(source: str) -> str:
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
 <script>
 (function() {{
+  function normalizeMathSource(src) {{
+    // Wrap bare LaTeX environments (e.g. bmatrix/aligned) in $$...$$ so KaTeX autorender sees them.
+    // This helps when models emit \\begin{{...}} blocks without delimiters.
+    return src.replace(
+      /(^|\\n)(\\s*\\\\begin\\{{[a-zA-Z*]+\\}}[\\s\\S]*?\\\\end\\{{[a-zA-Z*]+\\}}\\s*)(?=\\n|$)/g,
+      function(_, prefix, block) {{
+        var trimmed = block.trim();
+        if (trimmed.startsWith("$$") || trimmed.startsWith("\\\\[") || trimmed.startsWith("\\\\(")) {{
+          return prefix + block;
+        }}
+        return prefix + "\\n$$\\n" + trimmed + "\\n$$\\n";
+      }}
+    );
+  }}
+
   marked.setOptions({{
     highlight: function(code, lang) {{
       if (lang && hljs.getLanguage(lang)) {{
@@ -814,15 +870,20 @@ def _render_document_html(source: str) -> str:
     }}
   }});
   var src = document.getElementById("source").textContent;
+  src = normalizeMathSource(src);
   var el = document.getElementById("content");
   el.innerHTML = marked.parse(src);
-  renderMathInElement(el, {{
-    delimiters: [
-      {{ left: "$$", right: "$$", display: true }},
-      {{ left: "$", right: "$", display: false }}
-    ],
-    throwOnError: false
-  }});
+  if (typeof renderMathInElement === "function") {{
+    renderMathInElement(el, {{
+      delimiters: [
+        {{ left: "$$", right: "$$", display: true }},
+        {{ left: "\\\\[", right: "\\\\]", display: true }},
+        {{ left: "$", right: "$", display: false }},
+        {{ left: "\\\\(", right: "\\\\)", display: false }}
+      ],
+      throwOnError: false
+    }});
+  }}
 }})();
 </script>
 </body>
@@ -1093,7 +1154,8 @@ def _normalize_widget_args(args: dict[str, Any]) -> dict[str, Any]:
     natural_height: int | None = None
 
     if widget_type == "document":
-        rendered_html = _render_document_html(source)
+        document_source = source or str(args.get("html") or "")
+        rendered_html = _render_document_html(document_source)
     elif widget_type == "diagram":
         diagram = _render_diagram_html(source)
         rendered_html = diagram["html"]
@@ -1105,7 +1167,13 @@ def _normalize_widget_args(args: dict[str, Any]) -> dict[str, Any]:
         natural_width = anim["width"]
         natural_height = anim["height"]
     else:
-        rendered_html = str(args.get("html") or "")
+        raw_html = str(args.get("html") or "")
+        if raw_html and not _looks_like_html_markup(raw_html) and _looks_like_markdown_or_latex(raw_html):
+            rendered_html = _render_document_html(raw_html)
+        elif not raw_html and source:
+            rendered_html = _render_document_html(source)
+        else:
+            rendered_html = raw_html
 
     return {
         "widget_id": str(args.get("widget_id") or "widget"),

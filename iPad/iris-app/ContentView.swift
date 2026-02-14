@@ -51,10 +51,24 @@ struct ContentView: View {
                 isRecording: canvasState.isRecording,
                 onZoomIn: { objectManager.zoom(by: 0.06) },
                 onZoomOut: { objectManager.zoom(by: -0.06) },
-                onZoomReset: { objectManager.setZoomScale(1.0) }
+                onZoomReset: { objectManager.setZoomScale(1.0) },
+                showAIButton: false
             )
             .environmentObject(canvasState)
             .zIndex(20)
+
+            VStack {
+                Spacer()
+                HStack {
+                    Spacer()
+                    AIButton(isRecording: canvasState.isRecording) {
+                        canvasState.isRecording.toggle()
+                    }
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 26)
+                }
+            }
+            .zIndex(21)
 
             AgentCursorView(controller: cursor)
                 .zIndex(50)
