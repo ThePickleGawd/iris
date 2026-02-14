@@ -102,7 +102,7 @@ export class ScreenMonitor {
 
           // Upload to Backend for agent access
           uploadScreenshotToBackend(capturePath, {
-            deviceId: this.appState.deviceDiscovery.getDeviceId(),
+            deviceId: "mac",
             source: "screen-monitor",
           }).catch((err) =>
             console.error("[ScreenMonitor] Backend upload failed:", err)
