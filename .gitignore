@@ -60,3 +60,6 @@ iPad/**/*.xcuserdatad/
 iPad/**/*.xcworkspace/xcuserdata/
 iPad/**/*.xcuserstate
 iPad/iris-app/Configs/App.local.xcconfig
+
+# widgets testbed
+widgets/node_modules/

@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Widget Viewer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', sans-serif;
+    color: #fff;
+  }
+  .container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+  .label {
+    font-size: 13px;
+    color: #888;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+  iframe {
+    border: none;
+    border-radius: 16px;
+    overflow: hidden;
+  }
+  .controls {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  .controls input {
+    width: 60px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    border: 1px solid #333;
+    background: #1a1a1a;
+    color: #fff;
+    font-size: 13px;
+    text-align: center;
+  }
+  .controls button {
+    padding: 4px 12px;
+    border-radius: 6px;
+    border: none;
+    background: #0a84ff;
+    color: #fff;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .controls button:hover { background: #409cff; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="label" id="title">Widget Viewer</div>
+  <iframe id="frame"></iframe>
+  <div class="controls">
+    <input type="number" id="wInput" placeholder="W">
+    <span style="color:#555">×</span>
+    <input type="number" id="hInput" placeholder="H">
+    <button onclick="resize()">Resize</button>
+  </div>
+</div>
+
+<script>
+  const params = new URLSearchParams(location.search);
+  const widget = params.get('widget') || 'calculator';
+  const w = parseInt(params.get('w')) || 0;
+  const h = parseInt(params.get('h')) || 0;
+
+  const frame = document.getElementById('frame');
+  const titleEl = document.getElementById('title');
+  const wInput = document.getElementById('wInput');
+  const hInput = document.getElementById('hInput');
+
+  async function load() {
+    let width = w, height = h;
+
+    // Try loading meta.json for defaults
+    if (!width || !height) {
+      try {
+        const res = await fetch(`../lib/${widget}/meta.json`);
+        const meta = await res.json();
+        width = width || meta.defaultWidth || 360;
+        height = height || meta.defaultHeight || 400;
+        titleEl.textContent = meta.name || widget;
+      } catch {
+        width = width || 360;
+        height = height || 400;
+        titleEl.textContent = widget;
+      }
+    } else {
+      titleEl.textContent = widget;
+    }
+
+    wInput.value = width;
+    hInput.value = height;
+    frame.style.width = width + 'px';
+    frame.style.height = height + 'px';
+    frame.src = `../lib/${widget}/widget.html`;
+  }
+
+  function resize() {
+    const nw = parseInt(wInput.value) || 360;
+    const nh = parseInt(hInput.value) || 400;
+    frame.style.width = nw + 'px';
+    frame.style.height = nh + 'px';
+  }
+
+  load();
+</script>
+</body>
+</html>

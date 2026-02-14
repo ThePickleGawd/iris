@@ -1,0 +1,12 @@
+{
+  "name": "iris-widgets",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "capture": "node capture.mjs",
+    "serve": "npx serve ."
+  },
+  "dependencies": {
+    "puppeteer": "^24.2.0"
+  }
+}

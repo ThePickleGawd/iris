@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    width: 100%; height: 100%;
+    background: #000;
+    font-family: -apple-system, 'SF Pro Display', 'Helvetica Neue', sans-serif;
+    overflow: hidden;
+    user-select: none;
+  }
+  .calc {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    padding: 12px;
+    gap: 10px;
+  }
+  .display {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    align-items: flex-end;
+    padding: 0 8px 4px 8px;
+    min-height: 80px;
+  }
+  .display .value {
+    font-size: 64px;
+    font-weight: 300;
+    color: #fff;
+    line-height: 1.1;
+    letter-spacing: -2px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: clip;
+    white-space: nowrap;
+  }
+  .display .value.shrink-1 { font-size: 52px; }
+  .display .value.shrink-2 { font-size: 42px; }
+  .display .value.shrink-3 { font-size: 34px; }
+  .buttons {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+  }
+  button {
+    aspect-ratio: 1;
+    border: none;
+    border-radius: 50%;
+    font-size: 26px;
+    font-weight: 400;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: filter 0.1s;
+    font-family: inherit;
+  }
+  button:active { filter: brightness(1.4); }
+  .btn-num {
+    background: #333;
+    color: #fff;
+  }
+  .btn-op {
+    background: #ff9500;
+    color: #fff;
+    font-size: 30px;
+  }
+  .btn-op.active {
+    background: #fff;
+    color: #ff9500;
+  }
+  .btn-fn {
+    background: #a5a5a5;
+    color: #000;
+    font-size: 22px;
+  }
+  .btn-zero {
+    grid-column: span 2;
+    border-radius: 40px;
+    aspect-ratio: auto;
+    padding: 0 24px;
+    justify-content: flex-start;
+  }
+</style>
+</head>
+<body>
+<div class="calc">
+  <div class="display">
+    <div class="value" id="display">0</div>
+  </div>
+  <div class="buttons">
+    <button class="btn-fn" onclick="pressFn('AC')" id="clearBtn">AC</button>
+    <button class="btn-fn" onclick="pressFn('±')">±</button>
+    <button class="btn-fn" onclick="pressFn('%')">%</button>
+    <button class="btn-op" onclick="pressOp('÷')" id="op-÷">÷</button>
+
+    <button class="btn-num" onclick="pressNum('7')">7</button>
+    <button class="btn-num" onclick="pressNum('8')">8</button>
+    <button class="btn-num" onclick="pressNum('9')">9</button>
+    <button class="btn-op" onclick="pressOp('×')" id="op-×">×</button>
+
+    <button class="btn-num" onclick="pressNum('4')">4</button>
+    <button class="btn-num" onclick="pressNum('5')">5</button>
+    <button class="btn-num" onclick="pressNum('6')">6</button>
+    <button class="btn-op" onclick="pressOp('−')" id="op-−">−</button>
+
+    <button class="btn-num" onclick="pressNum('1')">1</button>
+    <button class="btn-num" onclick="pressNum('2')">2</button>
+    <button class="btn-num" onclick="pressNum('3')">3</button>
+    <button class="btn-op" onclick="pressOp('+')" id="op-+">+</button>
+
+    <button class="btn-num btn-zero" onclick="pressNum('0')">0</button>
+    <button class="btn-num" onclick="pressNum('.')">.</button>
+    <button class="btn-op" onclick="pressEquals()">=</button>
+  </div>
+</div>
+
+<script>
+  let current = '0';
+  let previous = null;
+  let operator = null;
+  let resetNext = false;
+
+  const displayEl = document.getElementById('display');
+  const clearBtn = document.getElementById('clearBtn');
+
+  function updateDisplay() {
+    let text = current;
+    // Format with commas
+    const parts = text.split('.');
+    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    text = parts.join('.');
+
+    displayEl.textContent = text;
+    // Auto-shrink
+    const len = text.replace(/[,.]/g, '').length;
+    displayEl.className = 'value' +
+      (len > 11 ? ' shrink-3' : len > 9 ? ' shrink-2' : len > 7 ? ' shrink-1' : '');
+
+    clearBtn.textContent = current === '0' && !previous ? 'AC' : 'C';
+  }
+
+  function clearActive() {
+    document.querySelectorAll('.btn-op').forEach(b => b.classList.remove('active'));
+  }
+
+  function pressNum(n) {
+    clearActive();
+    if (resetNext) { current = '0'; resetNext = false; }
+    if (n === '.') {
+      if (current.includes('.')) return;
+      current += '.';
+    } else {
+      current = current === '0' ? n : current + n;
+    }
+    if (current.replace(/[^0-9]/g, '').length > 12) return;
+    updateDisplay();
+  }
+
+  function pressOp(op) {
+    clearActive();
+    if (operator && !resetNext) {
+      calculate();
+    }
+    previous = parseFloat(current);
+    operator = op;
+    resetNext = true;
+    const btn = document.getElementById('op-' + op);
+    if (btn) btn.classList.add('active');
+    updateDisplay();
+  }
+
+  function pressEquals() {
+    clearActive();
+    if (operator) calculate();
+    operator = null;
+    resetNext = true;
+    updateDisplay();
+  }
+
+  function calculate() {
+    const a = previous;
+    const b = parseFloat(current);
+    let result;
+    switch (operator) {
+      case '+': result = a + b; break;
+      case '−': result = a - b; break;
+      case '×': result = a * b; break;
+      case '÷': result = b === 0 ? 'Error' : a / b; break;
+      default: return;
+    }
+    if (result === 'Error') {
+      current = 'Error';
+    } else {
+      // Avoid floating point weirdness
+      current = parseFloat(result.toPrecision(12)).toString();
+    }
+    previous = null;
+  }
+
+  function pressFn(fn) {
+    clearActive();
+    switch (fn) {
+      case 'AC':
+        if (current !== '0' || previous) {
+          current = '0';
+          if (clearBtn.textContent === 'AC') {
+            previous = null;
+            operator = null;
+          }
+        } else {
+          previous = null;
+          operator = null;
+        }
+        resetNext = false;
+        break;
+      case '±':
+        if (current !== '0' && current !== 'Error') {
+          current = current.startsWith('-') ? current.slice(1) : '-' + current;
+        }
+        break;
+      case '%':
+        if (current !== 'Error') {
+          current = (parseFloat(current) / 100).toString();
+        }
+        break;
+    }
+    updateDisplay();
+  }
+
+  updateDisplay();
+</script>
+</body>
+</html>

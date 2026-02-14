@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    width: 100%; height: 100%;
+    background: #000;
+    font-family: -apple-system, 'SF Pro Display', 'Helvetica Neue', sans-serif;
+    overflow: hidden;
+    color: #fff;
+  }
+  .container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: #1c1c1e;
+    border-bottom: 1px solid #2c2c2e;
+  }
+  .fn-input {
+    flex: 1;
+    padding: 8px 12px;
+    border-radius: 10px;
+    border: 1px solid #3a3a3c;
+    background: #2c2c2e;
+    color: #fff;
+    font-size: 15px;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    outline: none;
+  }
+  .fn-input:focus { border-color: #0a84ff; }
+  .fn-input::placeholder { color: #636366; }
+  .plot-btn {
+    padding: 8px 16px;
+    border-radius: 10px;
+    border: none;
+    background: #0a84ff;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: inherit;
+    white-space: nowrap;
+  }
+  .plot-btn:active { background: #409cff; }
+  .canvas-wrap {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  .presets {
+    display: flex;
+    gap: 6px;
+    padding: 8px 12px;
+    background: #1c1c1e;
+    border-top: 1px solid #2c2c2e;
+    overflow-x: auto;
+  }
+  .preset {
+    padding: 4px 10px;
+    border-radius: 8px;
+    border: 1px solid #3a3a3c;
+    background: transparent;
+    color: #98989d;
+    font-size: 12px;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .preset:active, .preset.active {
+    background: #0a84ff22;
+    border-color: #0a84ff;
+    color: #0a84ff;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="toolbar">
+    <input class="fn-input" id="fnInput" type="text" value="sin(x)" placeholder="e.g. sin(x), x^2, cos(x)*x">
+    <button class="plot-btn" onclick="plot()">Plot</button>
+  </div>
+  <div class="canvas-wrap">
+    <canvas id="canvas"></canvas>
+  </div>
+  <div class="presets">
+    <button class="preset active" onclick="setFn(this, 'sin(x)')">sin(x)</button>
+    <button class="preset" onclick="setFn(this, 'cos(x)')">cos(x)</button>
+    <button class="preset" onclick="setFn(this, 'x^2')">x²</button>
+    <button class="preset" onclick="setFn(this, 'tan(x)')">tan(x)</button>
+    <button class="preset" onclick="setFn(this, 'sqrt(abs(x))')">√|x|</button>
+    <button class="preset" onclick="setFn(this, '1/x')">1/x</button>
+  </div>
+</div>
+
+<script>
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const fnInput = document.getElementById('fnInput');
+
+  // View state
+  let viewX = 0, viewY = 0;
+  let scale = 40; // pixels per unit
+
+  function setFn(btn, fn) {
+    fnInput.value = fn;
+    document.querySelectorAll('.preset').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    plot();
+  }
+
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.parentElement.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function evalFn(expr, x) {
+    try {
+      const fn = new Function('x',
+        'with(Math){return ' +
+        expr
+          .replace(/\^/g, '**')
+          .replace(/(?<![a-zA-Z])e(?![a-zA-Z])/g, 'Math.E') +
+        '}'
+      );
+      const y = fn(x);
+      return isFinite(y) ? y : NaN;
+    } catch { return NaN; }
+  }
+
+  function plot() {
+    resize();
+    const w = canvas.width / (window.devicePixelRatio || 1);
+    const h = canvas.height / (window.devicePixelRatio || 1);
+    const cx = w / 2 + viewX * scale;
+    const cy = h / 2 - viewY * scale;
+    const expr = fnInput.value;
+
+    ctx.clearRect(0, 0, w, h);
+
+    // Grid
+    const gridStep = getGridStep(scale);
+    ctx.strokeStyle = '#1c1c1e';
+    ctx.lineWidth = 0.5;
+
+    const xStart = Math.floor((-cx / scale) / gridStep) * gridStep;
+    const xEnd = Math.ceil(((w - cx) / scale) / gridStep) * gridStep;
+    for (let gx = xStart; gx <= xEnd; gx += gridStep) {
+      const px = cx + gx * scale;
+      ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, h); ctx.stroke();
+    }
+
+    const yStart = Math.floor(((cy - h) / scale) / gridStep) * gridStep;
+    const yEnd = Math.ceil((cy / scale) / gridStep) * gridStep;
+    for (let gy = yStart; gy <= yEnd; gy += gridStep) {
+      const py = cy - gy * scale;
+      ctx.beginPath(); ctx.moveTo(0, py); ctx.lineTo(w, py); ctx.stroke();
+    }
+
+    // Axes
+    ctx.strokeStyle = '#48484a';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(w, cy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, h); ctx.stroke();
+
+    // Axis labels
+    ctx.fillStyle = '#636366';
+    ctx.font = '10px -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    for (let gx = xStart; gx <= xEnd; gx += gridStep) {
+      if (Math.abs(gx) < 1e-10) continue;
+      const px = cx + gx * scale;
+      const label = Number.isInteger(gx) ? gx.toString() : gx.toFixed(1);
+      ctx.fillText(label, px, cy + 14);
+    }
+    ctx.textAlign = 'right';
+    for (let gy = yStart; gy <= yEnd; gy += gridStep) {
+      if (Math.abs(gy) < 1e-10) continue;
+      const py = cy - gy * scale;
+      const label = Number.isInteger(gy) ? gy.toString() : gy.toFixed(1);
+      ctx.fillText(label, cx - 6, py + 4);
+    }
+
+    // Plot function
+    ctx.strokeStyle = '#0a84ff';
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    let drawing = false;
+
+    for (let px = 0; px < w; px += 0.5) {
+      const x = (px - cx) / scale;
+      const y = evalFn(expr, x);
+      if (isNaN(y)) { drawing = false; continue; }
+      const py = cy - y * scale;
+      if (py < -1000 || py > h + 1000) { drawing = false; continue; }
+      if (!drawing) { ctx.moveTo(px, py); drawing = true; }
+      else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+
+    // Origin dot
+    ctx.fillStyle = '#48484a';
+    ctx.beginPath();
+    ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function getGridStep(s) {
+    if (s > 80) return 0.5;
+    if (s > 30) return 1;
+    if (s > 15) return 2;
+    if (s > 6) return 5;
+    return 10;
+  }
+
+  // Touch / mouse pan & zoom
+  let dragging = false, lastX, lastY;
+  let lastPinchDist = 0;
+
+  canvas.addEventListener('pointerdown', (e) => {
+    dragging = true; lastX = e.clientX; lastY = e.clientY;
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const dx = e.clientX - lastX;
+    const dy = e.clientY - lastY;
+    viewX += dx / scale;
+    viewY -= dy / scale;
+    lastX = e.clientX; lastY = e.clientY;
+    plot();
+  });
+  canvas.addEventListener('pointerup', () => dragging = false);
+
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const factor = e.deltaY > 0 ? 0.9 : 1.1;
+    scale = Math.max(5, Math.min(200, scale * factor));
+    plot();
+  }, { passive: false });
+
+  // Touch pinch zoom
+  canvas.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      lastPinchDist = Math.sqrt(dx * dx + dy * dy);
+    }
+  });
+  canvas.addEventListener('touchmove', (e) => {
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const factor = dist / lastPinchDist;
+      scale = Math.max(5, Math.min(200, scale * factor));
+      lastPinchDist = dist;
+      plot();
+    }
+  }, { passive: false });
+
+  fnInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') plot(); });
+  window.addEventListener('resize', plot);
+  plot();
+</script>
+</body>
+</html>

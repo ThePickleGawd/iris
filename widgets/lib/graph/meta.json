@@ -1,0 +1,8 @@
+{
+  "name": "Graph",
+  "description": "Interactive function plotter with canvas-based coordinate system",
+  "defaultWidth": 420,
+  "defaultHeight": 380,
+  "accent": "#0a84ff",
+  "tags": ["tool", "interactive", "math", "visualization"]
+}

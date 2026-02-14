@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    width: 100%; height: 100%;
+    background: #000;
+    font-family: -apple-system, 'SF Pro Display', 'Helvetica Neue', sans-serif;
+    overflow: hidden;
+    color: #fff;
+    user-select: none;
+  }
+  .container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+  .tabs {
+    display: flex;
+    justify-content: center;
+    gap: 0;
+    padding: 12px 16px 0;
+  }
+  .tab {
+    flex: 1;
+    padding: 8px 0;
+    text-align: center;
+    font-size: 13px;
+    font-weight: 500;
+    color: #636366;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    font-family: inherit;
+    transition: color 0.2s, border-color 0.2s;
+  }
+  .tab.active {
+    color: #ff9f0a;
+    border-bottom-color: #ff9f0a;
+  }
+
+  .panel { display: none; flex-direction: column; flex: 1; }
+  .panel.active { display: flex; }
+
+  /* Shared time display */
+  .time-display {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .time-value {
+    font-size: 56px;
+    font-weight: 200;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -1px;
+    color: #fff;
+  }
+  .time-ms {
+    font-size: 28px;
+    font-weight: 200;
+    color: #636366;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Control buttons */
+  .controls {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    padding: 0 20px 16px;
+  }
+  .ctrl-btn {
+    width: 72px;
+    height: 72px;
+    border-radius: 50%;
+    border: 2px solid;
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: inherit;
+    transition: opacity 0.15s;
+  }
+  .ctrl-btn:active { opacity: 0.7; }
+  .ctrl-btn.secondary {
+    border-color: #3a3a3c;
+    background: #1c1c1e;
+    color: #fff;
+  }
+  .ctrl-btn.start {
+    border-color: #0d3a18;
+    background: #0d3a18;
+    color: #30d158;
+  }
+  .ctrl-btn.stop {
+    border-color: #3a1416;
+    background: #3a1416;
+    color: #ff453a;
+  }
+  .ctrl-btn.resume {
+    border-color: #0d3a18;
+    background: #0d3a18;
+    color: #30d158;
+  }
+  .ctrl-btn:disabled {
+    opacity: 0.3;
+    cursor: default;
+  }
+
+  /* Lap list */
+  .laps {
+    max-height: 120px;
+    overflow-y: auto;
+    padding: 0 20px 12px;
+  }
+  .laps::-webkit-scrollbar { display: none; }
+  .lap-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-bottom: 1px solid #1c1c1e;
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+  }
+  .lap-label { color: #fff; }
+  .lap-time { color: #fff; }
+  .lap-item.best .lap-time { color: #30d158; }
+  .lap-item.worst .lap-time { color: #ff453a; }
+
+  /* Timer picker */
+  .picker-row {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 4px;
+    padding: 12px 0;
+    flex: 1;
+  }
+  .picker-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+  .picker-col label {
+    font-size: 10px;
+    color: #636366;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .picker-col input {
+    width: 56px;
+    padding: 8px;
+    border-radius: 10px;
+    border: 1px solid #3a3a3c;
+    background: #1c1c1e;
+    color: #fff;
+    font-size: 28px;
+    font-weight: 300;
+    text-align: center;
+    font-family: inherit;
+    font-variant-numeric: tabular-nums;
+    outline: none;
+  }
+  .picker-col input:focus { border-color: #ff9f0a; }
+  .picker-sep {
+    font-size: 28px;
+    font-weight: 300;
+    color: #636366;
+    padding-top: 16px;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="tabs">
+    <button class="tab" onclick="switchTab('timer')" id="tab-timer">Timer</button>
+    <button class="tab active" onclick="switchTab('stopwatch')" id="tab-stopwatch">Stopwatch</button>
+  </div>
+
+  <!-- Stopwatch Panel -->
+  <div class="panel active" id="panel-stopwatch">
+    <div class="time-display">
+      <div class="time-value" id="sw-time">00:00</div>
+      <div class="time-ms" id="sw-ms">.00</div>
+    </div>
+    <div class="laps" id="sw-laps"></div>
+    <div class="controls">
+      <button class="ctrl-btn secondary" id="sw-lap" onclick="swLap()" disabled>Lap</button>
+      <button class="ctrl-btn start" id="sw-start" onclick="swToggle()">Start</button>
+    </div>
+  </div>
+
+  <!-- Timer Panel -->
+  <div class="panel" id="panel-timer">
+    <div id="timer-picker">
+      <div class="picker-row">
+        <div class="picker-col">
+          <label>Hours</label>
+          <input type="number" id="t-hours" value="0" min="0" max="23">
+        </div>
+        <span class="picker-sep">:</span>
+        <div class="picker-col">
+          <label>Min</label>
+          <input type="number" id="t-mins" value="5" min="0" max="59">
+        </div>
+        <span class="picker-sep">:</span>
+        <div class="picker-col">
+          <label>Sec</label>
+          <input type="number" id="t-secs" value="0" min="0" max="59">
+        </div>
+      </div>
+    </div>
+    <div id="timer-running" style="display:none; flex:1; flex-direction:column;">
+      <div class="time-display">
+        <div class="time-value" id="t-display">05:00</div>
+      </div>
+    </div>
+    <div class="controls">
+      <button class="ctrl-btn secondary" id="t-cancel" onclick="tCancel()" disabled>Cancel</button>
+      <button class="ctrl-btn start" id="t-start" onclick="tToggle()">Start</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Tab switching
+  let activeTab = 'stopwatch';
+  function switchTab(tab) {
+    activeTab = tab;
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    document.getElementById('tab-' + tab).classList.add('active');
+    document.getElementById('panel-' + tab).classList.add('active');
+  }
+
+  // ——— STOPWATCH ———
+  let swRunning = false, swStart = 0, swElapsed = 0, swInterval = null;
+  let laps = [], lapStart = 0;
+
+  function swToggle() {
+    const btn = document.getElementById('sw-start');
+    const lapBtn = document.getElementById('sw-lap');
+    if (!swRunning) {
+      swStart = performance.now() - swElapsed;
+      lapStart = lapStart || swStart;
+      swInterval = setInterval(swUpdate, 16);
+      swRunning = true;
+      btn.textContent = 'Stop';
+      btn.className = 'ctrl-btn stop';
+      lapBtn.disabled = false;
+      lapBtn.textContent = 'Lap';
+    } else {
+      clearInterval(swInterval);
+      swElapsed = performance.now() - swStart;
+      swRunning = false;
+      btn.textContent = 'Start';
+      btn.className = 'ctrl-btn resume';
+      lapBtn.textContent = 'Reset';
+      lapBtn.disabled = false;
+    }
+  }
+
+  function swUpdate() {
+    swElapsed = performance.now() - swStart;
+    renderSwTime(swElapsed);
+  }
+
+  function renderSwTime(ms) {
+    const totalSec = Math.floor(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    const cs = Math.floor((ms % 1000) / 10);
+    document.getElementById('sw-time').textContent =
+      String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    document.getElementById('sw-ms').textContent = '.' + String(cs).padStart(2, '0');
+  }
+
+  function swLap() {
+    if (!swRunning) {
+      // Reset
+      swElapsed = 0; swStart = 0; lapStart = 0; laps = [];
+      renderSwTime(0);
+      document.getElementById('sw-laps').innerHTML = '';
+      document.getElementById('sw-start').textContent = 'Start';
+      document.getElementById('sw-start').className = 'ctrl-btn start';
+      document.getElementById('sw-lap').disabled = true;
+      document.getElementById('sw-lap').textContent = 'Lap';
+      return;
+    }
+    const now = performance.now();
+    const lapTime = now - (lapStart || swStart);
+    laps.push(lapTime);
+    lapStart = now;
+    renderLaps();
+  }
+
+  function renderLaps() {
+    const el = document.getElementById('sw-laps');
+    if (laps.length < 2) {
+      el.innerHTML = laps.map((t, i) =>
+        `<div class="lap-item"><span class="lap-label">Lap ${laps.length - i}</span><span class="lap-time">${fmtLap(t)}</span></div>`
+      ).join('');
+      return;
+    }
+    const best = Math.min(...laps);
+    const worst = Math.max(...laps);
+    el.innerHTML = [...laps].reverse().map((t, i) => {
+      let cls = 'lap-item';
+      if (t === best) cls += ' best';
+      else if (t === worst) cls += ' worst';
+      return `<div class="${cls}"><span class="lap-label">Lap ${laps.length - i}</span><span class="lap-time">${fmtLap(t)}</span></div>`;
+    }).join('');
+  }
+
+  function fmtLap(ms) {
+    const totalSec = Math.floor(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    const cs = Math.floor((ms % 1000) / 10);
+    return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0') + '.' + String(cs).padStart(2, '0');
+  }
+
+  // ——— TIMER ———
+  let tRunning = false, tRemaining = 0, tTarget = 0, tInterval = null;
+
+  function tToggle() {
+    const btn = document.getElementById('t-start');
+    const cancelBtn = document.getElementById('t-cancel');
+    if (!tRunning) {
+      if (tRemaining === 0) {
+        const h = parseInt(document.getElementById('t-hours').value) || 0;
+        const m = parseInt(document.getElementById('t-mins').value) || 0;
+        const s = parseInt(document.getElementById('t-secs').value) || 0;
+        tRemaining = (h * 3600 + m * 60 + s) * 1000;
+        if (tRemaining === 0) return;
+      }
+      document.getElementById('timer-picker').style.display = 'none';
+      document.getElementById('timer-running').style.display = 'flex';
+      tTarget = performance.now() + tRemaining;
+      tInterval = setInterval(tUpdate, 50);
+      tRunning = true;
+      btn.textContent = 'Pause';
+      btn.className = 'ctrl-btn stop';
+      cancelBtn.disabled = false;
+      renderTimerDisplay(tRemaining);
+    } else {
+      clearInterval(tInterval);
+      tRemaining = Math.max(0, tTarget - performance.now());
+      tRunning = false;
+      btn.textContent = 'Resume';
+      btn.className = 'ctrl-btn resume';
+    }
+  }
+
+  function tUpdate() {
+    tRemaining = Math.max(0, tTarget - performance.now());
+    renderTimerDisplay(tRemaining);
+    if (tRemaining <= 0) {
+      clearInterval(tInterval);
+      tRunning = false;
+      document.getElementById('t-start').textContent = 'Start';
+      document.getElementById('t-start').className = 'ctrl-btn start';
+      document.getElementById('t-display').style.color = '#ff9f0a';
+    }
+  }
+
+  function renderTimerDisplay(ms) {
+    const totalSec = Math.ceil(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    const display = document.getElementById('t-display');
+    if (h > 0) {
+      display.textContent = String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    } else {
+      display.textContent = String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    }
+  }
+
+  function tCancel() {
+    clearInterval(tInterval);
+    tRunning = false;
+    tRemaining = 0;
+    document.getElementById('timer-picker').style.display = '';
+    document.getElementById('timer-running').style.display = 'none';
+    document.getElementById('t-start').textContent = 'Start';
+    document.getElementById('t-start').className = 'ctrl-btn start';
+    document.getElementById('t-cancel').disabled = true;
+    document.getElementById('t-display').style.color = '#fff';
+  }
+</script>
+</body>
+</html>

@@ -21,7 +21,45 @@ DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-5-20250929"
 DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
 MAX_TOOL_ROUNDS = 6
 
-SYSTEM_PROMPT = """\
+_WIDGETS_DIR = Path(__file__).resolve().parent.parent / "widgets"
+
+
+def _load_widget_catalog() -> str:
+    """Build a concise catalog of available library widgets from manifest + meta files."""
+    manifest_path = _WIDGETS_DIR / "lib" / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "No widget library found."
+
+    slugs = manifest.get("widgets", [])
+    if not slugs:
+        return "Widget library is empty."
+
+    lines = ["Available library widgets (use `read_widget` to get the full HTML):"]
+    for slug in slugs:
+        meta_path = _WIDGETS_DIR / "lib" / slug / "meta.json"
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        name = meta.get("name", slug)
+        desc = meta.get("description", "")
+        w = meta.get("defaultWidth", "?")
+        h = meta.get("defaultHeight", "?")
+        tags = ", ".join(meta.get("tags", []))
+        lines.append(f"- **{name}** (`{slug}`): {desc} — {w}×{h} [{tags}]")
+
+    return "\n".join(lines)
+
+
+def _build_system_prompt() -> str:
+    """Build the full system prompt with the dynamic widget catalog injected."""
+    catalog = _load_widget_catalog()
+    return _SYSTEM_PROMPT_TEMPLATE.replace("{widget_catalog}", catalog)
+
+
+_SYSTEM_PROMPT_TEMPLATE = """\
 You are Iris, a visual assistant that lives across a user's devices (iPad and Mac).
 
 You can push widgets to devices using the push_widget tool.
@@ -92,6 +130,11 @@ Best for: timers, calculators, checklists, games, anything needing JS interactiv
 - No gradients, no shadows, no hover effects. Apple widgets are flat and clean.
 - Icons: emoji or small inline text glyphs. Keep them 16–20px.
 - Keep widget size practical (generally 280–420w, 160–300h unless content demands more).
+
+**Widget Library**: Before writing complex HTML from scratch, use `read_widget` to load a \
+library widget's HTML and adapt it. This produces much higher quality than writing from scratch.
+{widget_catalog}
+Workflow: call `read_widget(name="...")` → get HTML + metadata → adapt the HTML → pass to `push_widget`.
 
 ## Spatial Placement Rules
 
@@ -228,6 +271,27 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_widget",
+            "description": (
+                "Load a widget from the library by name. Returns the full HTML source "
+                "and metadata (name, description, default dimensions, accent color). "
+                "Adapt the HTML as needed and pass it to push_widget."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Widget slug (e.g. 'calculator', 'graph', 'timer').",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+    },
 ]
 
 
@@ -283,7 +347,7 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str) -> dict:
 
     client = OpenAI(api_key=api_key)
     msgs = (
-        [{"role": "system", "content": SYSTEM_PROMPT}]
+        [{"role": "system", "content": _build_system_prompt()}]
         + messages
         + [{"role": "user", "content": user_message}]
     )
@@ -321,6 +385,15 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str) -> dict:
                     })
                     continue
 
+                if tc.function.name == "read_widget":
+                    result = _handle_read_widget(args)
+                    msgs.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": result,
+                    })
+                    continue
+
                 msgs.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -349,7 +422,7 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
         body = {
             "model": model,
             "max_tokens": 4096,
-            "system": SYSTEM_PROMPT,
+            "system": _build_system_prompt(),
             "messages": anth_messages,
             "tools": _anthropic_tools(),
         }
@@ -390,6 +463,15 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
                     })
                     continue
 
+                if tool_name == "read_widget":
+                    result = _handle_read_widget(args)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.get("id"),
+                        "content": result,
+                    })
+                    continue
+
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.get("id"),
@@ -422,7 +504,7 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str) -> dict:
 
     for _ in range(MAX_TOOL_ROUNDS):
         body = {
-            "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+            "system_instruction": {"parts": [{"text": _build_system_prompt()}]},
             "contents": contents,
             "tools": [{"function_declarations": _gemini_function_declarations()}],
         }
@@ -488,6 +570,16 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str) -> dict:
                         "functionResponse": {
                             "name": name,
                             "response": {"ok": True, "analysis": analysis},
+                        }
+                    })
+                    continue
+
+                if name == "read_widget":
+                    result = _handle_read_widget(args)
+                    tool_response_parts.append({
+                        "functionResponse": {
+                            "name": name,
+                            "response": {"ok": True, "widget": result},
                         }
                     })
                     continue
@@ -1052,6 +1144,48 @@ def _handle_read_screenshot(args: dict[str, Any]) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _handle_read_widget(args: dict[str, Any]) -> str:
+    """Return widget HTML + metadata from the library."""
+    name = str(args.get("name") or "").strip().lower()
+    if not name:
+        return json.dumps({"error": "Missing 'name' parameter."})
+
+    widget_dir = _WIDGETS_DIR / "lib" / name
+    html_path = widget_dir / "widget.html"
+    meta_path = widget_dir / "meta.json"
+
+    if not html_path.is_file():
+        # List available widgets to help the agent
+        manifest_path = _WIDGETS_DIR / "lib" / "manifest.json"
+        available = []
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            available = manifest.get("widgets", [])
+        except (OSError, json.JSONDecodeError):
+            pass
+        return json.dumps({
+            "error": f"Widget '{name}' not found.",
+            "available": available,
+        })
+
+    html_source = html_path.read_text(encoding="utf-8")
+    meta: dict[str, Any] = {}
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    return json.dumps({
+        "name": meta.get("name", name),
+        "description": meta.get("description", ""),
+        "defaultWidth": meta.get("defaultWidth", 320),
+        "defaultHeight": meta.get("defaultHeight", 220),
+        "accent": meta.get("accent", "#007aff"),
+        "tags": meta.get("tags", []),
+        "html": html_source,
+    }, ensure_ascii=False)
 
 
 def describe_screenshot_with_gemini(

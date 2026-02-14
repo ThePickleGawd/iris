@@ -1,0 +1,8 @@
+{
+  "name": "Calculator",
+  "description": "Basic calculator with Apple Calculator aesthetic",
+  "defaultWidth": 320,
+  "defaultHeight": 520,
+  "accent": "#ff9500",
+  "tags": ["tool", "interactive", "math"]
+}
