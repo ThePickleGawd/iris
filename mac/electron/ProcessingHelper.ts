@@ -2,9 +2,6 @@
 
 import { AppState } from "./main"
 import { LLMHelper } from "./LLMHelper"
-import dotenv from "dotenv"
-
-dotenv.config()
 
 const isDev = process.env.NODE_ENV === "development"
 const isDevTest = process.env.IS_DEV_TEST === "true"

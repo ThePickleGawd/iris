@@ -11,6 +11,33 @@ from typing import Any
 from flask import Flask, jsonify, request, send_file
 from werkzeug.utils import secure_filename
 
+def _load_root_env() -> None:
+    """Load environment variables from repository root .env if present."""
+    root_env = Path(__file__).resolve().parent.parent / ".env"
+    if not root_env.exists():
+        return
+    for raw in root_env.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].strip()
+            if "=" not in line:
+                continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        value = value.strip()
+        if (value.startswith('"') and value.endswith('"')) or (
+            value.startswith("'") and value.endswith("'")
+        ):
+            value = value[1:-1]
+        os.environ[key] = value
+
+
+_load_root_env()
+
 import agent as agent_module
 
 # ---------------------------------------------------------------------------

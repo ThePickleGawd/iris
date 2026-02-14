@@ -1,3 +1,4 @@
+import "./env"
 import { app, BrowserWindow, Tray, Menu, nativeImage } from "electron"
 import { initializeIpcHandlers } from "./ipcHandlers"
 import { WindowHelper } from "./WindowHelper"
