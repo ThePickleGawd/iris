@@ -15,6 +15,9 @@ import {
 } from "../components/ui/toast"
 import ModelSelector from "../components/ui/ModelSelector"
 import ScreenshotQueue from "../components/Queue/ScreenshotQueue"
+import { createRequestId } from "../lib/agentProtocol"
+import type { AgentTransportMode, AgentTransportSettings } from "../lib/agentProtocol"
+import { streamAgentResponse } from "../lib/agentTransport"
 
 let localTranscriberPromise: Promise<any> | null = null
 
@@ -111,6 +114,12 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
   const [isVoiceTranscribing, setIsVoiceTranscribing] = useState(false)
   const [notificationsEnabled, setNotificationsEnabled] = useState(true)
   const [soundPingEnabled, setSoundPingEnabled] = useState(true)
+  const [transportMode, setTransportMode] = useState<AgentTransportMode>("direct")
+  const [backendBaseUrl, setBackendBaseUrl] = useState("http://localhost:8787")
+  const [backendStreamPath, setBackendStreamPath] = useState("/v1/agent/stream")
+  const [workspaceId, setWorkspaceId] = useState("default-workspace")
+  const [sessionId, setSessionId] = useState("default-session")
+  const [backendAuthToken, setBackendAuthToken] = useState("")
   const [currentModel, setCurrentModel] = useState<{ provider: string; model: string }>({
     provider: "claude",
     model: "claude-sonnet-4-5"
@@ -150,10 +159,11 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
   }
 
   const chatHint = useMemo(() => {
+    const source = transportMode === "direct" ? "Direct local transport" : `Backend transport (${backendBaseUrl})`
     return currentModel.provider === "ollama"
-      ? `Local model: ${currentModel.model}`
-      : `Cloud model: ${currentModel.model}`
-  }, [currentModel])
+      ? `Local model: ${currentModel.model} • ${source}`
+      : `Cloud model: ${currentModel.model} • ${source}`
+  }, [currentModel, transportMode, backendBaseUrl])
 
   const handleDeleteScreenshot = async (index: number) => {
     const screenshotToDelete = screenshots[index]
@@ -174,76 +184,79 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
     const trimmed = message.trim()
     if (!trimmed) return
 
-    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const requestId = createRequestId()
     activeStreamRequestRef.current = requestId
     setChatMessages((msgs) => [...msgs, { role: "user", text: trimmed }, { role: "assistant", text: "" }])
     setChatLoading(true)
 
-    await new Promise<void>(async (resolve) => {
-      const appendChunk = (chunk: string) => {
-        setChatMessages((msgs) => {
-          if (msgs.length === 0) return msgs
-          const updated = [...msgs]
-          const idx = updated.length - 1
-          updated[idx] = { ...updated[idx], text: (updated[idx].text || "") + chunk }
-          return updated
-        })
+    const appendChunk = (chunk: string) => {
+      setChatMessages((msgs) => {
+        if (msgs.length === 0) return msgs
+        const updated = [...msgs]
+        const idx = updated.length - 1
+        updated[idx] = { ...updated[idx], text: (updated[idx].text || "") + chunk }
+        return updated
+      })
+    }
+
+    const setAssistantText = (text: string) => {
+      setChatMessages((msgs) => {
+        if (msgs.length === 0) return msgs
+        const updated = [...msgs]
+        const idx = updated.length - 1
+        updated[idx] = { ...updated[idx], text }
+        return updated
+      })
+    }
+
+    const settings: AgentTransportSettings = {
+      mode: transportMode,
+      backendBaseUrl: backendBaseUrl.trim(),
+      backendStreamPath: backendStreamPath.trim() || "/v1/agent/stream",
+      workspaceId: workspaceId.trim(),
+      sessionId: sessionId.trim(),
+      authToken: backendAuthToken.trim()
+    }
+
+    try {
+      if (settings.mode === "backend" && !settings.backendBaseUrl) {
+        throw new Error("Backend URL is required when Backend mode is enabled")
       }
 
-      const setAssistantText = (text: string) => {
-        setChatMessages((msgs) => {
-          if (msgs.length === 0) return msgs
-          const updated = [...msgs]
-          const idx = updated.length - 1
-          updated[idx] = { ...updated[idx], text }
-          return updated
-        })
-      }
-
-      let cleanupChunk = () => {}
-      let cleanupDone = () => {}
-      let cleanupError = () => {}
-
-      cleanupChunk = window.electronAPI.onClaudeChatStreamChunk((data) => {
-        if (data.requestId !== requestId || activeStreamRequestRef.current !== requestId) return
-        appendChunk(data.chunk)
+      await streamAgentResponse({
+        settings,
+        requestId,
+        message: trimmed,
+        history: chatMessages,
+        callbacks: {
+          onDelta: (chunk) => {
+            if (activeStreamRequestRef.current !== requestId) return
+            appendChunk(chunk)
+          },
+          onFinal: (text) => {
+            if (activeStreamRequestRef.current !== requestId) return
+            if (text) setAssistantText(text)
+          },
+          onStatus: () => {},
+          onToolCall: (name) => {
+            console.log(`[AgentTool] call: ${name}`)
+          },
+          onToolResult: (name) => {
+            console.log(`[AgentTool] result: ${name}`)
+          },
+          onError: (msg) => {
+            if (activeStreamRequestRef.current !== requestId) return
+            setAssistantText(`Error: ${msg}`)
+          }
+        }
       })
-
-      cleanupDone = window.electronAPI.onClaudeChatStreamDone((data) => {
-        if (data.requestId !== requestId) return
-        cleanupChunk()
-        cleanupDone()
-        cleanupError()
-        activeStreamRequestRef.current = null
-        setChatLoading(false)
-        chatInputRef.current?.focus()
-        resolve()
-      })
-
-      cleanupError = window.electronAPI.onClaudeChatStreamError((data) => {
-        if (data.requestId !== requestId) return
-        cleanupChunk()
-        cleanupDone()
-        cleanupError()
-        activeStreamRequestRef.current = null
-        setAssistantText(`Error: ${data.error}`)
-        setChatLoading(false)
-        chatInputRef.current?.focus()
-        resolve()
-      })
-
-      const result = await window.electronAPI.startClaudeChatStream(requestId, trimmed)
-      if (!result.success) {
-        cleanupChunk()
-        cleanupDone()
-        cleanupError()
-        activeStreamRequestRef.current = null
-        setAssistantText(`Error: ${result.error || "Failed to start stream"}`)
-        setChatLoading(false)
-        chatInputRef.current?.focus()
-        resolve()
-      }
-    })
+    } catch (error: any) {
+      setAssistantText(`Error: ${error?.message || String(error)}`)
+    } finally {
+      activeStreamRequestRef.current = null
+      setChatLoading(false)
+      chatInputRef.current?.focus()
+    }
   }
 
   const handleChatSend = async () => {
@@ -351,12 +364,26 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
     try {
       const savedNotifications = localStorage.getItem("iris_notifications_enabled")
       const savedSound = localStorage.getItem("iris_sound_ping_enabled")
+      const savedTransportMode = localStorage.getItem("iris_transport_mode")
+      const savedBackendBaseUrl = localStorage.getItem("iris_backend_base_url")
+      const savedBackendStreamPath = localStorage.getItem("iris_backend_stream_path")
+      const savedWorkspaceId = localStorage.getItem("iris_workspace_id")
+      const savedSessionId = localStorage.getItem("iris_session_id")
+      const savedBackendAuthToken = localStorage.getItem("iris_backend_auth_token")
       if (savedNotifications !== null) {
         setNotificationsEnabled(savedNotifications === "true")
       }
       if (savedSound !== null) {
         setSoundPingEnabled(savedSound === "true")
       }
+      if (savedTransportMode === "direct" || savedTransportMode === "backend") {
+        setTransportMode(savedTransportMode)
+      }
+      if (savedBackendBaseUrl !== null) setBackendBaseUrl(savedBackendBaseUrl)
+      if (savedBackendStreamPath !== null) setBackendStreamPath(savedBackendStreamPath)
+      if (savedWorkspaceId !== null) setWorkspaceId(savedWorkspaceId)
+      if (savedSessionId !== null) setSessionId(savedSessionId)
+      if (savedBackendAuthToken !== null) setBackendAuthToken(savedBackendAuthToken)
     } catch {
       // ignore storage errors
     }
@@ -378,6 +405,19 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
       // ignore storage errors
     }
   }, [soundPingEnabled])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("iris_transport_mode", transportMode)
+      localStorage.setItem("iris_backend_base_url", backendBaseUrl)
+      localStorage.setItem("iris_backend_stream_path", backendStreamPath)
+      localStorage.setItem("iris_workspace_id", workspaceId)
+      localStorage.setItem("iris_session_id", sessionId)
+      localStorage.setItem("iris_backend_auth_token", backendAuthToken)
+    } catch {
+      // ignore storage errors
+    }
+  }, [transportMode, backendBaseUrl, backendStreamPath, workspaceId, sessionId, backendAuthToken])
 
   useEffect(() => {
     if (!messageListRef.current) return
@@ -583,6 +623,83 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
               <h2 className="text-sm font-semibold text-slate-800">Configuration</h2>
               <p className="text-xs text-slate-500">Choose your provider and model.</p>
               <div className="panel p-3 space-y-3">
+                <div className="text-xs font-semibold text-slate-700">Agent Transport</div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    className={`px-3 py-2 text-xs rounded border ${transportMode === "direct" ? "bg-teal-700 text-white border-teal-800" : "bg-slate-100 text-slate-700 border-slate-300"}`}
+                    onClick={() => setTransportMode("direct")}
+                  >
+                    Direct Claude
+                  </button>
+                  <button
+                    type="button"
+                    className={`px-3 py-2 text-xs rounded border ${transportMode === "backend" ? "bg-teal-700 text-white border-teal-800" : "bg-slate-100 text-slate-700 border-slate-300"}`}
+                    onClick={() => setTransportMode("backend")}
+                  >
+                    Backend Agent
+                  </button>
+                </div>
+
+                <div className="text-[11px] text-slate-500">
+                  Contract: POST {`{backendBaseUrl}`}{backendStreamPath || "/v1/agent/stream"} with `agent.request` envelope, return stream events (`message.delta`, `message.final`, `status`, `tool.call`, `tool.result`, `error`).
+                </div>
+
+                <div className="grid grid-cols-1 gap-2">
+                  <label className="text-xs text-slate-700">
+                    Backend URL
+                    <input
+                      className="mt-1 w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-700/20"
+                      value={backendBaseUrl}
+                      onChange={(e) => setBackendBaseUrl(e.target.value)}
+                      placeholder="http://localhost:8787"
+                      disabled={transportMode !== "backend"}
+                    />
+                  </label>
+                  <label className="text-xs text-slate-700">
+                    Stream Endpoint Path
+                    <input
+                      className="mt-1 w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-700/20"
+                      value={backendStreamPath}
+                      onChange={(e) => setBackendStreamPath(e.target.value)}
+                      placeholder="/v1/agent/stream"
+                      disabled={transportMode !== "backend"}
+                    />
+                  </label>
+                  <label className="text-xs text-slate-700">
+                    Workspace ID
+                    <input
+                      className="mt-1 w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-700/20"
+                      value={workspaceId}
+                      onChange={(e) => setWorkspaceId(e.target.value)}
+                      placeholder="default-workspace"
+                      disabled={transportMode !== "backend"}
+                    />
+                  </label>
+                  <label className="text-xs text-slate-700">
+                    Session ID
+                    <input
+                      className="mt-1 w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-700/20"
+                      value={sessionId}
+                      onChange={(e) => setSessionId(e.target.value)}
+                      placeholder="default-session"
+                      disabled={transportMode !== "backend"}
+                    />
+                  </label>
+                  <label className="text-xs text-slate-700">
+                    Backend Auth Token (optional)
+                    <input
+                      type="password"
+                      className="mt-1 w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-700/20"
+                      value={backendAuthToken}
+                      onChange={(e) => setBackendAuthToken(e.target.value)}
+                      placeholder="Bearer token"
+                      disabled={transportMode !== "backend"}
+                    />
+                  </label>
+                </div>
+              </div>
+              <div className="panel p-3 space-y-3">
                 <label className="flex items-center justify-between text-xs text-slate-700">
                   <span>Desktop notifications</span>
                   <button
@@ -606,7 +723,13 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
                   </button>
                 </label>
               </div>
-              <ModelSelector onModelChange={handleModelChange} onChatOpen={() => setActivePanel("chat")} />
+              {transportMode === "direct" ? (
+                <ModelSelector onModelChange={handleModelChange} onChatOpen={() => setActivePanel("chat")} />
+              ) : (
+                <div className="panel p-3 text-xs text-slate-600">
+                  Local model controls are disabled in Backend Agent mode. Model selection should be handled by the backend session.
+                </div>
+              )}
             </div>
           )}
         </main>
