@@ -236,13 +236,46 @@ class AgentHTTPServer {
         Task { @MainActor [weak self] in
             guard let self else { return }
             let center = CanvasState.canvasCenter
-            let viewport = self.objectManager?.viewportCenter ?? center
-            self.respondJSON(conn, status: 200, body: [
+            let mgr = self.objectManager
+            let viewport = mgr?.viewportCenter ?? center
+            let snapshot = mgr?.makeCoordinateSnapshot(documentID: nil)
+            let topLeft: [String: Any] = [
+                "x": snapshot?.viewportTopLeftAxis.x ?? 0,
+                "y": snapshot?.viewportTopLeftAxis.y ?? 0
+            ]
+            let topRight: [String: Any] = [
+                "x": snapshot?.viewportTopRightAxis.x ?? 0,
+                "y": snapshot?.viewportTopRightAxis.y ?? 0
+            ]
+            let bottomLeft: [String: Any] = [
+                "x": snapshot?.viewportBottomLeftAxis.x ?? 0,
+                "y": snapshot?.viewportBottomLeftAxis.y ?? 0
+            ]
+            let bottomRight: [String: Any] = [
+                "x": snapshot?.viewportBottomRightAxis.x ?? 0,
+                "y": snapshot?.viewportBottomRightAxis.y ?? 0
+            ]
+
+            let coordinateInfo: [String: Any] = [
+                "default_post_space": "viewport_offset",
+                "supported_spaces": ["viewport_offset", "canvas_absolute", "document_axis"],
+                "document_axis_origin_canvas": ["x": center.x, "y": center.y],
+                "document_axis_description": "document_axis x/y where (0,0) is canvas center. Positive x=right, positive y=down.",
+                "viewport_bounds_document_axis": [
+                    "top_left": topLeft,
+                    "top_right": topRight,
+                    "bottom_left": bottomLeft,
+                    "bottom_right": bottomRight
+                ]
+            ]
+
+            let body: [String: Any] = [
                 "canvas_size": CanvasState.canvasSize,
                 "canvas_center": ["x": center.x, "y": center.y],
                 "viewport_center": ["x": viewport.x, "y": viewport.y],
-                "coordinate_info": "POST x/y are offsets from the user's current viewport center. GET x/y are offsets from canvas center."
-            ])
+                "coordinate_info": coordinateInfo
+            ]
+            self.respondJSON(conn, status: 200, body: body)
         }
     }
 
@@ -266,6 +299,7 @@ class AgentHTTPServer {
         let w     = numericValue(json["width"]) ?? 320
         let h     = numericValue(json["height"]) ?? 220
         let anim  = (json["animate"] as? Bool) ?? true
+        let coordinateSpace = (json["coordinate_space"] as? String ?? "viewport_offset").lowercased()
 
         guard let mgr = objectManager else {
             respondJSON(conn, status: 503, body: ["error": "Canvas not ready — open a document first"])
@@ -273,18 +307,29 @@ class AgentHTTPServer {
         }
 
         Task { @MainActor [weak self] in
-            // Place relative to where the user is currently looking
             let viewport = mgr.viewportCenter
-            let canvasPos = CGPoint(x: viewport.x + x, y: viewport.y + y)
+            let canvasPos: CGPoint
+            switch coordinateSpace {
+            case "canvas_absolute":
+                canvasPos = CGPoint(x: x, y: y)
+            case "document_axis":
+                canvasPos = mgr.canvasPoint(forAxisPoint: CGPoint(x: x, y: y))
+            default:
+                // Place relative to where the user is currently looking
+                canvasPos = CGPoint(x: viewport.x + x, y: viewport.y + y)
+            }
             let size = CGSize(width: w, height: h)
 
             let obj = await mgr.place(html: html, at: canvasPos, size: size, animated: anim)
+            let axis = mgr.axisPoint(forCanvasPoint: canvasPos)
             self?.respondJSON(conn, status: 201, body: [
                 "id": obj.id.uuidString,
                 "x": x, "y": y,
+                "coordinate_space_used": coordinateSpace,
                 "width": w, "height": h,
                 "viewport_center": ["x": viewport.x, "y": viewport.y],
-                "canvas_position": ["x": canvasPos.x, "y": canvasPos.y]
+                "canvas_position": ["x": canvasPos.x, "y": canvasPos.y],
+                "document_axis_position": ["x": axis.x, "y": axis.y]
             ])
         }
     }
@@ -298,10 +343,15 @@ class AgentHTTPServer {
 
             let center = CanvasState.canvasCenter
             let list: [[String: Any]] = mgr.objects.values.map { obj in
-                [
+                let axis = mgr.axisPoint(forCanvasPoint: obj.position)
+                return [
                     "id": obj.id.uuidString,
                     "x": obj.position.x - center.x,
                     "y": obj.position.y - center.y,
+                    "document_axis_x": axis.x,
+                    "document_axis_y": axis.y,
+                    "canvas_x": obj.position.x,
+                    "canvas_y": obj.position.y,
                     "width": obj.size.width,
                     "height": obj.size.height
                 ]
@@ -328,10 +378,15 @@ class AgentHTTPServer {
             }
 
             let center = CanvasState.canvasCenter
+            let axis = mgr.axisPoint(forCanvasPoint: obj.position)
             self.respondJSON(conn, status: 200, body: [
                 "id": obj.id.uuidString,
                 "x": obj.position.x - center.x,
                 "y": obj.position.y - center.y,
+                "document_axis_x": axis.x,
+                "document_axis_y": axis.y,
+                "canvas_x": obj.position.x,
+                "canvas_y": obj.position.y,
                 "width": obj.size.width,
                 "height": obj.size.height,
                 "html": obj.htmlContent

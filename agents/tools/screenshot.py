@@ -134,11 +134,19 @@ def handle_read_screenshot(
         mime_type = latest.get("mime_type", "image/png")
         b64_data = base64.b64encode(image_bytes).decode()
 
+        notes = latest.get("notes")
+        notes_text = ""
+        if isinstance(notes, str) and notes.strip():
+            notes_text = f"\n\nCoordinate/context metadata from uploader:\n{notes.strip()}"
+
         # Return Anthropic-format multimodal content blocks so the LLM sees the image
         return [
             {
                 "type": "text",
-                "text": f"Latest screenshot from {device} (id={screenshot_id}, {len(image_bytes)} bytes):",
+                "text": (
+                    f"Latest screenshot from {device} "
+                    f"(id={screenshot_id}, {len(image_bytes)} bytes):{notes_text}"
+                ),
             },
             {
                 "type": "image",
