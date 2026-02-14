@@ -4,7 +4,7 @@ import httpx
 
 import os
 
-BACKEND_URL = os.environ.get("IRIS_BACKEND_URL", "http://localhost:5000")
+BACKEND_URL = os.environ.get("IRIS_BACKEND_URL", "http://localhost:5050")
 
 READ_TRANSCRIPT_TOOL = {
     "type": "function",

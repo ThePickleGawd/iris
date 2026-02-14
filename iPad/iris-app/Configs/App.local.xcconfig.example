@@ -1,0 +1,6 @@
+// Copy this file to App.local.xcconfig (gitignored) and customize:
+// IRIS_BUNDLE_ID = com.rohan.iris
+// IRIS_DEVELOPMENT_TEAM = ABCDE12345
+
+// IRIS_BUNDLE_ID =
+// IRIS_DEVELOPMENT_TEAM =

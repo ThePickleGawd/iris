@@ -94,15 +94,10 @@ export class ScreenshotHelper {
   }
 
   public async takeScreenshot(
-    hideMainWindow: () => void,
-    showMainWindow: () => void
+    _hideMainWindow: () => void,
+    _showMainWindow: () => void
   ): Promise<string> {
     try {
-      hideMainWindow()
-      
-      // Add a small delay to ensure window is hidden
-      await new Promise(resolve => setTimeout(resolve, 100))
-      
       let screenshotPath = ""
 
       if (this.view === "queue") {
@@ -148,9 +143,6 @@ export class ScreenshotHelper {
     } catch (error) {
       console.error("Error taking screenshot:", error)
       throw new Error(`Failed to take screenshot: ${error.message}`)
-    } finally {
-      // Ensure window is always shown again
-      showMainWindow()
     }
   }
 

@@ -35,6 +35,6 @@ iPhone/**/*.xcworkspace/xcuserdata/
 
 # iPad app - local Xcode artifacts
 iPad/.derived
-
-#fuck this one fucking file
-iPad/iris-app.xcodeproj/project.xcworkspace/xcuserdata/
+iPad/**/*.xcuserdatad/
+iPad/**/*.xcworkspace/xcuserdata/
+iPad/iris-app/Configs/App.local.xcconfig

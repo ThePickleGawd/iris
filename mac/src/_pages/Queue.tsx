@@ -288,103 +288,138 @@ const Queue: React.FC = () => {
   }, [isExpanded, chatMessages.length, chatLoading])
 
   return (
-    <div ref={contentRef} className="assistant-surface select-none">
+    <div ref={contentRef} className="iris-surface select-none">
       <Toast open={toastOpen} onOpenChange={setToastOpen} variant={toastMessage.variant} duration={3000}>
         <ToastTitle>{toastMessage.title}</ToastTitle>
         <ToastDescription>{toastMessage.description}</ToastDescription>
       </Toast>
 
-      <div className={`compact-shell liquid-glass ${isExpanded ? "shell-expanded" : "shell-collapsed"}`}>
-        <header className="compact-header draggable-area">
-          <div className="session-tabs interactive">
-            {sessions.map((s) => (
+      <div className={`iris-shell draggable-area ${isExpanded ? "expanded" : "collapsed"}`}>
+        {!isExpanded ? (
+          <header className="iris-bar draggable-area">
+            <div className="iris-tabs interactive">
+              {sessions.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  className={`iris-tab ${currentSession?.id === s.id ? "active" : ""}`}
+                  onClick={() => handleSelectSession(s)}
+                  title={s.name}
+                >
+                  {s.name}
+                </button>
+              ))}
               <button
-                key={s.id}
                 type="button"
-                className={`session-tab ${currentSession?.id === s.id ? "session-tab-active" : ""}`}
-                onClick={() => handleSelectSession(s)}
-                title={s.name}
+                className="iris-tab iris-tab-new"
+                onClick={handleNewChat}
+                title="New chat"
               >
-                {s.name}
+                <Plus size={11} />
               </button>
-            ))}
+            </div>
             <button
               type="button"
-              className="session-tab session-tab-new"
-              onClick={handleNewChat}
-              title="New tab"
+              className="iris-toggle interactive"
+              onClick={() => setIsExpanded(true)}
+              aria-label="Expand"
             >
-              <Plus size={12} />
-              New
+              <ChevronDown size={13} />
             </button>
-          </div>
-        </header>
-
-        <button
-          type="button"
-          className="expand-toggle interactive"
-          onClick={() => setIsExpanded((value) => !value)}
-          aria-label={isExpanded ? "Collapse" : "Expand"}
-        >
-          {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-        </button>
-
-        {isExpanded && (
-          <section className="chat-panel">
-            <div ref={messageListRef} className="chat-log">
-              {chatMessages.length === 0 ? (
-                <div className="chat-empty">Start chatting.</div>
-              ) : (
-                chatMessages.map((msg, idx) => (
-                  <div key={idx} className={`chat-row ${msg.role === "user" ? "chat-row-user" : "chat-row-assistant"}`}>
-                    <div className={`chat-bubble ${msg.role === "user" ? "message-user" : "message-assistant"}`}>
-                      {msg.role === "assistant" ? (
-                        <ReactMarkdown
-                          className="message-markdown"
-                          remarkPlugins={[remarkGfm, remarkMath]}
-                          rehypePlugins={[rehypeKatex]}
-                        >
-                          {msg.text}
-                        </ReactMarkdown>
-                      ) : (
-                        msg.text
-                      )}
-                    </div>
-                  </div>
-                ))
-              )}
-              {chatLoading && (
-                <div className="chat-row chat-row-assistant">
-                  <div className="chat-bubble message-assistant">Thinking...</div>
-                </div>
-              )}
-            </div>
-
-            <form
-              className="chat-compose"
-              onSubmit={(e) => {
-                e.preventDefault()
-                handleChatSend()
-              }}
-            >
-              <input
-                ref={chatInputRef}
-                className="chat-input"
-                placeholder="Type a message..."
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                disabled={chatLoading}
-              />
+          </header>
+        ) : (
+          <>
+            <header className="iris-bar draggable-area">
+              <div className="iris-tabs interactive">
+                {sessions.map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    className={`iris-tab ${currentSession?.id === s.id ? "active" : ""}`}
+                    onClick={() => handleSelectSession(s)}
+                    title={s.name}
+                  >
+                    {s.name}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="iris-tab iris-tab-new"
+                  onClick={handleNewChat}
+                  title="New chat"
+                >
+                  <Plus size={11} />
+                </button>
+              </div>
               <button
-                type="submit"
-                className="chat-send"
-                disabled={chatLoading || !chatInput.trim()}
-                aria-label="Send"
+                type="button"
+                className="iris-toggle interactive"
+                onClick={() => setIsExpanded(false)}
+                aria-label="Collapse"
               >
-                <SendHorizontal size={16} />
+                <ChevronUp size={13} />
               </button>
-            </form>
-          </section>
+            </header>
+
+            <main className="iris-chat">
+              <div ref={messageListRef} className="iris-messages interactive">
+                {chatMessages.length === 0 ? (
+                  <div className="iris-empty">Start a conversation</div>
+                ) : (
+                  chatMessages.map((msg, idx) => (
+                    <div key={idx} className={`iris-msg ${msg.role}`}>
+                      <div className="iris-msg-bubble">
+                        {msg.role === "assistant" ? (
+                          msg.text ? (
+                            <ReactMarkdown
+                              className="iris-markdown"
+                              remarkPlugins={[remarkGfm, remarkMath]}
+                              rehypePlugins={[rehypeKatex]}
+                            >
+                              {msg.text}
+                            </ReactMarkdown>
+                          ) : (
+                            <div className="iris-thinking">
+                              <span />
+                              <span />
+                              <span />
+                            </div>
+                          )
+                        ) : (
+                          msg.text
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <form
+                className="iris-compose interactive"
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  handleChatSend()
+                }}
+              >
+                <input
+                  ref={chatInputRef}
+                  className="iris-input"
+                  placeholder="Message..."
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  disabled={chatLoading}
+                />
+                <button
+                  type="submit"
+                  className="iris-send"
+                  disabled={chatLoading || !chatInput.trim()}
+                  aria-label="Send"
+                >
+                  <SendHorizontal size={14} />
+                </button>
+              </form>
+            </main>
+          </>
         )}
       </div>
     </div>

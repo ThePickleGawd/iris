@@ -202,7 +202,3 @@ struct CanvasScreen: View {
             .navigationBarBackButtonHidden(true)
     }
 }
-
-#Preview {
-    HomeView()
-}
