@@ -595,7 +595,10 @@ struct ContentView: View {
 
                         Button {
                             Task { @MainActor in
-                                _ = await objectManager.approveSuggestion(id: suggestion.id)
+                                _ = await objectManager.approveSuggestion(
+                                    id: suggestion.id,
+                                    preferredScreenCenter: CGPoint(x: x, y: y)
+                                )
                             }
                         } label: {
                             Image(systemName: "checkmark")

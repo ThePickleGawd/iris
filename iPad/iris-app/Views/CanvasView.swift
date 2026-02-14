@@ -222,6 +222,10 @@ final class NoteCanvasView: PKCanvasView {
         point.applying(widgetOverlay.transform)
     }
 
+    func canvasPoint(forScreenPoint point: CGPoint) -> CGPoint {
+        point.applying(widgetOverlay.transform.inverted())
+    }
+
     func updateWidgetOverlayTransform() {
         let z = zoomScale
         let ox = contentOffset.x

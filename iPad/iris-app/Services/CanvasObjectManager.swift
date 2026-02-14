@@ -101,6 +101,11 @@ final class CanvasObjectManager: ObservableObject {
         return canvasView.screenPoint(forCanvasPoint: p)
     }
 
+    func canvasPoint(forScreenPoint p: CGPoint) -> CGPoint {
+        guard let canvasView else { return p }
+        return canvasView.canvasPoint(forScreenPoint: p)
+    }
+
     func updateMostRecentStrokeBounds(_ boundsCanvas: CGRect?) {
         guard let boundsCanvas, boundsCanvas.width > 0, boundsCanvas.height > 0 else {
             return
@@ -183,10 +188,19 @@ final class CanvasObjectManager: ObservableObject {
         guard let canvasView else { return object }
 
         if animated, let cursor {
-            let p = canvasView.screenPoint(forCanvasPoint: position)
-            cursor.appear(at: CGPoint(x: p.x - 54, y: p.y - 54))
+            let cursorSize = CGSize(width: 20, height: 30)
+            let widgetCenterCanvas = CGPoint(
+                x: position.x + (size.width * 0.5),
+                y: position.y + (size.height * 0.5)
+            )
+            let widgetCenterScreen = canvasView.screenPoint(forCanvasPoint: widgetCenterCanvas)
+            let cursorOrigin = CGPoint(
+                x: widgetCenterScreen.x - (cursorSize.width * 0.5),
+                y: widgetCenterScreen.y - (cursorSize.height * 0.5)
+            )
+            cursor.appear(at: cursorOrigin)
             try? await Task.sleep(nanoseconds: 160_000_000)
-            cursor.moveTo(p, duration: 0.34)
+            cursor.moveTo(cursorOrigin, duration: 0.34)
             try? await Task.sleep(nanoseconds: 300_000_000)
             cursor.click()
         }
@@ -250,11 +264,22 @@ final class CanvasObjectManager: ObservableObject {
         return suggestion
     }
 
-    func approveSuggestion(id: UUID) async -> CanvasObject? {
+    func approveSuggestion(
+        id: UUID,
+        preferredScreenCenter: CGPoint? = nil
+    ) async -> CanvasObject? {
         guard let suggestion = suggestions.removeValue(forKey: id) else { return nil }
+        let position: CGPoint = {
+            guard let preferredScreenCenter else { return suggestion.position }
+            let centerCanvas = canvasPoint(forScreenPoint: preferredScreenCenter)
+            return CGPoint(
+                x: centerCanvas.x - (suggestion.size.width * 0.5),
+                y: centerCanvas.y - (suggestion.size.height * 0.5)
+            )
+        }()
         return await place(
             html: suggestion.html,
-            at: suggestion.position,
+            at: position,
             size: suggestion.size,
             animated: suggestion.animateOnPlace
         )

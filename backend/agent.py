@@ -86,6 +86,8 @@ Widgets exist to help the user make progress on their current task, not to rephr
 - Do not merely restate the user's problem in the widget body.
 - Prefer actionable assistance: solve steps, worked examples, error checks, next action options, or decision support.
 - For math/problem-solving contexts, include concrete intermediate reasoning structure (steps/formula/check), not only a paraphrase.
+- The widget must directly contain the answer the user needs.
+- Do not require additional interaction to reveal the core answer.
 \
 """
 
