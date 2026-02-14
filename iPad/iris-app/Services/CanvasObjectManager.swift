@@ -83,6 +83,11 @@ final class CanvasObjectManager: ObservableObject {
         CGPoint(x: p.x + documentAxisOrigin.x, y: p.y + documentAxisOrigin.y)
     }
 
+    func screenPoint(forCanvasPoint p: CGPoint) -> CGPoint {
+        guard let canvasView else { return p }
+        return canvasView.screenPoint(forCanvasPoint: p)
+    }
+
     func makeCoordinateSnapshot(documentID: UUID?) -> CanvasCoordinateSnapshot {
         let viewport = viewportCanvasRect()
         let topLeftAxis = axisPoint(forCanvasPoint: viewport.origin)

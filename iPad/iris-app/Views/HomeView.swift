@@ -133,6 +133,7 @@ private struct ModelChoice: Identifiable {
 private let choices: [ModelChoice] = [
     ModelChoice(id: "gpt-5.2", name: "GPT-5.2", subtitle: "OpenAI general-purpose model"),
     ModelChoice(id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5", subtitle: "Best for screenshot + widget workflows"),
+    ModelChoice(id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", subtitle: "Fast multimodal model for lightweight tasks"),
     ModelChoice(id: "claude", name: "Claude (Alias)", subtitle: "Routes to default Claude model"),
 ]
 

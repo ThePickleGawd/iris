@@ -47,6 +47,7 @@ function formatRelativeTime(iso: string): string {
 const modelChoices = [
   { id: "gpt-5.2", name: "GPT-5.2", subtitle: "OpenAI general-purpose model" },
   { id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5", subtitle: "Best for screenshot and widget workflows" },
+  { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", subtitle: "Fast multimodal model for lightweight tasks" },
   { id: "claude", name: "Claude (Alias)", subtitle: "Routes to default Claude model" },
 ] as const
 
@@ -617,7 +618,13 @@ const Queue: React.FC = () => {
                   sortedSessions.map((s) => {
                     const isActive = currentSession?.id === s.id
                     const ts = (s as any).updated_at || (s as any).created_at || ""
-                    const modelLabel = s.model?.includes("claude") ? "Claude" : s.model === "gpt-5.2" ? "GPT-5.2" : s.model || "GPT-5.2"
+                    const modelLabel = s.model?.includes("claude")
+                      ? "Claude"
+                      : s.model?.includes("gemini")
+                        ? "Gemini"
+                        : s.model === "gpt-5.2"
+                          ? "GPT-5.2"
+                          : s.model || "GPT-5.2"
                     return (
                       <button
                         key={s.id}
