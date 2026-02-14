@@ -55,6 +55,12 @@ declare global {
       switchToOllama: (model?: string, url?: string) => Promise<{ success: boolean; error?: string }>
       switchToClaude: (apiKey?: string) => Promise<{ success: boolean; error?: string }>
       testLlmConnection: () => Promise<{ success: boolean; error?: string }>
+      startClaudeChatStream: (requestId: string, message: string) => Promise<{ success: boolean; error?: string }>
+      onClaudeChatStreamChunk: (callback: (data: { requestId: string; chunk: string }) => void) => () => void
+      onClaudeChatStreamDone: (callback: (data: { requestId: string; text: string }) => void) => () => void
+      onClaudeChatStreamError: (callback: (data: { requestId: string; error: string }) => void) => () => void
+      onAgentReply: (callback: (data: { text: string }) => void) => () => void
+      setNotificationsEnabled: (enabled: boolean) => Promise<{ success: boolean }>
       
       invoke: (channel: string, ...args: any[]) => Promise<any>
     }
@@ -164,7 +170,10 @@ const App: React.FC = () => {
   }, [])
 
   return (
-    <div ref={containerRef} className="min-h-0">
+    <div ref={containerRef} className="app-shell min-h-0">
+      <div className="window-titlebar draggable-area">
+        <span className="window-title">Iris</span>
+      </div>
       <QueryClientProvider client={queryClient}>
         <ToastProvider>
           {view === "queue" ? (

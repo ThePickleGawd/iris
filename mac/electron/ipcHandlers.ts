@@ -1,9 +1,27 @@
 // ipcHandlers.ts
 
-import { ipcMain, app } from "electron"
+import { ipcMain, app, Notification } from "electron"
 import { AppState } from "./main"
 
 export function initializeIpcHandlers(appState: AppState): void {
+  let notificationsEnabled = true
+
+  const notifyAgentReply = (text: string) => {
+    if (!notificationsEnabled) return
+    try {
+      if (Notification.isSupported()) {
+        const n = new Notification({
+          title: "Iris",
+          body: (text || "Assistant replied").slice(0, 180),
+          silent: false
+        })
+        n.show()
+      }
+    } catch (error) {
+      console.error("Failed to show notification:", error)
+    }
+  }
+
   ipcMain.handle(
     "update-content-dimensions",
     async (event, { width, height }: { width: number; height: number }) => {
@@ -106,6 +124,8 @@ export function initializeIpcHandlers(appState: AppState): void {
   ipcMain.handle("claude-chat", async (event, message: string) => {
     try {
       const result = await appState.processingHelper.getLLMHelper().chatWithClaude(message);
+      notifyAgentReply(result);
+      event.sender.send("agent-reply", { text: result });
       return result;
     } catch (error: any) {
       console.error("Error in claude-chat handler:", error);
@@ -113,8 +133,32 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  ipcMain.handle("claude-chat-stream", async (event, requestId: string, message: string) => {
+    try {
+      const llm = appState.processingHelper.getLLMHelper();
+      const full = await llm.chatWithClaudeStream(message, (chunk) => {
+        event.sender.send("claude-chat-stream-chunk", { requestId, chunk });
+      });
+      notifyAgentReply(full);
+      event.sender.send("agent-reply", { text: full });
+      event.sender.send("claude-chat-stream-done", { requestId, text: full });
+      return { success: true };
+    } catch (error: any) {
+      event.sender.send("claude-chat-stream-error", {
+        requestId,
+        error: error?.message || String(error)
+      });
+      return { success: false, error: error?.message || String(error) };
+    }
+  });
+
   ipcMain.handle("quit-app", () => {
     app.quit()
+  })
+
+  ipcMain.handle("set-notifications-enabled", async (_, enabled: boolean) => {
+    notificationsEnabled = Boolean(enabled)
+    return { success: true }
   })
 
   // Window movement handlers

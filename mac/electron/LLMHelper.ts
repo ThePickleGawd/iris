@@ -21,7 +21,6 @@ export class LLMHelper {
   private apiKey: string | null = null
   private claudeModel: string = process.env.CLAUDE_MODEL || "claude-sonnet-4-5"
   private readonly anthropicUrl = "https://api.anthropic.com/v1/messages"
-  private readonly systemPrompt = `You are Wingman AI, a helpful, proactive assistant for any kind of problem or situation (not just coding). For any user input, analyze the situation, provide a clear problem statement, relevant context, and suggest several possible responses or actions the user could take next. Always explain your reasoning. Present your suggestions as a list of options or next steps.`
   private useOllama: boolean = false
   private ollamaModel: string = "llama3.2"
   private ollamaUrl: string = "http://localhost:11434"
@@ -81,7 +80,6 @@ export class LLMHelper {
       body: JSON.stringify({
         model: this.claudeModel,
         max_tokens: 2000,
-        system: this.systemPrompt,
         messages: [{ role: "user", content }]
       })
     })
@@ -102,6 +100,77 @@ export class LLMHelper {
     }
 
     return text
+  }
+
+  private async callClaudeStream(
+    content: ClaudeContentBlock[],
+    onChunk: (chunk: string) => void
+  ): Promise<string> {
+    if (!this.apiKey) {
+      throw new Error("Claude API key is not configured")
+    }
+
+    const response = await fetch(this.anthropicUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": this.apiKey,
+        "anthropic-version": "2023-06-01"
+      },
+      body: JSON.stringify({
+        model: this.claudeModel,
+        max_tokens: 2000,
+        stream: true,
+        messages: [{ role: "user", content }]
+      })
+    })
+
+    if (!response.ok) {
+      const body = await response.text()
+      throw new Error(`Claude API error: ${response.status} ${response.statusText} - ${body}`)
+    }
+
+    if (!response.body) {
+      throw new Error("Claude API stream body is empty")
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ""
+    let fullText = ""
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split("\n")
+      buffer = lines.pop() || ""
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith("data:")) continue
+        const payload = trimmed.slice(5).trim()
+        if (!payload || payload === "[DONE]") continue
+
+        try {
+          const parsed = JSON.parse(payload)
+          if (parsed.type === "content_block_delta" && parsed.delta?.text) {
+            const chunk = parsed.delta.text as string
+            fullText += chunk
+            onChunk(chunk)
+          }
+        } catch {
+          // Ignore malformed stream lines
+        }
+      }
+    }
+
+    if (!fullText.trim()) {
+      throw new Error("Empty response from Claude stream")
+    }
+
+    return fullText
   }
 
   private async callClaudeText(prompt: string): Promise<string> {
@@ -179,7 +248,7 @@ export class LLMHelper {
   public async extractProblemFromImages(imagePaths: string[]) {
     try {
       const imageParts = await Promise.all(imagePaths.map((p) => this.fileToClaudeImagePart(p)))
-      const prompt = `You are a wingman. Please analyze these images and extract the following information in JSON format:\n{\n  "problem_statement": "A clear statement of the problem or situation depicted in the images.",\n  "context": "Relevant background or context from the images.",\n  "suggested_responses": ["First possible answer or action", "Second possible answer or action", "..."],\n  "reasoning": "Explanation of why these suggestions are appropriate."\n}\nImportant: Return ONLY the JSON object, without any markdown formatting or code blocks.`
+      const prompt = `You are Iris. Please analyze these images and extract the following information in JSON format:\n{\n  "problem_statement": "A clear statement of the problem or situation depicted in the images.",\n  "context": "Relevant background or context from the images.",\n  "suggested_responses": ["First possible answer or action", "Second possible answer or action", "..."],\n  "reasoning": "Explanation of why these suggestions are appropriate."\n}\nImportant: Return ONLY the JSON object, without any markdown formatting or code blocks.`
       const text = this.useOllama
         ? await this.callOllama(prompt)
         : await this.callClaude([{ type: "text", text: prompt }, ...imageParts])
@@ -191,7 +260,7 @@ export class LLMHelper {
   }
 
   public async generateSolution(problemInfo: any) {
-    const prompt = `${this.systemPrompt}\n\nGiven this problem or situation:\n${JSON.stringify(problemInfo, null, 2)}\n\nPlease provide your response in the following JSON format:\n{\n  "solution": {\n    "code": "The code or main answer here.",\n    "problem_statement": "Restate the problem or situation.",\n    "context": "Relevant background/context.",\n    "suggested_responses": ["First possible answer or action", "Second possible answer or action", "..."],\n    "reasoning": "Explanation of why these suggestions are appropriate."\n  }\n}\nImportant: Return ONLY the JSON object, without any markdown formatting or code blocks.`
+    const prompt = `You are Iris.\n\nGiven this problem or situation:\n${JSON.stringify(problemInfo, null, 2)}\n\nPlease provide your response in the following JSON format:\n{\n  "solution": {\n    "code": "The code or main answer here.",\n    "problem_statement": "Restate the problem or situation.",\n    "context": "Relevant background/context.",\n    "suggested_responses": ["First possible answer or action", "Second possible answer or action", "..."],\n    "reasoning": "Explanation of why these suggestions are appropriate."\n  }\n}\nImportant: Return ONLY the JSON object, without any markdown formatting or code blocks.`
 
     try {
       const text = this.useOllama ? await this.callOllama(prompt) : await this.callClaudeText(prompt)
@@ -205,7 +274,7 @@ export class LLMHelper {
   public async debugSolutionWithImages(problemInfo: any, currentCode: string, debugImagePaths: string[]) {
     try {
       const imageParts = await Promise.all(debugImagePaths.map((p) => this.fileToClaudeImagePart(p)))
-      const prompt = `${this.systemPrompt}\n\nYou are a wingman. Given:\n1. The original problem or situation: ${JSON.stringify(problemInfo, null, 2)}\n2. The current response or approach: ${currentCode}\n3. The debug information in the provided images\n\nPlease analyze the debug information and provide feedback in this JSON format:\n{\n  "solution": {\n    "code": "The code or main answer here.",\n    "problem_statement": "Restate the problem or situation.",\n    "context": "Relevant background/context.",\n    "suggested_responses": ["First possible answer or action", "Second possible answer or action", "..."],\n    "reasoning": "Explanation of why these suggestions are appropriate."\n  }\n}\nImportant: Return ONLY the JSON object, without any markdown formatting or code blocks.`
+      const prompt = `You are Iris.\n\nGiven:\n1. The original problem or situation: ${JSON.stringify(problemInfo, null, 2)}\n2. The current response or approach: ${currentCode}\n3. The debug information in the provided images\n\nPlease analyze the debug information and provide feedback in this JSON format:\n{\n  "solution": {\n    "code": "The code or main answer here.",\n    "problem_statement": "Restate the problem or situation.",\n    "context": "Relevant background/context.",\n    "suggested_responses": ["First possible answer or action", "Second possible answer or action", "..."],\n    "reasoning": "Explanation of why these suggestions are appropriate."\n  }\n}\nImportant: Return ONLY the JSON object, without any markdown formatting or code blocks.`
 
       const text = this.useOllama
         ? await this.callOllama(prompt)
@@ -243,7 +312,7 @@ export class LLMHelper {
 
   public async analyzeImageFile(imagePath: string) {
     try {
-      const prompt = `${this.systemPrompt}\n\nDescribe the content of this image in a short, concise answer. In addition to your main answer, suggest several possible actions or responses the user could take next based on the image. Do not return a structured JSON object, just answer naturally as you would to a user. Be concise and brief.`
+      const prompt = `You are Iris.\n\nDescribe the content of this image in a short, concise answer. In addition to your main answer, suggest several possible actions or responses the user could take next based on the image. Do not return a structured JSON object, just answer naturally as you would to a user. Be concise and brief.`
 
       const text = this.useOllama
         ? await this.callOllama(prompt)
@@ -258,12 +327,39 @@ export class LLMHelper {
 
   public async chatWithClaude(message: string): Promise<string> {
     try {
+      if (/(who are you|what(?:'s| is) your name|what are you called|who am i talking to|your name)/i.test(message)) {
+        return "I'm Iris."
+      }
       if (this.useOllama) {
         return this.callOllama(message)
       }
       return this.callClaudeText(message)
     } catch (error) {
       console.error("[LLMHelper] Error in chatWithClaude:", error)
+      throw error
+    }
+  }
+
+  public async chatWithClaudeStream(
+    message: string,
+    onChunk: (chunk: string) => void
+  ): Promise<string> {
+    try {
+      if (/(who are you|what(?:'s| is) your name|what are you called|who am i talking to|your name)/i.test(message)) {
+        const text = "I'm Iris."
+        onChunk(text)
+        return text
+      }
+
+      if (this.useOllama) {
+        const text = await this.callOllama(message)
+        onChunk(text)
+        return text
+      }
+
+      return this.callClaudeStream([{ type: "text", text: message }], onChunk)
+    } catch (error) {
+      console.error("[LLMHelper] Error in chatWithClaudeStream:", error)
       throw error
     }
   }

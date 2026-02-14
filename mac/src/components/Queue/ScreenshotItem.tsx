@@ -27,11 +27,11 @@ const ScreenshotItem: React.FC<ScreenshotItemProps> = ({
   return (
     <>
       <div
-        className={`border border-white relative ${isLoading ? "" : "group"}`}
+        className={`border border-slate-300 rounded-md bg-white relative overflow-hidden ${isLoading ? "" : "group"}`}
       >
         <div className="w-full h-full relative">
           {isLoading && (
-            <div className="absolute inset-0 bg-black bg-opacity-50 z-10 flex items-center justify-center">
+            <div className="absolute inset-0 bg-slate-900/35 z-10 flex items-center justify-center">
               <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin" />
             </div>
           )}
@@ -41,7 +41,7 @@ const ScreenshotItem: React.FC<ScreenshotItemProps> = ({
             className={`w-full h-full object-cover transition-transform duration-300 ${
               isLoading
                 ? "opacity-50"
-                : "cursor-pointer group-hover:scale-105 group-hover:brightness-75"
+                : "cursor-pointer group-hover:scale-105 group-hover:brightness-95"
             }`}
           />
         </div>
@@ -51,7 +51,7 @@ const ScreenshotItem: React.FC<ScreenshotItemProps> = ({
               e.stopPropagation()
               handleDelete()
             }}
-            className="absolute top-2 left-2 p-1 rounded-full bg-black bg-opacity-50 text-white opacity-0 group-hover:opacity-100 transition-opacity duration-300"
+            className="absolute top-2 left-2 p-1 rounded-full bg-slate-900/75 text-white opacity-0 group-hover:opacity-100 transition-opacity duration-300 border border-slate-700"
             aria-label="Delete screenshot"
           >
             <X size={16} />

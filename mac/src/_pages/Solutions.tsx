@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from "react"
 import { useQuery, useQueryClient } from "react-query"
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter"
-import { dracula } from "react-syntax-highlighter/dist/esm/styles/prism"
+import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism"
 
 import ScreenshotQueue from "../components/Queue/ScreenshotQueue"
 import {
@@ -13,7 +13,6 @@ import {
   ToastVariant
 } from "../components/ui/toast"
 import { ProblemStatementData } from "../types/solutions"
-import { AudioResult } from "../types/audio"
 import SolutionCommands from "../components/Solutions/SolutionCommands"
 import Debug from "./Debug"
 
@@ -29,17 +28,17 @@ export const ContentSection = ({
   isLoading: boolean
 }) => (
   <div className="space-y-2">
-    <h2 className="text-[13px] font-medium text-white tracking-wide">
+    <h2 className="text-[13px] font-semibold text-slate-800 tracking-wide">
       {title}
     </h2>
     {isLoading ? (
       <div className="mt-4 flex">
-        <p className="text-xs bg-gradient-to-r from-gray-300 via-gray-100 to-gray-300 bg-clip-text text-transparent animate-pulse">
+        <p className="text-xs text-slate-500 animate-pulse">
           Extracting problem statement...
         </p>
       </div>
     ) : (
-      <div className="text-[13px] leading-[1.4] text-gray-100 max-w-[600px]">
+      <div className="text-[13px] leading-[1.5] text-slate-700 max-w-[600px]">
         {content}
       </div>
     )}
@@ -55,13 +54,13 @@ const SolutionSection = ({
   isLoading: boolean
 }) => (
   <div className="space-y-2">
-    <h2 className="text-[13px] font-medium text-white tracking-wide">
+    <h2 className="text-[13px] font-semibold text-slate-800 tracking-wide">
       {title}
     </h2>
     {isLoading ? (
       <div className="space-y-1.5">
         <div className="mt-4 flex">
-          <p className="text-xs bg-gradient-to-r from-gray-300 via-gray-100 to-gray-300 bg-clip-text text-transparent animate-pulse">
+          <p className="text-xs text-slate-500 animate-pulse">
             Loading solutions...
           </p>
         </div>
@@ -71,7 +70,7 @@ const SolutionSection = ({
         <SyntaxHighlighter
           showLineNumbers
           language="python"
-          style={dracula}
+          style={oneLight}
           customStyle={{
             maxWidth: "100%",
             margin: 0,
@@ -98,23 +97,23 @@ export const ComplexitySection = ({
   isLoading: boolean
 }) => (
   <div className="space-y-2">
-    <h2 className="text-[13px] font-medium text-white tracking-wide">
+    <h2 className="text-[13px] font-semibold text-slate-800 tracking-wide">
       Complexity (Updated)
     </h2>
     {isLoading ? (
-      <p className="text-xs bg-gradient-to-r from-gray-300 via-gray-100 to-gray-300 bg-clip-text text-transparent animate-pulse">
+      <p className="text-xs text-slate-500 animate-pulse">
         Calculating complexity...
       </p>
     ) : (
       <div className="space-y-1">
-        <div className="flex items-start gap-2 text-[13px] leading-[1.4] text-gray-100">
-          <div className="w-1 h-1 rounded-full bg-blue-400/80 mt-2 shrink-0" />
+        <div className="flex items-start gap-2 text-[13px] leading-[1.4] text-slate-700">
+          <div className="w-1 h-1 rounded-full bg-teal-600 mt-2 shrink-0" />
           <div>
             <strong>Time:</strong> {timeComplexity}
           </div>
         </div>
-        <div className="flex items-start gap-2 text-[13px] leading-[1.4] text-gray-100">
-          <div className="w-1 h-1 rounded-full bg-blue-400/80 mt-2 shrink-0" />
+        <div className="flex items-start gap-2 text-[13px] leading-[1.4] text-slate-700">
+          <div className="w-1 h-1 rounded-full bg-teal-600 mt-2 shrink-0" />
           <div>
             <strong>Space:</strong> {spaceComplexity}
           </div>
@@ -130,10 +129,6 @@ interface SolutionsProps {
 const Solutions: React.FC<SolutionsProps> = ({ setView }) => {
   const queryClient = useQueryClient()
   const contentRef = useRef<HTMLDivElement>(null)
-
-  // Audio recording state
-  const [audioRecording, setAudioRecording] = useState(false)
-  const [audioResult, setAudioResult] = useState<AudioResult | null>(null)
 
   const [debugProcessing, setDebugProcessing] = useState(false)
   const [problemStatementData, setProblemStatementData] =
@@ -253,42 +248,6 @@ const Solutions: React.FC<SolutionsProps> = ({ setView }) => {
         setTimeComplexityData(null)
         setSpaceComplexityData(null)
         setCustomContent(null)
-        setAudioResult(null)
-
-        // Start audio recording from user's microphone
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-          const mediaRecorder = new MediaRecorder(stream)
-          const chunks: Blob[] = []
-          mediaRecorder.ondataavailable = (e) => chunks.push(e.data)
-          mediaRecorder.start()
-          setAudioRecording(true)
-          // Record for 5 seconds (or adjust as needed)
-          setTimeout(() => mediaRecorder.stop(), 5000)
-          mediaRecorder.onstop = async () => {
-            setAudioRecording(false)
-            const blob = new Blob(chunks, { type: chunks[0]?.type || 'audio/webm' })
-            const reader = new FileReader()
-            reader.onloadend = async () => {
-              const base64Data = (reader.result as string).split(',')[1]
-              // Send audio to the configured LM provider for analysis
-              try {
-                const result = await window.electronAPI.analyzeAudioFromBase64(
-                  base64Data,
-                  blob.type
-                )
-                // Store result in react-query cache
-                queryClient.setQueryData(["audio_result"], result)
-                setAudioResult(result)
-              } catch (err) {
-                console.error('Audio analysis failed:', err)
-              }
-            }
-            reader.readAsDataURL(blob)
-          }
-        } catch (err) {
-          console.error('Audio recording error:', err)
-        }
 
         // Simulate receiving custom content shortly after start
         setTimeout(() => {
@@ -392,34 +351,6 @@ const Solutions: React.FC<SolutionsProps> = ({ setView }) => {
         setProblemStatementData(
           queryClient.getQueryData(["problem_statement"]) || null
         )
-        // If this is from audio processing, show it in the custom content section
-        const audioResult = queryClient.getQueryData(["audio_result"]) as AudioResult | undefined;
-        if (audioResult) {
-          // Update all relevant sections when audio result is received
-          setProblemStatementData({
-            problem_statement: audioResult.text,
-            input_format: {
-              description: "Generated from audio input",
-              parameters: []
-            },
-            output_format: {
-              description: "Generated from audio input",
-              type: "string",
-              subtype: "text"
-            },
-            complexity: {
-              time: "N/A",
-              space: "N/A"
-            },
-            test_cases: [],
-            validation_type: "manual",
-            difficulty: "custom"
-          });
-          setSolutionData(null); // Reset solution to trigger loading state
-          setThoughtsData(null);
-          setTimeComplexityData(null);
-          setSpaceComplexityData(null);
-        }
       }
       if (event?.query.queryKey[0] === "solution") {
         const solution = queryClient.getQueryData(["solution"]) as {
@@ -453,7 +384,7 @@ const Solutions: React.FC<SolutionsProps> = ({ setView }) => {
           />
         </>
       ) : (
-        <div ref={contentRef} className="relative space-y-3 px-4 py-3">
+        <div ref={contentRef} className="app-shell relative space-y-3 px-4 py-3">
           <Toast
             open={toastOpen}
             onOpenChange={setToastOpen}
@@ -486,7 +417,7 @@ const Solutions: React.FC<SolutionsProps> = ({ setView }) => {
           />
 
           {/* Main Content - Modified width constraints */}
-          <div className="w-full text-sm text-black bg-black/60 rounded-md">
+          <div className="w-full text-sm panel text-slate-900 rounded-md">
             <div className="rounded-lg overflow-hidden">
               <div className="px-4 py-3 space-y-4 max-w-full">
                 {/* Show Screenshot or Audio Result as main output if validation_type is manual */}
@@ -507,7 +438,7 @@ const Solutions: React.FC<SolutionsProps> = ({ setView }) => {
                     {/* Show loading state when waiting for solution */}
                     {problemStatementData && !solutionData && (
                       <div className="mt-4 flex">
-                        <p className="text-xs bg-gradient-to-r from-gray-300 via-gray-100 to-gray-300 bg-clip-text text-transparent animate-pulse">
+                        <p className="text-xs text-slate-500 animate-pulse">
                           {problemStatementData?.output_format?.subtype === "voice" 
                             ? "Processing voice input..." 
                             : "Generating solutions..."}
@@ -528,7 +459,7 @@ const Solutions: React.FC<SolutionsProps> = ({ setView }) => {
                                       key={index}
                                       className="flex items-start gap-2"
                                     >
-                                      <div className="w-1 h-1 rounded-full bg-blue-400/80 mt-2 shrink-0" />
+                                      <div className="w-1 h-1 rounded-full bg-teal-600 mt-2 shrink-0" />
                                       <div>{thought}</div>
                                     </div>
                                   ))}
