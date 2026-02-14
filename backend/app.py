@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import threading
 import time
 import uuid
@@ -17,8 +16,8 @@ from werkzeug.utils import secure_filename
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
+STORE_DIR = DATA_DIR / "store"
 SCREENSHOTS_DIR = DATA_DIR / "screenshots"
-DB_PATH = DATA_DIR / "iris.db"
 MAX_REQUEST_BYTES = 15 * 1024 * 1024
 MAX_TRANSCRIPT_CHARS = 20_000
 MAX_LIST_LIMIT = 200
@@ -43,10 +42,21 @@ COMMAND_STATUSES = {
     COMMAND_STATUS_FAILED,
     COMMAND_STATUS_CANCELED,
 }
-
+SESSION_STATUS_ACTIVE = "active"
+SESSION_STATUS_ARCHIVED = "archived"
+SESSION_STATUSES = {SESSION_STATUS_ACTIVE, SESSION_STATUS_ARCHIVED}
+STORE_ENTITIES = (
+    "sessions",
+    "messages",
+    "transcripts",
+    "screenshots",
+    "device_commands",
+    "agent_status",
+)
 
 RATE_LIMIT_STATE: dict[str, list[float]] = {}
 RATE_LIMIT_LOCK = threading.Lock()
+STORE_LOCK = threading.RLock()
 
 
 def now_iso() -> str:
@@ -55,87 +65,64 @@ def now_iso() -> str:
 
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(exist_ok=True)
+    STORE_DIR.mkdir(exist_ok=True)
     SCREENSHOTS_DIR.mkdir(exist_ok=True)
+    for entity in STORE_ENTITIES:
+        entity_dir(entity).mkdir(parents=True, exist_ok=True)
 
 
-def db_connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+def entity_dir(entity: str) -> Path:
+    return STORE_DIR / entity
 
 
-def ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
-    columns = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    column_names = {col["name"] for col in columns}
-    if column not in column_names:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+def entity_path(entity: str, item_id: str) -> Path:
+    return entity_dir(entity) / f"{item_id}.json"
 
 
-def init_db() -> None:
-    with db_connect() as conn:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS transcripts (
-                id TEXT PRIMARY KEY,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                captured_at TEXT NOT NULL,
-                device_id TEXT,
-                source TEXT,
-                text TEXT NOT NULL
-            );
+def read_json_file(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
 
-            CREATE TABLE IF NOT EXISTS screenshots (
-                id TEXT PRIMARY KEY,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                captured_at TEXT,
-                device_id TEXT,
-                session_id TEXT,
-                source TEXT,
-                mime_type TEXT,
-                file_path TEXT NOT NULL,
-                notes TEXT
-            );
 
-            CREATE TABLE IF NOT EXISTS device_commands (
-                id TEXT PRIMARY KEY,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                target_device_id TEXT NOT NULL,
-                source_device_id TEXT,
-                command_type TEXT NOT NULL,
-                payload_json TEXT NOT NULL,
-                status TEXT NOT NULL,
-                acknowledged_at TEXT,
-                completed_at TEXT,
-                result_json TEXT,
-                error_text TEXT
-            );
+def list_records(entity: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    with STORE_LOCK:
+        for path in sorted(entity_dir(entity).glob("*.json")):
+            row = read_json_file(path)
+            if row is not None:
+                rows.append(row)
+    return rows
 
-            CREATE TABLE IF NOT EXISTS sessions (
-                id TEXT PRIMARY KEY,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                name TEXT NOT NULL DEFAULT 'Untitled',
-                agent TEXT NOT NULL DEFAULT 'iris',
-                device_id TEXT,
-                last_message_at TEXT
-            );
 
-            CREATE TABLE IF NOT EXISTS messages (
-                id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                device_id TEXT,
-                FOREIGN KEY (session_id) REFERENCES sessions(id)
-            );
-            """
-        )
-        ensure_column(conn, "screenshots", "captured_at", "TEXT")
-        ensure_column(conn, "screenshots", "session_id", "TEXT")
+def get_record(entity: str, item_id: str) -> dict[str, Any] | None:
+    with STORE_LOCK:
+        return read_json_file(entity_path(entity, item_id))
+
+
+def save_record(entity: str, row: dict[str, Any]) -> None:
+    item_id = row.get("id")
+    if not isinstance(item_id, str) or not item_id.strip():
+        raise ValueError("record id is required")
+
+    path = entity_path(entity, item_id)
+    tmp_path = path.with_suffix(".json.tmp")
+    payload = json.dumps(row, ensure_ascii=False, separators=(",", ":"))
+    with STORE_LOCK:
+        tmp_path.write_text(payload, encoding="utf-8")
+        tmp_path.replace(path)
+
+
+def delete_record(entity: str, item_id: str) -> bool:
+    path = entity_path(entity, item_id)
+    try:
+        with STORE_LOCK:
+            path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
 
 
 def parse_iso8601_to_utc(ts: str) -> str:
@@ -148,6 +135,15 @@ def parse_iso8601_to_utc(ts: str) -> str:
     else:
         parsed = parsed.astimezone(timezone.utc)
     return parsed.isoformat()
+
+
+def to_dt(ts: Any) -> datetime:
+    if isinstance(ts, str) and ts.strip():
+        try:
+            return datetime.fromisoformat(parse_iso8601_to_utc(ts))
+        except ValueError:
+            pass
+    return datetime.fromtimestamp(0, tz=timezone.utc)
 
 
 def parse_list_limit(raw_limit: str | None) -> int:
@@ -193,6 +189,20 @@ def make_cursor(ts: str, item_id: str) -> str:
     return f"{cursor_ts}{CURSOR_SEPARATOR}{item_id}"
 
 
+def cursor_allows(ts: str, item_id: str, cursor_ts: str | None, cursor_id: str | None) -> bool:
+    if cursor_ts is None:
+        return True
+    row_dt = to_dt(ts)
+    cursor_dt = to_dt(cursor_ts)
+    if row_dt > cursor_dt:
+        return True
+    if row_dt < cursor_dt:
+        return False
+    if cursor_id is None:
+        return False
+    return item_id > cursor_id
+
+
 def check_rate_limit(key: str, limit: int, window_seconds: int = 60) -> tuple[bool, int]:
     now = time.time()
     cutoff = now - window_seconds
@@ -208,81 +218,143 @@ def check_rate_limit(key: str, limit: int, window_seconds: int = 60) -> tuple[bo
     return True, 0
 
 
-def transcript_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+def parse_optional_session_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("session_id must be a string")
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("session_id cannot be empty")
+    return cleaned
+
+
+def ensure_session_exists(session_id: str) -> bool:
+    return get_record("sessions", session_id) is not None
+
+
+def parse_session_status(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("status is required")
+    cleaned = value.strip()
+    if cleaned not in SESSION_STATUSES:
+        raise ValueError("status must be one of: active, archived")
+    return cleaned
+
+
+def parse_session_status_filter(value: str | None) -> str | None:
+    if value is None or not value.strip():
+        return None
+    cleaned = value.strip()
+    if cleaned not in SESSION_STATUSES:
+        raise ValueError("status must be one of: active, archived")
+    return cleaned
+
+
+def touch_session(session_id: str | None) -> None:
+    if not session_id:
+        return
+    row = get_record("sessions", session_id)
+    if not row:
+        return
+    row["updated_at"] = now_iso()
+    save_record("sessions", row)
+
+
+def session_to_dict(row: dict[str, Any]) -> dict[str, Any]:
+    metadata = row.get("metadata")
+    if not isinstance(metadata, (dict, list)):
+        metadata = {}
     return {
-        "id": row["id"],
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
-        "captured_at": row["captured_at"],
-        "device_id": row["device_id"],
-        "source": row["source"],
-        "text": row["text"],
+        "id": row.get("id"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "name": row.get("name"),
+        "agent": row.get("agent", "iris"),
+        "status": row.get("status"),
+        "device_id": row.get("device_id"),
+        "source_device_id": row.get("source_device_id"),
+        "last_message_at": row.get("last_message_at"),
+        "metadata": metadata,
     }
 
 
-def screenshot_to_dict(row: sqlite3.Row) -> dict[str, Any]:
-    file_url = url_for("get_screenshot_file", screenshot_id=row["id"], _external=True)
+def transcript_to_dict(row: dict[str, Any]) -> dict[str, Any]:
     return {
-        "id": row["id"],
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
-        "captured_at": row["captured_at"],
-        "device_id": row["device_id"],
-        "session_id": row["session_id"],
-        "source": row["source"],
-        "mime_type": row["mime_type"],
-        "file_path": row["file_path"],
+        "id": row.get("id"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "captured_at": row.get("captured_at"),
+        "session_id": row.get("session_id"),
+        "device_id": row.get("device_id"),
+        "source": row.get("source"),
+        "text": row.get("text"),
+    }
+
+
+def screenshot_to_dict(row: dict[str, Any]) -> dict[str, Any]:
+    file_url = url_for("get_screenshot_file", screenshot_id=str(row.get("id")), _external=True)
+    return {
+        "id": row.get("id"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "captured_at": row.get("captured_at"),
+        "session_id": row.get("session_id"),
+        "device_id": row.get("device_id"),
+        "source": row.get("source"),
+        "mime_type": row.get("mime_type"),
+        "file_path": row.get("file_path"),
         "file_url": file_url,
-        "notes": row["notes"],
+        "notes": row.get("notes"),
     }
 
 
-def parse_json_field(raw: str | None, default: Any) -> Any:
-    if raw is None:
-        return default
-    try:
-        return json.loads(raw)
-    except (TypeError, json.JSONDecodeError):
-        return default
-
-
-def command_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+def command_to_dict(row: dict[str, Any]) -> dict[str, Any]:
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
     return {
-        "id": row["id"],
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
-        "target_device_id": row["target_device_id"],
-        "source_device_id": row["source_device_id"],
-        "command_type": row["command_type"],
-        "payload": parse_json_field(row["payload_json"], {}),
-        "status": row["status"],
-        "acknowledged_at": row["acknowledged_at"],
-        "completed_at": row["completed_at"],
-        "result": parse_json_field(row["result_json"], None),
-        "error": row["error_text"],
+        "id": row.get("id"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "target_device_id": row.get("target_device_id"),
+        "session_id": row.get("session_id"),
+        "source_device_id": row.get("source_device_id"),
+        "command_type": row.get("command_type"),
+        "payload": payload,
+        "status": row.get("status"),
+        "acknowledged_at": row.get("acknowledged_at"),
+        "completed_at": row.get("completed_at"),
+        "result": row.get("result"),
+        "error": row.get("error"),
     }
 
 
-def session_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+def agent_status_to_dict(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    metadata = row.get("metadata")
+    if not isinstance(metadata, (dict, list)):
+        metadata = {}
     return {
-        "id": row["id"],
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
-        "name": row["name"],
-        "agent": row["agent"],
-        "device_id": row["device_id"],
-        "last_message_at": row["last_message_at"],
+        "id": row.get("id"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "session_id": row.get("session_id"),
+        "phase": row.get("phase"),
+        "headline": row.get("headline"),
+        "detail": row.get("detail"),
+        "source_device_id": row.get("source_device_id"),
+        "metadata": metadata,
     }
 
 
-def message_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+def message_to_dict(row: dict[str, Any]) -> dict[str, Any]:
     return {
-        "id": row["id"],
-        "session_id": row["session_id"],
-        "created_at": row["created_at"],
-        "role": row["role"],
-        "content": row["content"],
-        "device_id": row["device_id"],
+        "id": row.get("id"),
+        "session_id": row.get("session_id"),
+        "created_at": row.get("created_at"),
+        "role": row.get("role"),
+        "content": row.get("content"),
+        "device_id": row.get("device_id"),
     }
 
 
@@ -321,9 +393,14 @@ def screenshot_device_dir(device_id: str | None) -> Path:
     return SCREENSHOTS_DIR / safe_name
 
 
+def newest_record(rows: list[dict[str, Any]], ts_key: str = "updated_at") -> dict[str, Any] | None:
+    if not rows:
+        return None
+    return max(rows, key=lambda row: (to_dt(row.get(ts_key)), str(row.get("id", ""))))
+
+
 def create_app() -> Flask:
     ensure_dirs()
-    init_db()
 
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
@@ -360,12 +437,10 @@ def create_app() -> Flask:
         )
         if not allowed:
             return (
-                jsonify(
-                    {
-                        "error": "rate limit exceeded",
-                        "retry_after_seconds": retry_after,
-                    }
-                ),
+                jsonify({
+                    "error": "rate limit exceeded",
+                    "retry_after_seconds": retry_after,
+                }),
                 429,
                 {"Retry-After": str(retry_after)},
             )
@@ -374,18 +449,178 @@ def create_app() -> Flask:
     @app.errorhandler(RequestEntityTooLarge)
     def handle_request_too_large(_: RequestEntityTooLarge) -> Any:
         return (
-            jsonify(
-                {
-                    "error": "request too large",
-                    "max_bytes": MAX_REQUEST_BYTES,
-                }
-            ),
+            jsonify({
+                "error": "request too large",
+                "max_bytes": MAX_REQUEST_BYTES,
+            }),
             413,
         )
 
     @app.get("/health")
     def health() -> Any:
         return jsonify({"status": "ok", "ts": now_iso()})
+
+    @app.post("/api/sessions")
+    def create_session() -> Any:
+        payload = request.get_json(silent=True) or {}
+        name = payload.get("name")
+        source_device_id = payload.get("source_device_id")
+        device_id = payload.get("device_id")
+        metadata = payload.get("metadata", {})
+        agent = payload.get("agent")
+
+        session_name = "Untitled Session"
+        if isinstance(name, str) and name.strip():
+            session_name = name.strip()
+
+        if not isinstance(metadata, (dict, list)):
+            metadata = {}
+
+        # Accept optional caller-provided id (for iPad registration)
+        session_id = payload.get("id")
+        if isinstance(session_id, str) and session_id.strip():
+            session_id = session_id.strip()
+            # Idempotent: if session already exists, update and return it
+            existing = get_record("sessions", session_id)
+            if existing:
+                existing["updated_at"] = now_iso()
+                if isinstance(name, str) and name.strip():
+                    existing["name"] = name.strip()
+                if isinstance(agent, str) and agent.strip():
+                    existing["agent"] = agent.strip()
+                if isinstance(device_id, str):
+                    existing["device_id"] = device_id.strip()
+                save_record("sessions", existing)
+                return jsonify(session_to_dict(existing)), 201
+        else:
+            session_id = str(uuid.uuid4())
+
+        ts = now_iso()
+        row = {
+            "id": session_id,
+            "created_at": ts,
+            "updated_at": ts,
+            "name": session_name,
+            "agent": agent.strip() if isinstance(agent, str) and agent.strip() else "iris",
+            "status": SESSION_STATUS_ACTIVE,
+            "device_id": device_id.strip() if isinstance(device_id, str) else None,
+            "source_device_id": source_device_id.strip() if isinstance(source_device_id, str) else None,
+            "last_message_at": None,
+            "metadata": metadata,
+        }
+        save_record("sessions", row)
+        return jsonify(session_to_dict(row)), 201
+
+    @app.get("/api/sessions")
+    def list_sessions() -> Any:
+        try:
+            limit = parse_list_limit(request.args.get("limit"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        try:
+            status_filter = parse_session_status_filter(request.args.get("status"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        sessions = list_records("sessions")
+        transcripts = list_records("transcripts")
+        commands = list_records("device_commands")
+        statuses = list_records("agent_status")
+
+        if status_filter:
+            sessions = [row for row in sessions if row.get("status") == status_filter]
+
+        sessions = sorted(sessions, key=lambda row: (to_dt(row.get("updated_at")), str(row.get("id", ""))), reverse=True)
+        sessions = sessions[:limit]
+
+        transcript_counts: dict[str, int] = {}
+        for row in transcripts:
+            sid = row.get("session_id")
+            if isinstance(sid, str):
+                transcript_counts[sid] = transcript_counts.get(sid, 0) + 1
+
+        pending_counts: dict[str, int] = {}
+        for row in commands:
+            sid = row.get("session_id")
+            status = row.get("status")
+            if isinstance(sid, str) and status in {COMMAND_STATUS_QUEUED, COMMAND_STATUS_IN_PROGRESS}:
+                pending_counts[sid] = pending_counts.get(sid, 0) + 1
+
+        latest_by_session: dict[str, dict[str, Any]] = {}
+        for row in statuses:
+            sid = row.get("session_id")
+            if not isinstance(sid, str):
+                continue
+            current = latest_by_session.get(sid)
+            if current is None or (to_dt(row.get("updated_at")), str(row.get("id", ""))) > (
+                to_dt(current.get("updated_at")),
+                str(current.get("id", "")),
+            ):
+                latest_by_session[sid] = row
+
+        items = []
+        for row in sessions:
+            base = session_to_dict(row)
+            sid = str(base["id"])
+            latest = latest_by_session.get(sid)
+            base["transcript_count"] = transcript_counts.get(sid, 0)
+            base["pending_command_count"] = pending_counts.get(sid, 0)
+            base["latest_status_headline"] = latest.get("headline") if latest else None
+            base["latest_status_phase"] = latest.get("phase") if latest else None
+            base["latest_status_updated_at"] = latest.get("updated_at") if latest else None
+            items.append(base)
+
+        return jsonify({"items": items, "count": len(items)})
+
+    @app.get("/api/sessions/<session_id>")
+    def get_session(session_id: str) -> Any:
+        session_row = get_record("sessions", session_id)
+        if not session_row:
+            return jsonify({"error": "session not found"}), 404
+
+        transcripts = [row for row in list_records("transcripts") if row.get("session_id") == session_id]
+        commands = [row for row in list_records("device_commands") if row.get("session_id") == session_id]
+        statuses = [row for row in list_records("agent_status") if row.get("session_id") == session_id]
+
+        latest_status = newest_record(statuses, ts_key="updated_at")
+
+        session_dict = session_to_dict(session_row)
+        session_dict["transcript_count"] = len(transcripts)
+        session_dict["pending_command_count"] = len(
+            [row for row in commands if row.get("status") in {COMMAND_STATUS_QUEUED, COMMAND_STATUS_IN_PROGRESS}]
+        )
+        session_dict["latest_status"] = agent_status_to_dict(latest_status)
+        return jsonify(session_dict)
+
+    @app.put("/api/sessions/<session_id>")
+    def update_session(session_id: str) -> Any:
+        payload = request.get_json(silent=True) or {}
+        name = payload.get("name")
+        status_raw = payload.get("status")
+
+        if name is not None and (not isinstance(name, str) or not name.strip()):
+            return jsonify({"error": "name must be a non-empty string when provided"}), 400
+
+        status: str | None = None
+        if status_raw is not None:
+            try:
+                status = parse_session_status(status_raw)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+
+        row = get_record("sessions", session_id)
+        if not row:
+            return jsonify({"error": "session not found"}), 404
+
+        row["updated_at"] = now_iso()
+        if isinstance(name, str):
+            row["name"] = name.strip()
+        if status is not None:
+            row["status"] = status
+
+        save_record("sessions", row)
+        return jsonify(session_to_dict(row))
 
     @app.post("/api/transcripts")
     def create_transcript() -> Any:
@@ -395,6 +630,14 @@ def create_app() -> Flask:
             return jsonify({"error": "text is required"}), 400
         if len(text.strip()) > MAX_TRANSCRIPT_CHARS:
             return jsonify({"error": f"text exceeds max length ({MAX_TRANSCRIPT_CHARS} chars)"}), 400
+
+        try:
+            session_id = parse_optional_session_id(payload.get("session_id"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        if session_id and not ensure_session_exists(session_id):
+            return jsonify({"error": "session not found"}), 400
 
         transcript_id = str(uuid.uuid4())
         created_at = now_iso()
@@ -406,37 +649,23 @@ def create_app() -> Flask:
             except ValueError:
                 return jsonify({"error": "captured_at must be a valid ISO-8601 timestamp"}), 400
 
-        device_id = payload.get("device_id")
-        source = payload.get("source")
-
-        with db_connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO transcripts (
-                    id, created_at, updated_at, captured_at, device_id, source, text
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    transcript_id,
-                    created_at,
-                    created_at,
-                    captured_at,
-                    device_id,
-                    source,
-                    text.strip(),
-                ),
-            )
-            row = conn.execute(
-                "SELECT * FROM transcripts WHERE id = ?", (transcript_id,)
-            ).fetchone()
+        row = {
+            "id": transcript_id,
+            "created_at": created_at,
+            "updated_at": created_at,
+            "captured_at": captured_at,
+            "session_id": session_id,
+            "device_id": payload.get("device_id"),
+            "source": payload.get("source"),
+            "text": text.strip(),
+        }
+        save_record("transcripts", row)
+        touch_session(session_id)
         return jsonify(transcript_to_dict(row)), 201
 
     @app.get("/api/transcripts/<transcript_id>")
     def get_transcript(transcript_id: str) -> Any:
-        with db_connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM transcripts WHERE id = ?", (transcript_id,)
-            ).fetchone()
+        row = get_record("transcripts", transcript_id)
         if not row:
             return jsonify({"error": "transcript not found"}), 404
         return jsonify(transcript_to_dict(row))
@@ -449,50 +678,44 @@ def create_app() -> Flask:
             return jsonify({"error": str(exc)}), 400
 
         try:
-            cursor_ts, cursor_id = parse_paging_cursor(
-                request.args.get("cursor"),
-                request.args.get("since"),
-            )
+            cursor_ts, cursor_id = parse_paging_cursor(request.args.get("cursor"), request.args.get("since"))
         except ValueError:
             return jsonify({"error": "cursor/since must be a valid value"}), 400
 
         device_id = request.args.get("device_id")
-        with db_connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM transcripts
-                WHERE (
-                      ? IS NULL
-                   OR captured_at > ?
-                   OR (captured_at = ? AND id > ?)
-                )
-                  AND (? IS NULL OR device_id = ?)
-                ORDER BY captured_at ASC, created_at ASC, id ASC
-                LIMIT ?
-                """,
-                (
-                    cursor_ts,
-                    cursor_ts,
-                    cursor_ts,
-                    cursor_id,
-                    device_id,
-                    device_id,
-                    limit,
-                ),
-            ).fetchall()
+        session_id = (request.args.get("session_id") or "").strip() or None
 
-        items = [transcript_to_dict(row) for row in rows]
+        rows = list_records("transcripts")
+        filtered: list[dict[str, Any]] = []
+        for row in rows:
+            if device_id is not None and row.get("device_id") != device_id:
+                continue
+            if session_id is not None and row.get("session_id") != session_id:
+                continue
+            captured_at = row.get("captured_at") or row.get("created_at") or now_iso()
+            item_id = str(row.get("id", ""))
+            if not cursor_allows(captured_at, item_id, cursor_ts, cursor_id):
+                continue
+            filtered.append(row)
+
+        filtered.sort(
+            key=lambda row: (
+                to_dt(row.get("captured_at") or row.get("created_at")),
+                to_dt(row.get("created_at")),
+                str(row.get("id", "")),
+            )
+        )
+        filtered = filtered[:limit]
+
+        items = [transcript_to_dict(row) for row in filtered]
         next_since = items[-1]["captured_at"] if items else cursor_ts
         next_cursor = make_cursor(items[-1]["captured_at"], items[-1]["id"]) if items else None
-        return jsonify(
-            {
-                "items": items,
-                "count": len(items),
-                "next_since": next_since,
-                "next_cursor": next_cursor,
-            }
-        )
+        return jsonify({
+            "items": items,
+            "count": len(items),
+            "next_since": next_since,
+            "next_cursor": next_cursor,
+        })
 
     @app.put("/api/transcripts/<transcript_id>")
     def update_transcript(transcript_id: str) -> Any:
@@ -503,44 +726,26 @@ def create_app() -> Flask:
         if len(text.strip()) > MAX_TRANSCRIPT_CHARS:
             return jsonify({"error": f"text exceeds max length ({MAX_TRANSCRIPT_CHARS} chars)"}), 400
 
-        ts = now_iso()
+        row = get_record("transcripts", transcript_id)
+        if not row:
+            return jsonify({"error": "transcript not found"}), 404
+
         captured_at_raw = payload.get("captured_at")
-        captured_at: str | None = None
         if captured_at_raw:
             try:
-                captured_at = parse_iso8601_to_utc(captured_at_raw)
+                row["captured_at"] = parse_iso8601_to_utc(captured_at_raw)
             except ValueError:
                 return jsonify({"error": "captured_at must be a valid ISO-8601 timestamp"}), 400
 
-        with db_connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM transcripts WHERE id = ?", (transcript_id,)
-            ).fetchone()
-            if not row:
-                return jsonify({"error": "transcript not found"}), 404
-
-            conn.execute(
-                """
-                UPDATE transcripts
-                SET updated_at = ?, text = ?, captured_at = COALESCE(?, captured_at)
-                WHERE id = ?
-                """,
-                (ts, text.strip(), captured_at, transcript_id),
-            )
-            row = conn.execute(
-                "SELECT * FROM transcripts WHERE id = ?", (transcript_id,)
-            ).fetchone()
+        row["updated_at"] = now_iso()
+        row["text"] = text.strip()
+        save_record("transcripts", row)
         return jsonify(transcript_to_dict(row))
 
     @app.delete("/api/transcripts/<transcript_id>")
     def delete_transcript(transcript_id: str) -> Any:
-        with db_connect() as conn:
-            row = conn.execute(
-                "SELECT id FROM transcripts WHERE id = ?", (transcript_id,)
-            ).fetchone()
-            if not row:
-                return jsonify({"error": "transcript not found"}), 404
-            conn.execute("DELETE FROM transcripts WHERE id = ?", (transcript_id,))
+        if not delete_record("transcripts", transcript_id):
+            return jsonify({"error": "transcript not found"}), 404
         return jsonify({"id": transcript_id, "deleted": True})
 
     @app.post("/api/device-commands")
@@ -551,42 +756,40 @@ def create_app() -> Flask:
         command_payload = payload.get("payload", {})
         source_device_id = payload.get("source_device_id")
 
+        try:
+            session_id = parse_optional_session_id(payload.get("session_id"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
         if not isinstance(target_device_id, str) or not target_device_id.strip():
             return jsonify({"error": "target_device_id is required"}), 400
         if not isinstance(command_type, str) or not command_type.strip():
             return jsonify({"error": "command_type is required"}), 400
+        if not isinstance(command_payload, dict):
+            command_payload = {}
+
+        if session_id and not ensure_session_exists(session_id):
+            return jsonify({"error": "session not found"}), 400
 
         command_id = str(uuid.uuid4())
         ts = now_iso()
-        with db_connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO device_commands (
-                    id,
-                    created_at,
-                    updated_at,
-                    target_device_id,
-                    source_device_id,
-                    command_type,
-                    payload_json,
-                    status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    command_id,
-                    ts,
-                    ts,
-                    target_device_id.strip(),
-                    source_device_id.strip() if isinstance(source_device_id, str) else None,
-                    command_type.strip(),
-                    json.dumps(command_payload),
-                    COMMAND_STATUS_QUEUED,
-                ),
-            )
-            row = conn.execute(
-                "SELECT * FROM device_commands WHERE id = ?",
-                (command_id,),
-            ).fetchone()
+        row = {
+            "id": command_id,
+            "created_at": ts,
+            "updated_at": ts,
+            "target_device_id": target_device_id.strip(),
+            "session_id": session_id,
+            "source_device_id": source_device_id.strip() if isinstance(source_device_id, str) else None,
+            "command_type": command_type.strip(),
+            "payload": command_payload,
+            "status": COMMAND_STATUS_QUEUED,
+            "acknowledged_at": None,
+            "completed_at": None,
+            "result": None,
+            "error": None,
+        }
+        save_record("device_commands", row)
+        touch_session(session_id)
         return jsonify(command_to_dict(row)), 201
 
     @app.get("/api/device-commands")
@@ -594,6 +797,7 @@ def create_app() -> Flask:
         target_device_id = (request.args.get("target_device_id") or "").strip()
         if not target_device_id:
             return jsonify({"error": "target_device_id query parameter is required"}), 400
+        session_id = (request.args.get("session_id") or "").strip() or None
 
         try:
             limit = parse_list_limit(request.args.get("limit"))
@@ -601,10 +805,7 @@ def create_app() -> Flask:
             return jsonify({"error": str(exc)}), 400
 
         try:
-            cursor_ts, cursor_id = parse_paging_cursor(
-                request.args.get("cursor"),
-                request.args.get("since"),
-            )
+            cursor_ts, cursor_id = parse_paging_cursor(request.args.get("cursor"), request.args.get("since"))
         except ValueError:
             return jsonify({"error": "cursor/since must be a valid value"}), 400
 
@@ -616,43 +817,37 @@ def create_app() -> Flask:
         except ValueError:
             return jsonify({"error": "statuses must be comma-separated known status values"}), 400
 
-        status_placeholders = ",".join("?" for _ in statuses)
-        query = f"""
-            SELECT *
-            FROM device_commands
-            WHERE target_device_id = ?
-              AND status IN ({status_placeholders})
-              AND (
-                    ? IS NULL
-                 OR created_at > ?
-                 OR (created_at = ? AND id > ?)
-              )
-            ORDER BY created_at ASC, id ASC
-            LIMIT ?
-        """
-        params: list[Any] = [target_device_id, *statuses, cursor_ts, cursor_ts, cursor_ts, cursor_id, limit]
-        with db_connect() as conn:
-            rows = conn.execute(query, params).fetchall()
+        rows = list_records("device_commands")
+        filtered: list[dict[str, Any]] = []
+        for row in rows:
+            if row.get("target_device_id") != target_device_id:
+                continue
+            if row.get("status") not in statuses:
+                continue
+            if session_id is not None and row.get("session_id") != session_id:
+                continue
+            created_at = row.get("created_at") or now_iso()
+            item_id = str(row.get("id", ""))
+            if not cursor_allows(created_at, item_id, cursor_ts, cursor_id):
+                continue
+            filtered.append(row)
 
-        items = [command_to_dict(row) for row in rows]
+        filtered.sort(key=lambda row: (to_dt(row.get("created_at")), str(row.get("id", ""))))
+        filtered = filtered[:limit]
+
+        items = [command_to_dict(row) for row in filtered]
         next_since = items[-1]["created_at"] if items else cursor_ts
         next_cursor = make_cursor(items[-1]["created_at"], items[-1]["id"]) if items else None
-        return jsonify(
-            {
-                "items": items,
-                "count": len(items),
-                "next_since": next_since,
-                "next_cursor": next_cursor,
-            }
-        )
+        return jsonify({
+            "items": items,
+            "count": len(items),
+            "next_since": next_since,
+            "next_cursor": next_cursor,
+        })
 
     @app.get("/api/device-commands/<command_id>")
     def get_device_command(command_id: str) -> Any:
-        with db_connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM device_commands WHERE id = ?",
-                (command_id,),
-            ).fetchone()
+        row = get_record("device_commands", command_id)
         if not row:
             return jsonify({"error": "device command not found"}), 404
         return jsonify(command_to_dict(row))
@@ -669,127 +864,28 @@ def create_app() -> Flask:
         }:
             return jsonify({"error": "status must be one of: in_progress, completed, failed, canceled"}), 400
 
-        ts = now_iso()
-        with db_connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM device_commands WHERE id = ?",
-                (command_id,),
-            ).fetchone()
-            if not row:
-                return jsonify({"error": "device command not found"}), 404
-
-            acknowledged_at = row["acknowledged_at"] or ts
-            completed_at = ts if status in {COMMAND_STATUS_COMPLETED, COMMAND_STATUS_FAILED, COMMAND_STATUS_CANCELED} else None
-
-            result_json = row["result_json"]
-            if "result" in payload:
-                result_json = json.dumps(payload.get("result"))
-
-            error_text = row["error_text"]
-            if "error" in payload:
-                error_value = payload.get("error")
-                if error_value is not None and not isinstance(error_value, str):
-                    return jsonify({"error": "error must be a string or null"}), 400
-                error_text = error_value
-
-            conn.execute(
-                """
-                UPDATE device_commands
-                SET updated_at = ?,
-                    status = ?,
-                    acknowledged_at = ?,
-                    completed_at = ?,
-                    result_json = ?,
-                    error_text = ?
-                WHERE id = ?
-                """,
-                (
-                    ts,
-                    status,
-                    acknowledged_at,
-                    completed_at,
-                    result_json,
-                    error_text,
-                    command_id,
-                ),
-            )
-            row = conn.execute(
-                "SELECT * FROM device_commands WHERE id = ?",
-                (command_id,),
-            ).fetchone()
-
-        return jsonify(command_to_dict(row))
-
-    # ─── Sessions ──────────────────────────────────────────────────────────
-
-    @app.post("/api/sessions")
-    def create_session() -> Any:
-        payload = request.get_json(silent=True) or {}
-        session_id = payload.get("id")
-        if not isinstance(session_id, str) or not session_id.strip():
-            return jsonify({"error": "id is required"}), 400
-
-        session_id = session_id.strip()
-        ts = now_iso()
-        name = payload.get("name", "Untitled") or "Untitled"
-        agent = payload.get("agent", "iris") or "iris"
-        device_id = payload.get("device_id")
-
-        with db_connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO sessions (id, created_at, updated_at, name, agent, device_id, last_message_at)
-                VALUES (?, ?, ?, ?, ?, ?, NULL)
-                ON CONFLICT(id) DO UPDATE SET
-                    updated_at = excluded.updated_at,
-                    name = COALESCE(excluded.name, sessions.name),
-                    agent = COALESCE(excluded.agent, sessions.agent),
-                    device_id = COALESCE(excluded.device_id, sessions.device_id)
-                """,
-                (session_id, ts, ts, name, agent, device_id),
-            )
-            row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-        return jsonify(session_to_dict(row)), 201
-
-    @app.get("/api/sessions")
-    def list_sessions() -> Any:
-        try:
-            limit = parse_list_limit(request.args.get("limit"))
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
-
-        with db_connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT * FROM sessions
-                ORDER BY COALESCE(last_message_at, updated_at) DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
-
-        return jsonify({
-            "items": [session_to_dict(row) for row in rows],
-            "count": len(rows),
-        })
-
-    @app.get("/api/sessions/<session_id>")
-    def get_session(session_id: str) -> Any:
-        with db_connect() as conn:
-            row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        row = get_record("device_commands", command_id)
         if not row:
-            return jsonify({"error": "session not found"}), 404
-        return jsonify(session_to_dict(row))
+            return jsonify({"error": "device command not found"}), 404
 
-    @app.delete("/api/sessions/<session_id>")
-    def delete_session(session_id: str) -> Any:
-        with db_connect() as conn:
-            row = conn.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone()
-            if not row:
-                return jsonify({"error": "session not found"}), 404
-            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-        return jsonify({"id": session_id, "deleted": True})
+        ts = now_iso()
+        row["updated_at"] = ts
+        row["status"] = status
+        row["acknowledged_at"] = row.get("acknowledged_at") or ts
+        row["completed_at"] = ts if status in {COMMAND_STATUS_COMPLETED, COMMAND_STATUS_FAILED, COMMAND_STATUS_CANCELED} else None
+
+        if "result" in payload:
+            row["result"] = payload.get("result")
+
+        if "error" in payload:
+            error_value = payload.get("error")
+            if error_value is not None and not isinstance(error_value, str):
+                return jsonify({"error": "error must be a string or null"}), 400
+            row["error"] = error_value
+
+        save_record("device_commands", row)
+        touch_session(row.get("session_id"))
+        return jsonify(command_to_dict(row))
 
     # ─── Messages ─────────────────────────────────────────────────────────
 
@@ -808,28 +904,45 @@ def create_app() -> Flask:
         ts = now_iso()
         device_id = payload.get("device_id")
 
-        with db_connect() as conn:
-            # Ensure session exists (auto-create if not)
-            existing = conn.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone()
-            if not existing:
-                conn.execute(
-                    "INSERT INTO sessions (id, created_at, updated_at, name, agent) VALUES (?, ?, ?, 'Untitled', 'iris')",
-                    (session_id, ts, ts),
-                )
+        # Idempotent — skip if message already exists
+        existing = get_record("messages", message_id)
+        if existing:
+            return jsonify(message_to_dict(existing)), 201
 
-            conn.execute(
-                """
-                INSERT INTO messages (id, session_id, created_at, role, content, device_id)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO NOTHING
-                """,
-                (message_id, session_id, ts, role, content.strip(), device_id),
-            )
-            conn.execute(
-                "UPDATE sessions SET last_message_at = ?, updated_at = ? WHERE id = ?",
-                (ts, ts, session_id),
-            )
-            row = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+        # Auto-create session if it doesn't exist
+        if not ensure_session_exists(session_id):
+            session_ts = ts
+            session_row = {
+                "id": session_id,
+                "created_at": session_ts,
+                "updated_at": session_ts,
+                "name": "Untitled",
+                "agent": "iris",
+                "status": SESSION_STATUS_ACTIVE,
+                "device_id": None,
+                "source_device_id": None,
+                "last_message_at": None,
+                "metadata": {},
+            }
+            save_record("sessions", session_row)
+
+        row = {
+            "id": message_id,
+            "session_id": session_id,
+            "created_at": ts,
+            "role": role,
+            "content": content.strip(),
+            "device_id": device_id,
+        }
+        save_record("messages", row)
+
+        # Update session's last_message_at
+        session_row = get_record("sessions", session_id)
+        if session_row:
+            session_row["last_message_at"] = ts
+            session_row["updated_at"] = ts
+            save_record("sessions", session_row)
+
         return jsonify(message_to_dict(row)), 201
 
     @app.get("/api/sessions/<session_id>/messages")
@@ -847,32 +960,146 @@ def create_app() -> Flask:
             except ValueError:
                 return jsonify({"error": "since must be a valid ISO-8601 timestamp"}), 400
 
-        with db_connect() as conn:
-            if since:
-                rows = conn.execute(
-                    """
-                    SELECT * FROM messages
-                    WHERE session_id = ? AND created_at > ?
-                    ORDER BY created_at ASC
-                    LIMIT ?
-                    """,
-                    (session_id, since, limit),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    """
-                    SELECT * FROM messages
-                    WHERE session_id = ?
-                    ORDER BY created_at ASC
-                    LIMIT ?
-                    """,
-                    (session_id, limit),
-                ).fetchall()
+        all_messages = list_records("messages")
+        filtered = [row for row in all_messages if row.get("session_id") == session_id]
 
-        items = [message_to_dict(row) for row in rows]
+        if since:
+            filtered = [row for row in filtered if row.get("created_at", "") > since]
+
+        filtered.sort(key=lambda row: (to_dt(row.get("created_at")), str(row.get("id", ""))))
+        filtered = filtered[:limit]
+
+        items = [message_to_dict(row) for row in filtered]
         return jsonify({
             "items": items,
             "count": len(items),
+        })
+
+    @app.delete("/api/sessions/<session_id>")
+    def delete_session(session_id: str) -> Any:
+        if not get_record("sessions", session_id):
+            return jsonify({"error": "session not found"}), 404
+
+        # Delete associated messages
+        all_messages = list_records("messages")
+        for msg in all_messages:
+            if msg.get("session_id") == session_id:
+                delete_record("messages", str(msg.get("id")))
+
+        delete_record("sessions", session_id)
+        return jsonify({"id": session_id, "deleted": True})
+
+    @app.post("/api/agent-status")
+    def upsert_agent_status() -> Any:
+        payload = request.get_json(silent=True) or {}
+        try:
+            session_id = parse_optional_session_id(payload.get("session_id"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        phase = payload.get("phase")
+        headline = payload.get("headline")
+        detail = payload.get("detail")
+        source_device_id = payload.get("source_device_id")
+        metadata = payload.get("metadata", {})
+
+        if not isinstance(phase, str) or not phase.strip():
+            return jsonify({"error": "phase is required"}), 400
+        if not isinstance(headline, str) or not headline.strip():
+            return jsonify({"error": "headline is required"}), 400
+        if detail is not None and not isinstance(detail, str):
+            return jsonify({"error": "detail must be a string or null"}), 400
+        if source_device_id is not None and not isinstance(source_device_id, str):
+            return jsonify({"error": "source_device_id must be a string or null"}), 400
+        if not isinstance(metadata, (dict, list)):
+            metadata = {}
+
+        if session_id and not ensure_session_exists(session_id):
+            return jsonify({"error": "session not found"}), 400
+
+        status_id = str(uuid.uuid4())
+        ts = now_iso()
+        row = {
+            "id": status_id,
+            "created_at": ts,
+            "updated_at": ts,
+            "session_id": session_id,
+            "phase": phase.strip(),
+            "headline": headline.strip(),
+            "detail": detail.strip() if isinstance(detail, str) else None,
+            "source_device_id": source_device_id.strip() if isinstance(source_device_id, str) else None,
+            "metadata": metadata,
+        }
+        save_record("agent_status", row)
+        touch_session(session_id)
+        return jsonify(agent_status_to_dict(row)), 201
+
+    @app.get("/api/agent-status")
+    def get_agent_status() -> Any:
+        session_id = (request.args.get("session_id") or "").strip() or None
+
+        statuses = list_records("agent_status")
+        commands = list_records("device_commands")
+        transcripts = list_records("transcripts")
+        screenshots = list_records("screenshots")
+
+        if session_id is not None:
+            statuses = [row for row in statuses if row.get("session_id") == session_id]
+            commands = [row for row in commands if row.get("session_id") == session_id]
+            transcripts = [row for row in transcripts if row.get("session_id") == session_id]
+            screenshots = [row for row in screenshots if row.get("session_id") == session_id]
+
+        latest = newest_record(statuses, ts_key="updated_at")
+
+        command_counts = {status: 0 for status in sorted(COMMAND_STATUSES)}
+        pending_device_counts: dict[str, int] = {}
+        for row in commands:
+            status = row.get("status")
+            if status in command_counts:
+                command_counts[status] += 1
+            if status in {COMMAND_STATUS_QUEUED, COMMAND_STATUS_IN_PROGRESS}:
+                target = row.get("target_device_id")
+                if isinstance(target, str):
+                    pending_device_counts[target] = pending_device_counts.get(target, 0) + 1
+
+        pending_devices = [
+            {"target_device_id": key, "count": value}
+            for key, value in sorted(pending_device_counts.items(), key=lambda pair: (-pair[1], pair[0]))
+        ]
+
+        last_transcript = newest_record(transcripts, ts_key="captured_at")
+        for row in screenshots:
+            row["_sort_ts"] = row.get("captured_at") or row.get("created_at")
+        last_screenshot = newest_record(screenshots, ts_key="_sort_ts")
+
+        recent_inputs = {
+            "last_transcript": (
+                {
+                    "id": last_transcript.get("id"),
+                    "device_id": last_transcript.get("device_id"),
+                    "ts": last_transcript.get("captured_at") or last_transcript.get("created_at"),
+                }
+                if last_transcript
+                else None
+            ),
+            "last_screenshot": (
+                {
+                    "id": last_screenshot.get("id"),
+                    "device_id": last_screenshot.get("device_id"),
+                    "ts": last_screenshot.get("captured_at") or last_screenshot.get("created_at"),
+                }
+                if last_screenshot
+                else None
+            ),
+        }
+
+        return jsonify({
+            "session_id": session_id,
+            "status": agent_status_to_dict(latest),
+            "command_counts": command_counts,
+            "pending_by_device": pending_devices,
+            "recent_inputs": recent_inputs,
+            "server_ts": now_iso(),
         })
 
     @app.get("/api/events")
@@ -883,87 +1110,73 @@ def create_app() -> Flask:
             return jsonify({"error": str(exc)}), 400
 
         try:
-            cursor_ts, cursor_id = parse_paging_cursor(
-                request.args.get("cursor"),
-                request.args.get("since"),
-            )
+            cursor_ts, cursor_id = parse_paging_cursor(request.args.get("cursor"), request.args.get("since"))
         except ValueError:
             return jsonify({"error": "cursor/since must be a valid value"}), 400
 
         device_id = request.args.get("device_id")
+        session_id = (request.args.get("session_id") or "").strip() or None
         event_type = request.args.get("event_type")
         if event_type and event_type not in {"transcript", "screenshot"}:
             return jsonify({"error": "event_type must be one of: transcript, screenshot"}), 400
 
-        with db_connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    e.event_type,
-                    e.id,
-                    e.created_at,
-                    e.updated_at,
-                    e.captured_at,
-                    e.device_id,
-                    e.source,
-                    e.text,
-                    e.mime_type,
-                    e.file_path,
-                    e.notes,
-                    e.sort_ts
-                FROM (
-                    SELECT
-                        'transcript' AS event_type,
-                        id,
-                        created_at,
-                        updated_at,
-                        captured_at,
-                        device_id,
-                        source,
-                        text,
-                        NULL AS mime_type,
-                        NULL AS file_path,
-                        NULL AS notes,
-                        captured_at AS sort_ts
-                    FROM transcripts
-                    UNION ALL
-                    SELECT
-                        'screenshot' AS event_type,
-                        id,
-                        created_at,
-                        updated_at,
-                        captured_at,
-                        device_id,
-                        source,
-                        NULL AS text,
-                        mime_type,
-                        file_path,
-                        notes,
-                        COALESCE(captured_at, created_at) AS sort_ts
-                    FROM screenshots
-                ) AS e
-                WHERE (
-                      ? IS NULL
-                   OR e.sort_ts > ?
-                   OR (e.sort_ts = ? AND e.id > ?)
-                )
-                  AND (? IS NULL OR e.device_id = ?)
-                  AND (? IS NULL OR e.event_type = ?)
-                ORDER BY e.sort_ts ASC, e.created_at ASC, e.id ASC
-                LIMIT ?
-                """,
-                (
-                    cursor_ts,
-                    cursor_ts,
-                    cursor_ts,
-                    cursor_id,
-                    device_id,
-                    device_id,
-                    event_type,
-                    event_type,
-                    limit,
-                ),
-            ).fetchall()
+        events: list[dict[str, Any]] = []
+        if event_type in {None, "transcript"}:
+            for row in list_records("transcripts"):
+                events.append({
+                    "event_type": "transcript",
+                    "id": row.get("id"),
+                    "created_at": row.get("created_at"),
+                    "updated_at": row.get("updated_at"),
+                    "captured_at": row.get("captured_at"),
+                    "session_id": row.get("session_id"),
+                    "device_id": row.get("device_id"),
+                    "source": row.get("source"),
+                    "text": row.get("text"),
+                    "mime_type": None,
+                    "file_path": None,
+                    "notes": None,
+                    "sort_ts": row.get("captured_at") or row.get("created_at"),
+                })
+
+        if event_type in {None, "screenshot"}:
+            for row in list_records("screenshots"):
+                events.append({
+                    "event_type": "screenshot",
+                    "id": row.get("id"),
+                    "created_at": row.get("created_at"),
+                    "updated_at": row.get("updated_at"),
+                    "captured_at": row.get("captured_at"),
+                    "session_id": row.get("session_id"),
+                    "device_id": row.get("device_id"),
+                    "source": row.get("source"),
+                    "text": None,
+                    "mime_type": row.get("mime_type"),
+                    "file_path": row.get("file_path"),
+                    "notes": row.get("notes"),
+                    "sort_ts": row.get("captured_at") or row.get("created_at"),
+                })
+
+        filtered: list[dict[str, Any]] = []
+        for row in events:
+            if device_id is not None and row.get("device_id") != device_id:
+                continue
+            if session_id is not None and row.get("session_id") != session_id:
+                continue
+            sort_ts = row.get("sort_ts") or row.get("created_at") or now_iso()
+            item_id = str(row.get("id", ""))
+            if not cursor_allows(sort_ts, item_id, cursor_ts, cursor_id):
+                continue
+            filtered.append(row)
+
+        filtered.sort(
+            key=lambda row: (
+                to_dt(row.get("sort_ts")),
+                to_dt(row.get("created_at")),
+                str(row.get("id", "")),
+            )
+        )
+        filtered = filtered[:limit]
 
         items = [
             {
@@ -973,6 +1186,7 @@ def create_app() -> Flask:
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
                 "captured_at": row["captured_at"],
+                "session_id": row["session_id"],
                 "device_id": row["device_id"],
                 "source": row["source"],
                 "text": row["text"],
@@ -985,18 +1199,17 @@ def create_app() -> Flask:
                 ),
                 "notes": row["notes"],
             }
-            for row in rows
+            for row in filtered
         ]
+
         next_since = items[-1]["event_ts"] if items else cursor_ts
         next_cursor = make_cursor(items[-1]["event_ts"], items[-1]["id"]) if items else None
-        return jsonify(
-            {
-                "items": items,
-                "count": len(items),
-                "next_since": next_since,
-                "next_cursor": next_cursor,
-            }
-        )
+        return jsonify({
+            "items": items,
+            "count": len(items),
+            "next_since": next_since,
+            "next_cursor": next_cursor,
+        })
 
     @app.post("/api/screenshots")
     def upload_screenshot() -> Any:
@@ -1010,13 +1223,22 @@ def create_app() -> Flask:
         screenshot_id = str(uuid.uuid4())
         created_at = now_iso()
         device_id = request.form.get("device_id")
-        session_id = request.form.get("session_id")
         source = request.form.get("source")
         notes = request.form.get("notes")
+        session_id_raw = request.form.get("session_id")
         captured_at_raw = request.form.get("captured_at")
         mime_type = shot.content_type or ""
+
         if not mime_type.startswith(ALLOWED_SCREENSHOT_MIME_PREFIX):
             return jsonify({"error": "screenshot must be an image MIME type"}), 400
+
+        try:
+            session_id = parse_optional_session_id(session_id_raw)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        if session_id and not ensure_session_exists(session_id):
+            return jsonify({"error": "session not found"}), 400
 
         captured_at = created_at
         if captured_at_raw:
@@ -1032,140 +1254,104 @@ def create_app() -> Flask:
         file_path = device_dir / f"{screenshot_id}{ext}"
         shot.save(file_path)
 
-        with db_connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO screenshots (
-                    id, created_at, updated_at, captured_at, device_id, session_id,
-                    source, mime_type, file_path, notes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    screenshot_id,
-                    created_at,
-                    created_at,
-                    captured_at,
-                    device_id,
-                    session_id,
-                    source,
-                    mime_type,
-                    str(file_path),
-                    notes,
-                ),
-            )
-            row = conn.execute(
-                "SELECT * FROM screenshots WHERE id = ?", (screenshot_id,)
-            ).fetchone()
-
+        row = {
+            "id": screenshot_id,
+            "created_at": created_at,
+            "updated_at": created_at,
+            "captured_at": captured_at,
+            "session_id": session_id,
+            "device_id": device_id,
+            "source": source,
+            "mime_type": mime_type,
+            "file_path": str(file_path),
+            "notes": notes,
+        }
+        save_record("screenshots", row)
+        touch_session(session_id)
         return jsonify(screenshot_to_dict(row)), 201
 
     @app.get("/api/screenshots")
     def list_screenshots() -> Any:
-        session_id = request.args.get("session_id")
-        if session_id:
-            with db_connect() as conn:
-                rows = conn.execute(
-                    "SELECT * FROM screenshots WHERE session_id = ? ORDER BY created_at DESC",
-                    (session_id,),
-                ).fetchall()
-            return jsonify([screenshot_to_dict(r) for r in rows])
-
         try:
             limit = parse_list_limit(request.args.get("limit"))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
         try:
-            cursor_ts, cursor_id = parse_paging_cursor(
-                request.args.get("cursor"),
-                request.args.get("since"),
-            )
+            cursor_ts, cursor_id = parse_paging_cursor(request.args.get("cursor"), request.args.get("since"))
         except ValueError:
             return jsonify({"error": "cursor/since must be a valid value"}), 400
 
         device_id = request.args.get("device_id")
-        with db_connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM screenshots
-                WHERE (
-                      ? IS NULL
-                   OR COALESCE(captured_at, created_at) > ?
-                   OR (COALESCE(captured_at, created_at) = ? AND id > ?)
-                )
-                  AND (? IS NULL OR device_id = ?)
-                ORDER BY COALESCE(captured_at, created_at) ASC, created_at ASC, id ASC
-                LIMIT ?
-                """,
-                (
-                    cursor_ts,
-                    cursor_ts,
-                    cursor_ts,
-                    cursor_id,
-                    device_id,
-                    device_id,
-                    limit,
-                ),
-            ).fetchall()
+        session_id = (request.args.get("session_id") or "").strip() or None
 
-        items = [screenshot_to_dict(row) for row in rows]
+        rows = list_records("screenshots")
+        filtered: list[dict[str, Any]] = []
+        for row in rows:
+            if device_id is not None and row.get("device_id") != device_id:
+                continue
+            if session_id is not None and row.get("session_id") != session_id:
+                continue
+            sort_ts = row.get("captured_at") or row.get("created_at") or now_iso()
+            item_id = str(row.get("id", ""))
+            if not cursor_allows(sort_ts, item_id, cursor_ts, cursor_id):
+                continue
+            filtered.append(row)
+
+        filtered.sort(
+            key=lambda row: (
+                to_dt(row.get("captured_at") or row.get("created_at")),
+                to_dt(row.get("created_at")),
+                str(row.get("id", "")),
+            )
+        )
+        filtered = filtered[:limit]
+
+        items = [screenshot_to_dict(row) for row in filtered]
         next_ts = (items[-1]["captured_at"] or items[-1]["created_at"]) if items else cursor_ts
         next_cursor = make_cursor(next_ts, items[-1]["id"]) if items else None
-        return jsonify(
-            {
-                "items": items,
-                "count": len(items),
-                "next_since": next_ts,
-                "next_cursor": next_cursor,
-            }
-        )
+        return jsonify({
+            "items": items,
+            "count": len(items),
+            "next_since": next_ts,
+            "next_cursor": next_cursor,
+        })
 
     @app.get("/api/screenshots/<screenshot_id>")
     def get_screenshot_meta(screenshot_id: str) -> Any:
-        with db_connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM screenshots WHERE id = ?", (screenshot_id,)
-            ).fetchone()
+        row = get_record("screenshots", screenshot_id)
         if not row:
             return jsonify({"error": "screenshot not found"}), 404
         return jsonify(screenshot_to_dict(row))
 
     @app.get("/api/screenshots/<screenshot_id>/file")
     def get_screenshot_file(screenshot_id: str) -> Any:
-        with db_connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM screenshots WHERE id = ?", (screenshot_id,)
-            ).fetchone()
+        row = get_record("screenshots", screenshot_id)
         if not row:
             return jsonify({"error": "screenshot not found"}), 404
 
-        file_path = Path(row["file_path"])
+        file_path = Path(str(row.get("file_path") or ""))
         if not file_path.exists():
             return jsonify({"error": "screenshot file missing"}), 410
-        mimetype = row["mime_type"] or "application/octet-stream"
+        mimetype = row.get("mime_type") or "application/octet-stream"
         return send_file(file_path, mimetype=mimetype)
 
     @app.delete("/api/screenshots/<screenshot_id>")
     def delete_screenshot(screenshot_id: str) -> Any:
-        with db_connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM screenshots WHERE id = ?", (screenshot_id,)
-            ).fetchone()
-            if not row:
-                return jsonify({"error": "screenshot not found"}), 404
-            conn.execute("DELETE FROM screenshots WHERE id = ?", (screenshot_id,))
+        row = get_record("screenshots", screenshot_id)
+        if not row:
+            return jsonify({"error": "screenshot not found"}), 404
 
-        file_stats = delete_files([Path(row["file_path"])])
-        return jsonify(
-            {
-                "id": screenshot_id,
-                "deleted": True,
-                "files_removed": file_stats["removed"],
-                "files_missing": file_stats["missing"],
-                "files_failed": file_stats["failed"],
-            }
-        )
+        delete_record("screenshots", screenshot_id)
+        file_path = Path(str(row.get("file_path") or ""))
+        file_stats = delete_files([file_path])
+        return jsonify({
+            "id": screenshot_id,
+            "deleted": True,
+            "files_removed": file_stats["removed"],
+            "files_missing": file_stats["missing"],
+            "files_failed": file_stats["failed"],
+        })
 
     return app
 

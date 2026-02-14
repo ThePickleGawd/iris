@@ -1,0 +1,358 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 63;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		23CBE2E269A29858DE1636BF /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4447B54A78BABCBD8C4C1ADA /* HomeView.swift */; };
+		3AAEF8B9B2F499BD02C92897 /* ToolbarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED9B8D88EA08F0E403FE6A18 /* ToolbarView.swift */; };
+		6420C1C3CC855A0F9960CF45 /* SiriGlowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00F15CCDC205EAE406CC038 /* SiriGlowView.swift */; };
+		739597A0936612FBA354DB5E /* IrisApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483EDD123E3B6F607D24A94F /* IrisApp.swift */; };
+		8E30310AD5F2757AEDE01DCB /* UIColor+Compare.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9FEAD6A33D7DDB32C018D67 /* UIColor+Compare.swift */; };
+		986114D967F1F157EAA23A40 /* CanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21D7011A03C852C41F3FFB14 /* CanvasView.swift */; };
+		A56656EDEC905594D32DDC48 /* AudioCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92AF51999DEF219ECD85152E /* AudioCaptureService.swift */; };
+		CAB92F8795B396CCC8843716 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D736B18FC1B35992674D11 /* ContentView.swift */; };
+		D98381BE4ED8E12EEA81194A /* Document.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58D2E5AC26FC9A307BE3DCE1 /* Document.swift */; };
+		D9B87B010A228FE7959CF50F /* CanvasState.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10C96DC8207EE1FB895FC7E /* CanvasState.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		21D7011A03C852C41F3FFB14 /* CanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasView.swift; sourceTree = "<group>"; };
+		4447B54A78BABCBD8C4C1ADA /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		483EDD123E3B6F607D24A94F /* IrisApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IrisApp.swift; sourceTree = "<group>"; };
+		58D2E5AC26FC9A307BE3DCE1 /* Document.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Document.swift; sourceTree = "<group>"; };
+		5B753874BF2FF744F81B2C4E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		92AF51999DEF219ECD85152E /* AudioCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureService.swift; sourceTree = "<group>"; };
+		96D736B18FC1B35992674D11 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		D9FEAD6A33D7DDB32C018D67 /* UIColor+Compare.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UIColor+Compare.swift"; sourceTree = "<group>"; };
+		E10C96DC8207EE1FB895FC7E /* CanvasState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasState.swift; sourceTree = "<group>"; };
+		ED9B8D88EA08F0E403FE6A18 /* ToolbarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolbarView.swift; sourceTree = "<group>"; };
+		EE02367B7EA6D6876B16BE67 /* iris-app.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "iris-app.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		F00F15CCDC205EAE406CC038 /* SiriGlowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SiriGlowView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		22092B8E8D4ED1C90A48405F /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				E10C96DC8207EE1FB895FC7E /* CanvasState.swift */,
+				58D2E5AC26FC9A307BE3DCE1 /* Document.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		2C0513C25B44FFA443B0AE13 /* iris-app */ = {
+			isa = PBXGroup;
+			children = (
+				96D736B18FC1B35992674D11 /* ContentView.swift */,
+				5B753874BF2FF744F81B2C4E /* Info.plist */,
+				483EDD123E3B6F607D24A94F /* IrisApp.swift */,
+				7A271E4BCA81D6016F4BF2E2 /* Extensions */,
+				22092B8E8D4ED1C90A48405F /* Models */,
+				85756193C9C38AE45863F656 /* Services */,
+				4B32CC6ABCC133D672215873 /* Views */,
+			);
+			path = "iris-app";
+			sourceTree = "<group>";
+		};
+		4B32CC6ABCC133D672215873 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				21D7011A03C852C41F3FFB14 /* CanvasView.swift */,
+				4447B54A78BABCBD8C4C1ADA /* HomeView.swift */,
+				F00F15CCDC205EAE406CC038 /* SiriGlowView.swift */,
+				ED9B8D88EA08F0E403FE6A18 /* ToolbarView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		7331A134E29A3DE1B237BD78 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				EE02367B7EA6D6876B16BE67 /* iris-app.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		7A271E4BCA81D6016F4BF2E2 /* Extensions */ = {
+			isa = PBXGroup;
+			children = (
+				D9FEAD6A33D7DDB32C018D67 /* UIColor+Compare.swift */,
+			);
+			path = Extensions;
+			sourceTree = "<group>";
+		};
+		85756193C9C38AE45863F656 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				92AF51999DEF219ECD85152E /* AudioCaptureService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		9DE2515311ABE37F9E4C8CBA = {
+			isa = PBXGroup;
+			children = (
+				2C0513C25B44FFA443B0AE13 /* iris-app */,
+				7331A134E29A3DE1B237BD78 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		F2EAF35F9D0BCB702A4DAF26 /* iris-app */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C745B5F55F69197BE1763CA8 /* Build configuration list for PBXNativeTarget "iris-app" */;
+			buildPhases = (
+				923A7E23CB52D62462093CF1 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "iris-app";
+			packageProductDependencies = (
+			);
+			productName = "iris-app";
+			productReference = EE02367B7EA6D6876B16BE67 /* iris-app.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		90AE474CE745D33B53E07A47 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					F2EAF35F9D0BCB702A4DAF26 = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = FC59C0E58C504071D0897E21 /* Build configuration list for PBXProject "iris-app" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 9DE2515311ABE37F9E4C8CBA;
+			minimizedProjectReferenceProxies = 1;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				F2EAF35F9D0BCB702A4DAF26 /* iris-app */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		923A7E23CB52D62462093CF1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A56656EDEC905594D32DDC48 /* AudioCaptureService.swift in Sources */,
+				D9B87B010A228FE7959CF50F /* CanvasState.swift in Sources */,
+				986114D967F1F157EAA23A40 /* CanvasView.swift in Sources */,
+				CAB92F8795B396CCC8843716 /* ContentView.swift in Sources */,
+				D98381BE4ED8E12EEA81194A /* Document.swift in Sources */,
+				23CBE2E269A29858DE1636BF /* HomeView.swift in Sources */,
+				739597A0936612FBA354DB5E /* IrisApp.swift in Sources */,
+				6420C1C3CC855A0F9960CF45 /* SiriGlowView.swift in Sources */,
+				3AAEF8B9B2F499BD02C92897 /* ToolbarView.swift in Sources */,
+				8E30310AD5F2757AEDE01DCB /* UIColor+Compare.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		720A15BBBB3EC2408370D5EA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = P8W47WSLD9;
+				INFOPLIST_FILE = "iris-app/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.dylan.iris.iphone;
+				SDKROOT = iphoneos;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		7AA5BE8E4F8583F5AE76904C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		9BE8A9BC6960F74FC5F20ED3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		E516D6F3EE7A43CAC1BE2815 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = P8W47WSLD9;
+				INFOPLIST_FILE = "iris-app/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.dylan.iris.iphone;
+				SDKROOT = iphoneos;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		C745B5F55F69197BE1763CA8 /* Build configuration list for PBXNativeTarget "iris-app" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E516D6F3EE7A43CAC1BE2815 /* Debug */,
+				720A15BBBB3EC2408370D5EA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		FC59C0E58C504071D0897E21 /* Build configuration list for PBXProject "iris-app" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9BE8A9BC6960F74FC5F20ED3 /* Debug */,
+				7AA5BE8E4F8583F5AE76904C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 90AE474CE745D33B53E07A47 /* Project object */;
+}
