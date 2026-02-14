@@ -26,6 +26,35 @@ Optional env:
 
 - `GET /health`
 
+### Sessions
+
+1. Create session:
+
+```bash
+curl -X POST http://localhost:5000/api/sessions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name":"Interview Diagram Iteration",
+    "source_device_id":"iPhone"
+  }'
+```
+
+2. List sessions:
+
+- `GET /api/sessions?status=active&limit=100`
+
+3. Get one session:
+
+- `GET /api/sessions/<session_id>`
+
+4. Update session (rename/archive):
+
+```bash
+curl -X PUT http://localhost:5000/api/sessions/<session_id> \
+  -H "Content-Type: application/json" \
+  -d '{"status":"archived"}'
+```
+
 ### Transcript ingestion
 
 1. Ingest transcript text:
@@ -34,6 +63,7 @@ Optional env:
 curl -X POST http://localhost:5000/api/transcripts \
   -H "Content-Type: application/json" \
   -d '{
+    "session_id":"<session_id>",
     "text":"Draft architecture uses event routing per device.",
     "device_id":"iPhone",
     "source":"speech",
@@ -62,7 +92,7 @@ curl -X PUT http://localhost:5000/api/transcripts/<transcript_id> \
 curl -X DELETE http://localhost:5000/api/transcripts/<transcript_id>
 ```
 
-5. List transcripts for sync (supports `cursor`, `since`, `device_id`, `limit`):
+5. List transcripts for sync (supports `cursor`, `since`, `session_id`, `device_id`, `limit`):
 
 ```bash
 curl "http://localhost:5000/api/transcripts?since=2026-02-14T20:00:00Z&limit=100"
@@ -81,6 +111,7 @@ curl "http://localhost:5000/api/transcripts?cursor=2026-02-14T20:00:00Z|<last_id
 ```bash
 curl -X POST http://localhost:5000/api/screenshots \
   -F "screenshot=@diagram.png" \
+  -F "session_id=<session_id>" \
   -F "device_id=ipad-pro-1" \
   -F "captured_at=2026-02-14T20:30:00Z" \
   -F "source=diagram" \
@@ -105,7 +136,7 @@ Screenshot metadata now includes `file_url` for cross-device fetches (instead of
 curl -X DELETE http://localhost:5000/api/screenshots/<screenshot_id>
 ```
 
-5. List screenshot metadata for sync (supports `cursor`, `since`, `device_id`, `limit`):
+5. List screenshot metadata for sync (supports `cursor`, `since`, `session_id`, `device_id`, `limit`):
 
 ```bash
 curl "http://localhost:5000/api/screenshots?since=2026-02-14T20:00:00Z&limit=100"
@@ -122,11 +153,12 @@ curl "http://localhost:5000/api/events?since=2026-02-14T20:00:00Z&limit=100"
 Optional query params:
 - `cursor`: stable cursor in format `<iso-ts>|<id>` (recommended)
 - `since`: timestamp-only fallback cursor (exclusive)
+- `session_id`: filter to one session
 - `limit`: max rows (`<= 200`)
 - `device_id`: filter to one device
 - `event_type`: `transcript` or `screenshot`
 
-Responses from list/feed endpoints include `next_cursor` (recommended for next poll) and `next_since` (legacy fallback).
+Responses from list/feed endpoints include `next_cursor` (recommended for next poll) and `next_since` (timestamp fallback).
 Screenshot items in list/feed responses include `file_url`.
 
 ### Device Command Bus
@@ -139,6 +171,7 @@ Peripherals can consume derived commands without reading raw screenshots/transcr
 curl -X POST http://localhost:5000/api/device-commands \
   -H "Content-Type: application/json" \
   -d '{
+    "session_id":"<session_id>",
     "target_device_id":"iPad Diagram",
     "source_device_id":"iris-mac",
     "command_type":"diagram.edit",
@@ -154,6 +187,7 @@ curl "http://localhost:5000/api/device-commands?target_device_id=iPad%20Diagram&
 
 Optional query params:
 - `statuses`: comma-separated statuses (default: `queued,in_progress`)
+- `session_id`: filter to one session
 - `cursor`: `<iso-ts>|<id>` for stable paging
 - `since`: timestamp fallback cursor
 
@@ -171,6 +205,27 @@ curl -X POST http://localhost:5000/api/device-commands/<command_id>/ack \
 4. Fetch one command (for status/result):
 
 - `GET /api/device-commands/<command_id>`
+
+### Agent Status (Glance API)
+
+1. Publish latest high-level status (from agent/mac orchestrator):
+
+```bash
+curl -X POST http://localhost:5000/api/agent-status \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id":"<session_id>",
+    "phase":"executing",
+    "headline":"Updating iPad diagram",
+    "detail":"Applying node rename + edge cleanup",
+    "source_device_id":"iris-mac",
+    "metadata":{"workspace":"default"}
+  }'
+```
+
+2. Read latest status + command summary:
+
+- `GET /api/agent-status?session_id=<session_id>`
 
 ## Demo On LAN (iPad/Widget)
 
@@ -193,5 +248,9 @@ curl -X POST http://localhost:5000/api/device-commands/<command_id>/ack \
 
 ## Storage layout
 
-- `data/iris.db`: metadata (transcripts and screenshots)
-- `data/screenshots/<device-id>/`: screenshot blobs grouped by sanitized device ID (fallback: `unknown-device`)
+- `data/store/sessions/<id>.json`
+- `data/store/transcripts/<id>.json`
+- `data/store/screenshots/<id>.json`
+- `data/store/device_commands/<id>.json`
+- `data/store/agent_status/<id>.json`
+- `data/screenshots/<device-id>/<id>.<ext>`: screenshot blobs grouped by sanitized device ID (fallback: `unknown-device`)
