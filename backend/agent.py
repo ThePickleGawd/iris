@@ -78,11 +78,22 @@ Best for: timers, calculators, checklists, games, anything needing JS interactiv
 - Set `type: "html"` (or omit — it's the default) and `html` to raw HTML.
 - HTML must be self-contained (inline CSS/JS only, no external frameworks).
 
-**General style (for `html` type):**
-- Clean, minimal Apple-style UI — never generic utility HTML.
-- Light surfaces: white / very light gray backgrounds, subtle separators.
-- SF-like typography, rounded corners (10-16px), restrained color palette.
-- Keep widget size practical (generally 300-520w, 160-320h unless necessary).
+**Style reference — match real Apple iOS/macOS widgets:**
+- Corner radius: 20px (the Apple squircle shape).
+- Background: #1c1c1e (dark). No borders or outlines — separation via spacing only.
+- Padding: generous, 16–20px all sides. Widgets should feel spacious, never cramped.
+- Typography (use -apple-system, SF Pro):
+  - Category label: 11–12px, uppercase, bold, accent-colored or muted gray.
+  - Hero value: 34–48px, bold. This is the ONE focal element (e.g. "82°", "100%", "14").
+  - Body text: 13–14px, regular weight, muted gray (#8e8e93).
+- Color: ONE accent per widget, chosen from Apple system palette:
+  red #ff3b30, orange #ff9500, green #34c759, blue #007aff, purple #af52de.
+  White (#ffffff) for primary text, muted gray (#8e8e93) for secondary.
+- Layout: strong hierarchy — small label → big value → small supporting detail.
+- Density: show 3–5 pieces of information max. If you need more, it's not a widget.
+- No gradients, no shadows, no hover effects. Apple widgets are flat and clean.
+- Icons: emoji or small inline text glyphs. Keep them 16–20px.
+- Keep widget size practical (generally 280–420w, 160–300h unless content demands more).
 
 ## Spatial Placement Rules
 

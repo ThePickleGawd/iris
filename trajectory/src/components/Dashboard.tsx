@@ -15,27 +15,47 @@ import {
   ChevronRight,
 } from "lucide-react";
 
+interface ApiLogEntry {
+  id: string;
+  fileName: string;
+}
+
+function isApiLogEntry(value: unknown): value is ApiLogEntry {
+  if (!value || typeof value !== "object") return false;
+  const row = value as Record<string, unknown>;
+  return typeof row.id === "string" && typeof row.fileName === "string";
+}
+
 export function Dashboard() {
   const [trajectories, setTrajectories] = useState<TrajectoryFile[]>([]);
   const [selected, setSelected] = useState<TrajectoryFile | null>(null);
   const [demoFiles, setDemoFiles] = useState<TrajectoryFile[]>([]);
 
-  // Load trajectories from agents/log/ and public/demo/
+  // Load trajectories from discovered log directories and public/demo/.
   useEffect(() => {
     async function loadLogs() {
       const loaded: TrajectoryFile[] = [];
 
-      // Load from agents/log/ via API
+      // Load from API-discovered log files.
       try {
         const listResp = await fetch("/api/logs");
         if (listResp.ok) {
-          const { files } = await listResp.json();
-          for (const file of files as string[]) {
+          const payload: unknown = await listResp.json();
+          const obj = payload as Record<string, unknown>;
+          const entries = Array.isArray(obj.entries)
+            ? obj.entries.filter(isApiLogEntry)
+            : Array.isArray(obj.files)
+              ? obj.files
+                  .filter((value): value is string => typeof value === "string")
+                  .map((fileName) => ({ id: fileName, fileName }))
+              : [];
+
+          for (const entry of entries) {
             try {
-              const resp = await fetch(`/api/logs/${file}`);
+              const resp = await fetch(`/api/logs/${encodeURIComponent(entry.id)}`);
               if (resp.ok) {
                 const content = await resp.text();
-                loaded.push(parseTrajectoryFile(file, content));
+                loaded.push(parseTrajectoryFile(entry.fileName, content));
               }
             } catch {
               // skip unreadable files
