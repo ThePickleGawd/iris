@@ -2,7 +2,7 @@ import fs from "node:fs"
 import path from "node:path"
 import http from "node:http"
 
-const BACKEND_URL = process.env.IRIS_BACKEND_URL || "http://localhost:5000"
+const BACKEND_URL = process.env.IRIS_BACKEND_URL || "http://localhost:5050"
 
 /**
  * Upload a screenshot file to the Backend's /api/screenshots endpoint
@@ -39,7 +39,7 @@ export async function uploadScreenshotToBackend(
 
   // Text fields
   const fields: Record<string, string> = {}
-  if (opts.deviceId) fields.device_id = opts.deviceId
+  fields.device_id = opts.deviceId || "mac"
   if (opts.sessionId) fields.session_id = opts.sessionId
   if (opts.source) fields.source = opts.source
   fields.captured_at = new Date().toISOString()

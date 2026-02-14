@@ -393,6 +393,31 @@ def screenshot_device_dir(device_id: str | None) -> Path:
     return SCREENSHOTS_DIR / safe_name
 
 
+def normalize_screenshot_device_id(device_id: str | None, source: str | None) -> str | None:
+    """Normalize screenshot device ids so Mac captures are always grouped under 'mac'."""
+    cleaned_device = (device_id or "").strip() or None
+    cleaned_source = (source or "").strip().lower() or None
+
+    mac_sources = {
+        "manual",
+        "screen-monitor",
+        "chat-context",
+        "image-analysis",
+        "image-analysis-inline",
+        "extract-problem",
+        "debug-screenshot",
+    }
+    if cleaned_source in mac_sources:
+        return "mac"
+
+    if cleaned_device:
+        lowered = cleaned_device.lower()
+        if lowered == "mac" or lowered.startswith("mac-") or lowered.startswith("iris-mac"):
+            return "mac"
+
+    return cleaned_device
+
+
 def newest_record(rows: list[dict[str, Any]], ts_key: str = "updated_at") -> dict[str, Any] | None:
     if not rows:
         return None
@@ -1222,7 +1247,7 @@ def create_app() -> Flask:
 
         screenshot_id = str(uuid.uuid4())
         created_at = now_iso()
-        device_id = request.form.get("device_id")
+        device_id_raw = request.form.get("device_id")
         source = request.form.get("source")
         notes = request.form.get("notes")
         session_id_raw = request.form.get("session_id")
@@ -1246,6 +1271,8 @@ def create_app() -> Flask:
                 captured_at = parse_iso8601_to_utc(captured_at_raw)
             except ValueError:
                 return jsonify({"error": "captured_at must be a valid ISO-8601 timestamp"}), 400
+
+        device_id = normalize_screenshot_device_id(device_id_raw, source)
 
         safe_name = secure_filename(shot.filename)
         ext = Path(safe_name).suffix or ".png"
