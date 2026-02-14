@@ -139,28 +139,26 @@ struct ContentView: View {
                         )
                     }
 
-                    // Screenshot upload is only required for screenshot-guided workflows.
-                    if document.usesScreenshotWorkflow {
-                        do {
-                            screenshotID = try await uploadCanvasScreenshot(
-                                note: "Voice command: \(prompt.prefix(180))",
-                                backendURL: backendURL
-                            )
-                        } catch {
-                            screenshotUploadWarning = "Screenshot upload warning: \(error.localizedDescription)"
-                        }
+                    // Always attach current canvas screenshot for voice prompts.
+                    do {
+                        screenshotID = try await uploadCanvasScreenshot(
+                            note: "Voice command: \(prompt.prefix(180))",
+                            backendURL: backendURL
+                        )
+                    } catch {
+                        screenshotUploadWarning = "Screenshot upload warning: \(error.localizedDescription)"
                     }
                 }
 
-                if document.usesScreenshotWorkflow, let screenshotID {
+                if let screenshotID {
                     if !screenshotID.isEmpty {
                         message = """
                         User voice command:
                         \(prompt)
 
                         I uploaded an iPad canvas screenshot with device_id "ipad" and screenshot id \(screenshotID).
-                        First call read_screenshot for device "ipad" to inspect the drawing.
-                        Then create and push iPad widgets matching the drawing.
+                        First call read_screenshot for device "ipad" to inspect what is on screen.
+                        If the request asks for a widget, create and push an iPad widget grounded in that screenshot.
                         """
                     }
                 }
@@ -232,13 +230,15 @@ struct ContentView: View {
         guard let pngData = objectManager.captureViewportPNGData() else {
             return nil
         }
+        let coordinateSnapshot = currentCoordinateSnapshotDict()
 
         return try await BackendClient.uploadScreenshot(
             pngData: pngData,
             deviceID: "ipad",
             backendURL: backendURL,
             sessionID: document.id.uuidString,
-            notes: note
+            notes: note,
+            coordinateSnapshot: coordinateSnapshot
         )
     }
 
@@ -303,7 +303,8 @@ struct ContentView: View {
                 deviceID: "ipad",
                 backendURL: backendURL,
                 sessionID: document.id.uuidString,
-                notes: "Proactive monitor capture"
+                notes: "Proactive monitor capture",
+                coordinateSnapshot: coordinateSnapshot
             )
             uploadedScreenshotID = screenshotID
             proactiveCapturedIdleCycleID = proactiveIdleCycleID

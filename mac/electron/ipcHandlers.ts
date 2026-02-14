@@ -29,8 +29,18 @@ export function initializeIpcHandlers(appState: AppState): void {
   let lastMessageTimestamp: string | null = null
   let isPollingMessages = false
   let pollFailures = 0
+  let widgetPollerInterval: ReturnType<typeof setInterval> | null = null
+  let isPollingWidgets = false
+  const renderedWidgetIds = new Set<string>()
   let sessionsCache: { items: any[]; count: number } = { items: [], count: 0 }
   const widgetManager = new WidgetWindowManager()
+  widgetManager.onWidgetClosed((widgetId) => {
+    renderedWidgetIds.delete(widgetId)
+    if (currentSession) {
+      requestAgentServer("DELETE", `/sessions/${currentSession.id}/widgets/${widgetId}`, undefined, AGENT_POST_TIMEOUT_MS)
+        .catch(() => {})
+    }
+  })
   const getLatestScreenshotPathFromQueues = (): string | undefined => {
     const queue = appState.getScreenshotQueue()
     const extraQueue = appState.getExtraScreenshotQueue()
@@ -265,6 +275,11 @@ export function initializeIpcHandlers(appState: AppState): void {
     return widgetManager.openWidget(spec)
   })
 
+  ipcMain.handle("register-rendered-widget", async (_, id: string) => {
+    if (id) renderedWidgetIds.add(id)
+    return { success: true }
+  })
+
   // ─── Session Management ─────────────────────────────────
 
   async function agentServerGet(path: string): Promise<any> {
@@ -372,7 +387,9 @@ export function initializeIpcHandlers(appState: AppState): void {
       currentSession = null
     }
     lastMessageTimestamp = null
+    renderedWidgetIds.clear()
     startMessagePoller()
+    startWidgetPoller()
     return { success: true }
   })
 
@@ -383,7 +400,9 @@ export function initializeIpcHandlers(appState: AppState): void {
       const result = await agentServerPost("/sessions", body)
       currentSession = { id: params.id, name: params.name, model }
       lastMessageTimestamp = null
+      renderedWidgetIds.clear()
       startMessagePoller()
+      startWidgetPoller()
       return result
     } catch (error: any) {
       console.error("Failed to create session:", error)
@@ -397,9 +416,14 @@ export function initializeIpcHandlers(appState: AppState): void {
       if (currentSession?.id === sessionId) {
         currentSession = null
         lastMessageTimestamp = null
+        renderedWidgetIds.clear()
         if (messagePollerInterval) {
           clearInterval(messagePollerInterval)
           messagePollerInterval = null
+        }
+        if (widgetPollerInterval) {
+          clearInterval(widgetPollerInterval)
+          widgetPollerInterval = null
         }
       }
       return { success: true }
@@ -453,6 +477,39 @@ export function initializeIpcHandlers(appState: AppState): void {
         isPollingMessages = false
       }
     }, 3000)
+  }
+
+  function startWidgetPoller() {
+    if (widgetPollerInterval) {
+      clearInterval(widgetPollerInterval)
+      widgetPollerInterval = null
+    }
+    if (!currentSession) return
+
+    widgetPollerInterval = setInterval(async () => {
+      if (!currentSession || isPollingWidgets) return
+      isPollingWidgets = true
+      try {
+        const data = await agentServerGet(`/sessions/${currentSession.id}?target=mac`)
+        const widgets = data?.widgets || []
+        for (const w of widgets) {
+          const id = w.id || w.widget_id
+          if (!id || renderedWidgetIds.has(id)) continue
+          renderedWidgetIds.add(id)
+          widgetManager.openWidget({
+            id,
+            kind: "html",
+            width: w.width || 320,
+            height: w.height || 220,
+            payload: { html: w.html || "" },
+          })
+        }
+      } catch {
+        // non-fatal
+      } finally {
+        isPollingWidgets = false
+      }
+    }, 5000)
   }
 
   // Window movement handlers

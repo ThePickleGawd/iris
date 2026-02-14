@@ -21,6 +21,11 @@ export interface WidgetSpec {
 export class WidgetWindowManager {
   private windows = new Map<string, BrowserWindow>()
   private nextOffset = 0
+  private onClosedCallback: ((id: string) => void) | null = null
+
+  public onWidgetClosed(callback: (id: string) => void): void {
+    this.onClosedCallback = callback
+  }
 
   public openWidget(spec: WidgetSpec): { success: boolean; id: string; error?: string } {
     try {
@@ -71,6 +76,7 @@ export class WidgetWindowManager {
 
       win.on("closed", () => {
         this.windows.delete(id)
+        this.onClosedCallback?.(id)
       })
 
       this.windows.set(id, win)
