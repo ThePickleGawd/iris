@@ -24,6 +24,11 @@ BACKEND_PID=$!
 # Give backend a moment to boot
 sleep 2
 
+if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+    echo "Backend failed to start. Check backend/run.sh output above."
+    exit 1
+fi
+
 # Start mac app in background
 bash mac/run.sh &
 MAC_PID=$!

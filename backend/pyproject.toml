@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "iris-backend"
 version = "0.2.0"
@@ -10,3 +14,8 @@ dependencies = [
     "manim",
 ]
 
+[tool.setuptools]
+py-modules = ["app", "agent"]
+
+[tool.setuptools.packages.find]
+include = ["grounding*", "orchestration*"]
