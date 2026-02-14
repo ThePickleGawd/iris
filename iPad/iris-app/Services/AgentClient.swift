@@ -1,6 +1,20 @@
 import Foundation
 import UIKit
 
+/// A widget parsed from an agent response.
+struct AgentWidget {
+    let id: String
+    let html: String
+    let width: CGFloat
+    let height: CGFloat
+}
+
+/// Full result from the agent — text reply plus any widgets.
+struct AgentResponse {
+    let text: String
+    let widgets: [AgentWidget]
+}
+
 /// Sends user messages to the agents server running on the linked Mac.
 enum AgentClient {
 
@@ -11,13 +25,13 @@ enum AgentClient {
         return URLSession(configuration: config)
     }()
 
-    /// Send a message to the agents server and return the response text.
+    /// Send a message to the agents server and return the full response (text + widgets).
     static func sendMessage(
         _ message: String,
         model: String,
         chatID: String,
         serverURL: URL
-    ) async throws -> String {
+    ) async throws -> AgentResponse {
         let url = serverURL
             .appendingPathComponent("v1")
             .appendingPathComponent("agent")
@@ -66,14 +80,7 @@ enum AgentClient {
             throw AgentClientError.serverError(statusCode: http.statusCode, body: body)
         }
 
-        if let text = parseAgentResponse(data) {
-            return text
-        }
-
-        guard let body = String(data: data, encoding: .utf8), !body.isEmpty else {
-            throw AgentClientError.invalidResponse
-        }
-        return body
+        return parseFullResponse(data)
     }
 
     /// Register a session with the agents server so it appears on the Mac.
@@ -102,66 +109,70 @@ enum AgentClient {
         _ = try? await session.data(for: request)
     }
 
-    private static func parseAgentResponse(_ data: Data) -> String? {
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            if let text = json["text"] as? String, !text.isEmpty {
-                return text
-            }
-            if let text = json["response"] as? String, !text.isEmpty {
-                return text
-            }
-            if let events = json["events"] as? [[String: Any]] {
-                var final = ""
-                for event in events {
-                    if let kind = event["kind"] as? String, kind == "message.delta", let delta = event["delta"] as? String {
-                        final += delta
-                    } else if let kind = event["kind"] as? String, kind == "message.final", let text = event["text"] as? String {
-                        final = text
-                    }
+    /// Fetch pending widgets for a session (for cross-device delivery).
+    static func fetchSessionWidgets(
+        sessionID: String,
+        serverURL: URL
+    ) async -> [AgentWidget] {
+        let url = serverURL.appendingPathComponent("sessions").appendingPathComponent(sessionID)
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+
+        guard let (data, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200...299).contains(http.statusCode),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let widgets = json["widgets"] as? [[String: Any]] else {
+            return []
+        }
+
+        return widgets.compactMap { parseWidgetDict($0) }
+    }
+
+    // MARK: - Parsing
+
+    private static func parseFullResponse(_ data: Data) -> AgentResponse {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            let raw = String(data: data, encoding: .utf8) ?? ""
+            return AgentResponse(text: raw, widgets: [])
+        }
+
+        // Extract text
+        let text = (json["text"] as? String) ?? (json["response"] as? String) ?? ""
+
+        // Extract widgets from events
+        var widgets: [AgentWidget] = []
+        if let events = json["events"] as? [[String: Any]] {
+            for event in events {
+                guard let kind = event["kind"] as? String, kind == "widget.open" else { continue }
+                if let widgetDict = event["widget"] as? [String: Any],
+                   let widget = parseWidgetFromEvent(widgetDict) {
+                    widgets.append(widget)
                 }
-                if !final.isEmpty { return final }
             }
         }
 
-        guard let raw = String(data: data, encoding: .utf8) else {
-            return nil
-        }
+        return AgentResponse(text: text, widgets: widgets)
+    }
 
-        var finalText = ""
-        for rawLine in raw.components(separatedBy: .newlines) {
-            let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty { continue }
-            let payload: String
-            if trimmed.hasPrefix("data:") {
-                payload = trimmed.dropFirst(5).trimmingCharacters(in: .whitespacesAndNewlines)
-            } else {
-                payload = trimmed
-            }
-            if payload.isEmpty || payload == "[DONE]" { continue }
-            guard let payloadData = payload.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any] else {
-                continue
-            }
+    private static func parseWidgetFromEvent(_ dict: [String: Any]) -> AgentWidget? {
+        let payload = dict["payload"] as? [String: Any]
+        guard let html = payload?["html"] as? String ?? dict["html"] as? String,
+              !html.isEmpty else { return nil }
 
-            if let kind = obj["kind"] as? String {
-                if kind == "message.delta", let delta = obj["delta"] as? String {
-                    finalText += delta
-                    continue
-                }
-                if kind == "message.final", let text = obj["text"] as? String {
-                    finalText = text
-                    continue
-                }
-            }
+        let id = (dict["id"] as? String) ?? (dict["widget_id"] as? String) ?? UUID().uuidString
+        let width = CGFloat((dict["width"] as? NSNumber)?.doubleValue ?? 320)
+        let height = CGFloat((dict["height"] as? NSNumber)?.doubleValue ?? 220)
 
-            if let chunk = obj["chunk"] as? String {
-                finalText += chunk
-            } else if let text = obj["text"] as? String {
-                finalText = text
-            }
-        }
+        return AgentWidget(id: id, html: html, width: width, height: height)
+    }
 
-        return finalText.isEmpty ? nil : finalText
+    private static func parseWidgetDict(_ dict: [String: Any]) -> AgentWidget? {
+        guard let html = dict["html"] as? String, !html.isEmpty else { return nil }
+        let id = (dict["id"] as? String) ?? UUID().uuidString
+        let width = CGFloat((dict["width"] as? NSNumber)?.doubleValue ?? 320)
+        let height = CGFloat((dict["height"] as? NSNumber)?.doubleValue ?? 220)
+        return AgentWidget(id: id, html: html, width: width, height: height)
     }
 
     private static func getOrCreateDeviceID() -> String {

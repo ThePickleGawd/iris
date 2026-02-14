@@ -13,6 +13,8 @@ struct ContentView: View {
 
     @State private var isProcessing = false
     @State private var lastResponse: String?
+    @State private var widgetSyncTimer: Timer?
+    @State private var renderedWidgetIDs: Set<String> = []
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -54,9 +56,11 @@ struct ContentView: View {
         .onDisappear {
             canvasState.isRecording = false
             audioService.stopCapture()
+            widgetSyncTimer?.invalidate()
         }
         .onAppear {
             SpeechTranscriber.requestAuthorization { _ in }
+            startWidgetSync()
         }
     }
 
@@ -133,17 +137,30 @@ struct ContentView: View {
                     serverURL: serverURL
                 )
 
-                let response = try await AgentClient.sendMessage(
+                let agentResponse = try await AgentClient.sendMessage(
                     message,
                     model: document.resolvedModel,
                     chatID: document.id.uuidString,
                     serverURL: serverURL
                 )
+
+                // Place widgets on the canvas and track them
+                for widget in agentResponse.widgets {
+                    let pos = objectManager.viewportCenter
+                    await objectManager.place(
+                        html: widget.html,
+                        at: pos,
+                        size: CGSize(width: widget.width, height: widget.height)
+                    )
+                    renderedWidgetIDs.insert(widget.id)
+                }
+
                 await MainActor.run {
+                    let text = agentResponse.text
                     if let screenshotUploadWarning {
-                        withAnimation { lastResponse = "\(screenshotUploadWarning)\n\n\(response)" }
+                        withAnimation { lastResponse = "\(screenshotUploadWarning)\n\n\(text)" }
                     } else {
-                        withAnimation { lastResponse = response }
+                        withAnimation { lastResponse = text }
                     }
                     isProcessing = false
                     autoDismissResponse()
@@ -171,6 +188,33 @@ struct ContentView: View {
             sessionID: document.id.uuidString,
             notes: "Voice command: \(prompt.prefix(180))"
         )
+    }
+
+    private func startWidgetSync() {
+        widgetSyncTimer?.invalidate()
+        widgetSyncTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
+            Task { await syncWidgets() }
+        }
+    }
+
+    @MainActor
+    private func syncWidgets() async {
+        guard let serverURL = objectManager.httpServer.agentServerURL() else { return }
+
+        let widgets = await AgentClient.fetchSessionWidgets(
+            sessionID: document.id.uuidString,
+            serverURL: serverURL
+        )
+
+        for widget in widgets where !renderedWidgetIDs.contains(widget.id) {
+            let pos = objectManager.viewportCenter
+            await objectManager.place(
+                html: widget.html,
+                at: pos,
+                size: CGSize(width: widget.width, height: widget.height)
+            )
+            renderedWidgetIDs.insert(widget.id)
+        }
     }
 
     private func autoDismissResponse() {

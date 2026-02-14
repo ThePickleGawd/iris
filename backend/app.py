@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import httpx
 from flask import Flask, jsonify, request, send_file
 from werkzeug.utils import secure_filename
 
@@ -26,16 +25,12 @@ for d in [SESSIONS_DIR, SCREENSHOTS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
-# Device registry (in-memory)
-# ---------------------------------------------------------------------------
-device_registry: dict[str, dict] = {}
-
-# ---------------------------------------------------------------------------
 # Session storage — one JSON file per session
 #
 # Each file: {
 #   "id", "name", "model", "created_at", "updated_at",
-#   "messages": [{"id", "role", "content", "created_at", "device_id"}, ...]
+#   "messages": [{"id", "role", "content", "created_at"}, ...],
+#   "widgets":  [{"id", "html", "width", "height", "created_at"}, ...]
 # }
 # ---------------------------------------------------------------------------
 
@@ -91,6 +86,7 @@ def _make_session(session_id: str, name: str = "Untitled", model: str = "gpt-5.2
         "created_at": ts,
         "updated_at": ts,
         "messages": [],
+        "widgets": [],
     }
 
 
@@ -171,7 +167,7 @@ def _options() -> Any:
 
 @app.get("/health")
 def health() -> Any:
-    return jsonify({"status": "ok", "devices": len(device_registry)})
+    return jsonify({"status": "ok"})
 
 
 # ---------------------------------------------------------------------------
@@ -382,61 +378,25 @@ def ingest_transcript() -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Devices
+# Devices (kept for client compat — no-op registry)
 # ---------------------------------------------------------------------------
 
 @app.post("/devices")
 def register_device() -> Any:
-    body = request.get_json(silent=True) or {}
-    device_id = body.get("id")
-    if not device_id:
-        return jsonify({"error": "id is required"}), 400
-    device_registry[device_id] = body
-    return jsonify({"registered": True, "device_id": device_id})
-
+    return jsonify({"registered": True, "device_id": (request.get_json(silent=True) or {}).get("id")})
 
 @app.get("/devices")
 def list_devices() -> Any:
-    return jsonify({"devices": list(device_registry.values()), "count": len(device_registry)})
-
+    return jsonify({"devices": [], "count": 0})
 
 @app.delete("/devices/<device_id>")
 def unregister_device(device_id: str) -> Any:
-    if device_id in device_registry:
-        del device_registry[device_id]
-        return jsonify({"unregistered": device_id})
-    return jsonify({"error": "not found"}), 404
+    return jsonify({"unregistered": device_id})
 
 
 # ---------------------------------------------------------------------------
 # Agent
 # ---------------------------------------------------------------------------
-
-IPAD_PLATFORMS = {"ipados", "ipad", "ios"}
-
-
-def _deliver_widget_to_ipad(widget: dict) -> str | None:
-    """POST widget to a registered iPad. Returns status or None."""
-    for dev in device_registry.values():
-        if (dev.get("platform") or "").lower() in IPAD_PLATFORMS:
-            host, port = dev["host"], dev["port"]
-            try:
-                resp = httpx.post(
-                    f"http://{host}:{port}/api/v1/objects",
-                    json={
-                        "html": widget.get("html", ""),
-                        "width": widget.get("width", 320),
-                        "height": widget.get("height", 220),
-                    },
-                    timeout=10,
-                )
-                if resp.status_code in (200, 201):
-                    return f"Delivered to iPad ({dev.get('name', host)})"
-                return f"iPad returned {resp.status_code}"
-            except httpx.HTTPError as exc:
-                return f"iPad delivery failed: {exc}"
-    return None
-
 
 @app.post("/v1/agent")
 def v1_agent() -> Any:
@@ -496,23 +456,31 @@ def v1_agent() -> Any:
         "device_id": None,
     })
 
-    session["updated_at"] = ts
-    _save_session(session)
-
-    # Build widget events + deliver
+    # Store widgets in session
     events: list[dict] = []
     for w in result.get("widgets", []):
-        _deliver_widget_to_ipad(w)
+        widget_record = {
+            "id": w.get("widget_id", str(uuid.uuid4())),
+            "html": w.get("html", ""),
+            "width": w.get("width", 320),
+            "height": w.get("height", 220),
+            "created_at": ts,
+        }
+        session.setdefault("widgets", []).append(widget_record)
+
         events.append({
             "kind": "widget.open",
             "widget": {
                 "kind": "html",
-                "id": w.get("widget_id"),
-                "payload": {"html": w.get("html", "")},
-                "width": w.get("width"),
-                "height": w.get("height"),
+                "id": widget_record["id"],
+                "payload": {"html": widget_record["html"]},
+                "width": widget_record["width"],
+                "height": widget_record["height"],
             },
         })
+
+    session["updated_at"] = ts
+    _save_session(session)
 
     return jsonify({
         "kind": "message.final",

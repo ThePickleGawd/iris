@@ -273,9 +273,48 @@ const Queue: React.FC = () => {
     startWindowDragOrAction(event, () => setShowSessionDrawer((v) => !v))
   }, [startWindowDragOrAction])
 
+  const handleToggleWindowMouseDown = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    startWindowDragOrAction(event, () => {
+      void window.electronAPI.toggleWindow()
+    })
+  }, [startWindowDragOrAction])
+
+  const handleShowModelPickerMouseDown = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    startWindowDragOrAction(event, () => setShowModelPicker(true))
+  }, [startWindowDragOrAction])
+
+  const handleCollapseMouseDown = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    startWindowDragOrAction(event, () => setIsExpanded(false))
+  }, [startWindowDragOrAction])
+
+  const handleCollapsedTitleMouseDown = useCallback((event: React.MouseEvent<HTMLSpanElement>) => {
+    startWindowDragOrAction(event, () => setIsExpanded(true))
+  }, [startWindowDragOrAction])
+
   const handleCollapsedExpandMouseDown = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
     startWindowDragOrAction(event, () => setIsExpanded(true))
   }, [startWindowDragOrAction])
+
+  const handleToggleWindowKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault()
+      void window.electronAPI.toggleWindow()
+    }
+  }, [])
+
+  const handleShowModelPickerKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault()
+      setShowModelPicker(true)
+    }
+  }, [])
+
+  const handleCollapseKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault()
+      setIsExpanded(false)
+    }
+  }, [])
 
   const handleCollapsedExpandKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
     if (event.key === "Enter" || event.key === " ") {
@@ -506,12 +545,13 @@ const Queue: React.FC = () => {
           <button
             type="button"
             className="iris-toggle interactive"
-            onClick={() => window.electronAPI.toggleWindow()}
+            onMouseDown={handleToggleWindowMouseDown}
+            onKeyDown={handleToggleWindowKeyDown}
             aria-label="Close"
           >
             <X size={13} />
           </button>
-          <span className="iris-bar-title interactive" onClick={() => setIsExpanded(true)}>
+          <span className="iris-bar-title interactive" onMouseDown={handleCollapsedTitleMouseDown}>
             {currentSession?.name || "Iris"}
           </span>
           <button
@@ -531,7 +571,8 @@ const Queue: React.FC = () => {
             <button
               type="button"
               className="iris-tab iris-tab-new interactive"
-              onClick={() => setShowModelPicker(true)}
+              onMouseDown={handleShowModelPickerMouseDown}
+              onKeyDown={handleShowModelPickerKeyDown}
               title="New chat"
             >
               <Plus size={11} />
@@ -556,7 +597,8 @@ const Queue: React.FC = () => {
             <button
               type="button"
               className="iris-toggle interactive"
-              onClick={() => setIsExpanded(false)}
+              onMouseDown={handleCollapseMouseDown}
+              onKeyDown={handleCollapseKeyDown}
               aria-label="Collapse"
             >
               <ChevronUp size={13} />

@@ -36,6 +36,10 @@ struct CanvasView: UIViewRepresentable {
         applyTool(to: view)
         objectManager.attach(to: view, cursor: cursor)
 
+        let pencilInteraction = UIPencilInteraction()
+        pencilInteraction.delegate = context.coordinator
+        view.addInteraction(pencilInteraction)
+
         DispatchQueue.main.async {
             view.centerViewport()
             view.setZoomScale(1.0, animated: false)
@@ -65,9 +69,13 @@ struct CanvasView: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    final class Coordinator: NSObject, PKCanvasViewDelegate {
+    final class Coordinator: NSObject, PKCanvasViewDelegate, UIPencilInteractionDelegate {
         var parent: CanvasView
         private var saveTimer: Timer?
+        private var squeezePreviousTool: DrawingTool?
+        private var tapSequenceCount: Int = 0
+        private var tapSequenceWorkItem: DispatchWorkItem?
+        private let tapSequenceWindow: TimeInterval = 0.35
 
         init(_ parent: CanvasView) {
             self.parent = parent
@@ -98,6 +106,62 @@ struct CanvasView: UIViewRepresentable {
             guard let doc = parent.document else { return }
             saveTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: false) { _ in
                 doc.saveDrawing(canvasView.drawing)
+            }
+        }
+
+        deinit {
+            tapSequenceWorkItem?.cancel()
+        }
+
+        func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
+            registerPencilTap()
+        }
+
+        @available(iOS 17.5, *)
+        func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveTap tap: UIPencilInteraction.Tap) {
+            registerPencilTap()
+        }
+
+        @available(iOS 17.5, *)
+        func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
+            DispatchQueue.main.async {
+                switch squeeze.phase {
+                case .began, .changed:
+                    if self.squeezePreviousTool == nil {
+                        self.squeezePreviousTool = self.parent.canvasState.currentTool
+                        self.parent.canvasState.currentTool = .eraser
+                    }
+                case .ended, .cancelled:
+                    if let previousTool = self.squeezePreviousTool {
+                        self.parent.canvasState.currentTool = previousTool
+                        self.squeezePreviousTool = nil
+                    }
+                @unknown default:
+                    break
+                }
+            }
+        }
+
+        private func registerPencilTap() {
+            DispatchQueue.main.async {
+                self.tapSequenceCount += 1
+                self.tapSequenceWorkItem?.cancel()
+
+                let workItem = DispatchWorkItem { [weak self] in
+                    guard let self else { return }
+                    switch self.tapSequenceCount {
+                    case 1:
+                        self.parent.canvasState.undo()
+                    case 2:
+                        self.parent.canvasState.redo()
+                    default:
+                        break
+                    }
+                    self.tapSequenceCount = 0
+                    self.tapSequenceWorkItem = nil
+                }
+                self.tapSequenceWorkItem = workItem
+                DispatchQueue.main.asyncAfter(deadline: .now() + self.tapSequenceWindow, execute: workItem)
             }
         }
     }
