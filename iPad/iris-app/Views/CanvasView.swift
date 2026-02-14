@@ -101,6 +101,10 @@ struct CanvasView: UIViewRepresentable {
             parent.canvasState.undoManager = canvasView.undoManager
             parent.canvasState.canUndo = canvasView.undoManager?.canUndo ?? false
             parent.canvasState.canRedo = canvasView.undoManager?.canRedo ?? false
+            parent.canvasState.lastStrokeActivityAt = Date()
+            if let recentStroke = canvasView.drawing.strokes.last {
+                parent.objectManager.updateMostRecentStrokeBounds(recentStroke.renderBounds)
+            }
 
             saveTimer?.invalidate()
             guard let doc = parent.document else { return }

@@ -21,12 +21,21 @@ struct ContentView: View {
     @State private var lastMonitorFingerprint: [UInt8]?
     @State private var proactiveRunInFlight = false
     @State private var lastProactiveDescription: [String: Any]?
+    @State private var processedProactiveScreenshotIDs: Set<String> = []
+    @State private var lastProactiveTaskSignature: String?
+    @State private var proactiveTaskPersistenceTicks = 0
+    @State private var proactiveStrokeIdleTask: Task<Void, Never>?
+    @State private var proactiveIdleCycleID = 0
+    @State private var proactiveCapturedIdleCycleID: Int?
 
     private let proactiveIntervalSeconds: TimeInterval = 5
+    private let proactiveStrokePauseSeconds: TimeInterval = 0.75
     private let proactiveMaxSuggestionsPerTick = 3
+    private let proactiveTestSingleSuggestionPerScreenshot = true
     private let proactiveAlwaysSaveScreenshots = false
+    private let proactiveForceSuggestAfterTicks = 4
     private let proactiveTriageModel = "gemini-2.0-flash"
-    private let proactiveWidgetModel = "claude-sonnet-4-5-20250929"
+    private let proactiveWidgetModel = "gemini-2.0-flash"
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -67,11 +76,18 @@ struct ContentView: View {
                 stopRecordingAndSend()
             }
         }
+        .onChange(of: canvasState.lastStrokeActivityAt) { _, strokeAt in
+            guard strokeAt != nil else { return }
+            proactiveIdleCycleID += 1
+            proactiveCapturedIdleCycleID = nil
+            scheduleProactiveCaptureAfterStrokePause()
+        }
         .onDisappear {
             canvasState.isRecording = false
             audioService.stopCapture()
             widgetSyncTimer?.invalidate()
             proactiveMonitorTimer?.invalidate()
+            proactiveStrokeIdleTask?.cancel()
         }
         .onAppear {
             SpeechTranscriber.requestAuthorization { _ in }
@@ -110,7 +126,9 @@ struct ContentView: View {
                 var message = prompt
                 var screenshotID: String?
                 var screenshotUploadWarning: String?
+                var uploadedScreenshotBackendURL: URL?
                 if let backendURL = objectManager.httpServer.backendServerURL() {
+                    uploadedScreenshotBackendURL = backendURL
                     // Non-blocking transcript ingestion keeps voice->agent latency low.
                     Task(priority: .utility) {
                         try? await BackendClient.ingestTranscript(
@@ -158,6 +176,18 @@ struct ContentView: View {
                 }
 
                 let coordinateSnapshot = currentCoordinateSnapshotDict()
+                if let sid = screenshotID,
+                   !sid.isEmpty,
+                   let backendURL = uploadedScreenshotBackendURL {
+                    Task(priority: .utility) {
+                        _ = try? await BackendClient.describeProactiveScreenshot(
+                            screenshotID: sid,
+                            coordinateSnapshot: coordinateSnapshot,
+                            backendURL: backendURL,
+                            previousDescription: nil
+                        )
+                    }
+                }
                 let agentResponse = try await AgentClient.sendMessage(
                     message,
                     model: document.resolvedModel,
@@ -226,11 +256,30 @@ struct ContentView: View {
         }
     }
 
+    private func scheduleProactiveCaptureAfterStrokePause() {
+        proactiveStrokeIdleTask?.cancel()
+        proactiveStrokeIdleTask = Task { @MainActor in
+            let ns = UInt64(proactiveStrokePauseSeconds * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: ns)
+            guard !Task.isCancelled else { return }
+            await proactiveMonitorTick()
+        }
+    }
+
     @MainActor
     private func proactiveMonitorTick() async {
         guard !proactiveRunInFlight else { return }
         guard !canvasState.isRecording else { return }
         guard !isProcessing else { return }
+        if let lastStrokeAt = canvasState.lastStrokeActivityAt {
+            let elapsed = Date().timeIntervalSince(lastStrokeAt)
+            if elapsed < proactiveStrokePauseSeconds {
+                return
+            }
+            if proactiveCapturedIdleCycleID == proactiveIdleCycleID {
+                return
+            }
+        }
         guard let backendURL = objectManager.httpServer.backendServerURL() else { return }
         guard let serverURL = objectManager.httpServer.agentServerURL() else { return }
         guard let pngData = objectManager.captureViewportPNGData() else { return }
@@ -245,6 +294,7 @@ struct ContentView: View {
 
         proactiveRunInFlight = true
         defer { proactiveRunInFlight = false }
+        var uploadedScreenshotID: String?
 
         do {
             let coordinateSnapshot = currentCoordinateSnapshotDict()
@@ -255,6 +305,8 @@ struct ContentView: View {
                 sessionID: document.id.uuidString,
                 notes: "Proactive monitor capture"
             )
+            uploadedScreenshotID = screenshotID
+            proactiveCapturedIdleCycleID = proactiveIdleCycleID
 
             await AgentClient.registerSession(
                 id: document.id.uuidString,
@@ -270,11 +322,21 @@ struct ContentView: View {
                 backendURL: backendURL,
                 previousDescription: previousDescription
             )
-            var keepScreenshot = shouldKeepProactiveScreenshot(
+            let suggestionLimit = proactiveTestSingleSuggestionPerScreenshot ? 1 : proactiveMaxSuggestionsPerTick
+            let keepScreenshot = shouldKeepProactiveScreenshot(
                 descriptionResult.description,
                 previousDescription: previousDescription
             )
             lastProactiveDescription = descriptionResult.description
+            let forceSuggestionRequired = proactiveTestSingleSuggestionPerScreenshot
+                || shouldForceProactiveSuggestion(descriptionResult.description)
+
+            if processedProactiveScreenshotIDs.contains(screenshotID) {
+                if !keepScreenshot {
+                    try? await BackendClient.deleteScreenshot(screenshotID: screenshotID, backendURL: backendURL)
+                }
+                return
+            }
 
             let triagePrompt = """
             You are the proactive triage model. Use only the screenshot description JSON below.
@@ -288,61 +350,115 @@ struct ContentView: View {
               ]
             }
             Rules:
-            - suggestions max \(proactiveMaxSuggestionsPerTick)
+            - suggestions max \(suggestionLimit)
             - x_norm and y_norm must be in [0, 1]
             - if should_suggest is false, suggestions must be []
+            \(forceSuggestionRequired ? "- The same clear task has persisted too long; you must set should_suggest=true and provide at least 1 suggestion." : "")
 
             Description JSON:
             \(descriptionResult.descriptionJSON)
             """
 
-            let triageResponse = try await AgentClient.sendMessage(
+            let widgetPrompt = """
+            Build proactive suggestion widgets from this screenshot description:
+            \(descriptionResult.descriptionJSON)
+
+            Requirements:
+            - Use description.problem_to_solve and description.task_objective as the core objective.
+            - Create at most \(suggestionLimit) concise Apple-style widgets.
+            - If possible, align placement with description.suggestion_candidates anchor_norm.
+            - Every widget_id must start with "proactive-suggestion-\(screenshotID)-".
+            - Use coordinate_space=document_axis and anchor=top_left.
+            \(forceSuggestionRequired ? "- This task has persisted too long. You must output at least one push_widget suggestion." : "")
+            """
+
+            async let triageResponseTask = AgentClient.sendMessage(
                 triagePrompt,
                 model: proactiveTriageModel,
                 chatID: document.id.uuidString,
                 coordinateSnapshot: coordinateSnapshot,
                 serverURL: serverURL
             )
-
-            guard let triage = parseProactiveDecision(triageResponse.text) else {
-                if !keepScreenshot { try? await BackendClient.deleteScreenshot(screenshotID: screenshotID, backendURL: backendURL) }
-                return
-            }
-            keepScreenshot = keepScreenshot || triage.shouldSuggest
-            if !keepScreenshot {
-                try? await BackendClient.deleteScreenshot(screenshotID: screenshotID, backendURL: backendURL)
-            }
-            guard triage.shouldSuggest, !triage.suggestions.isEmpty else { return }
-
-            let selected = Array(triage.suggestions.prefix(proactiveMaxSuggestionsPerTick))
-            let selectedJSON = proactiveSuggestionsJSON(selected)
-            let widgetPrompt = """
-            Build widget suggestions from this screenshot description:
-            \(descriptionResult.descriptionJSON)
-
-            Candidate suggestions:
-            \(selectedJSON)
-
-            Requirements:
-            - Treat description.problem_to_solve and description.task_objective as the primary goal.
-            - Make each widget directly help accomplish that goal.
-            - For each candidate, call push_widget once.
-            - Use widget_id values that start with "proactive-suggestion-".
-            - Produce concise Apple-style widgets.
-            - Use x/y placement near the provided suggestion coordinates.
-            - Use coordinate_space=document_axis and anchor=top_left.
-            """
-
-            let widgetResponse = try await AgentClient.sendMessage(
+            async let widgetResponseTask = AgentClient.sendMessage(
                 widgetPrompt,
                 model: proactiveWidgetModel,
                 chatID: document.id.uuidString,
+                ephemeral: true,
                 coordinateSnapshot: coordinateSnapshot,
                 serverURL: serverURL
             )
 
-            let chips = widgetResponse.widgets.prefix(proactiveMaxSuggestionsPerTick)
-            guard !chips.isEmpty else { return }
+            let (triageResponse, widgetResponse) = try await (triageResponseTask, widgetResponseTask)
+
+            var triage = parseProactiveDecision(triageResponse.text) ?? ProactiveDecision(
+                shouldSuggest: true,
+                reason: "",
+                suggestions: []
+            )
+            if forceSuggestionRequired && (!triage.shouldSuggest || triage.suggestions.isEmpty) {
+                let fallback = fallbackSuggestionsFromDescription(descriptionResult.description)
+                triage = ProactiveDecision(
+                    shouldSuggest: true,
+                    reason: triage.reason.isEmpty ? "Persistent task detected; proactive suggestion required." : triage.reason,
+                    suggestions: fallback.isEmpty ? triage.suggestions : fallback
+                )
+            }
+            if !keepScreenshot {
+                try? await BackendClient.deleteScreenshot(screenshotID: screenshotID, backendURL: backendURL)
+            }
+
+            // Every saved proactive screenshot must produce a suggestion.
+            // If triage fails to propose one, synthesize from the screenshot description.
+            var selected = Array(triage.suggestions.prefix(suggestionLimit))
+            if selected.isEmpty {
+                selected = fallbackSuggestionsFromDescription(descriptionResult.description)
+            }
+            if selected.isEmpty {
+                let problem = ((descriptionResult.description["problem_to_solve"] as? String) ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let objective = ((descriptionResult.description["task_objective"] as? String) ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let summary = objective.isEmpty
+                    ? ((((descriptionResult.description["scene_summary"] as? String) ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)).isEmpty
+                        ? "Tap to place an AI-generated helper widget."
+                        : (((descriptionResult.description["scene_summary"] as? String) ?? "")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)))
+                    : objective
+                selected = [
+                    ProactiveSuggestionDecision(
+                        title: problem.isEmpty ? "Suggested Next Step" : problem,
+                        summary: summary,
+                        xNorm: 0.6,
+                        yNorm: 0.35,
+                        priority: 1
+                    )
+                ]
+            }
+            selected = Array(selected.prefix(suggestionLimit))
+            processedProactiveScreenshotIDs.insert(screenshotID)
+
+            let chips = Array(widgetResponse.widgets.prefix(suggestionLimit))
+            if chips.isEmpty {
+                for meta in selected {
+                    let fallbackSize = CGSize(width: 290, height: 150)
+                    let origin = mappedProactiveOrigin(
+                        from: meta,
+                        description: descriptionResult.description,
+                        coordinateSnapshot: coordinateSnapshot,
+                        widgetSize: fallbackSize
+                    ) ?? objectManager.viewportCenter
+                    _ = objectManager.addSuggestion(
+                        title: meta.title,
+                        summary: meta.summary,
+                        html: fallbackSuggestionHTML(title: meta.title, summary: meta.summary),
+                        at: origin,
+                        size: fallbackSize,
+                        animateOnPlace: true
+                    )
+                }
+                return
+            }
 
             for (index, widget) in chips.enumerated() {
                 let signature = "\(widget.html)|\(Int(widget.width))x\(Int(widget.height))"
@@ -353,6 +469,7 @@ struct ContentView: View {
                 let fallbackOrigin = widgetOrigin(for: widget)
                 let baseOrigin = mappedProactiveOrigin(
                     from: meta,
+                    description: descriptionResult.description,
                     coordinateSnapshot: coordinateSnapshot,
                     widgetSize: CGSize(width: widget.width, height: widget.height)
                 ) ?? fallbackOrigin
@@ -367,7 +484,10 @@ struct ContentView: View {
                 renderedSuggestionSignatures.insert(signature)
             }
         } catch {
-            // Proactive loop is best-effort.
+            if let screenshotID = uploadedScreenshotID {
+                try? await BackendClient.deleteScreenshot(screenshotID: screenshotID, backendURL: backendURL)
+            }
+            print("Proactive monitor failed: \(error.localizedDescription)")
         }
     }
 
@@ -468,7 +588,7 @@ struct ContentView: View {
 
                     HStack(spacing: 6) {
                         Text(suggestion.title.isEmpty ? "Suggest" : suggestion.title)
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.system(size: 11, weight: .semibold))
                             .foregroundColor(.black.opacity(0.8))
                             .lineLimit(1)
 
@@ -478,21 +598,27 @@ struct ContentView: View {
                             }
                         } label: {
                             Image(systemName: "checkmark")
-                                .font(.system(size: 9, weight: .semibold))
+                                .font(.system(size: 10, weight: .semibold))
                                 .foregroundColor(.green.opacity(0.9))
+                                .frame(width: 28, height: 28)
+                                .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
 
                         Button {
                             _ = objectManager.rejectSuggestion(id: suggestion.id)
                         } label: {
                             Image(systemName: "xmark")
-                                .font(.system(size: 9, weight: .semibold))
+                                .font(.system(size: 10, weight: .semibold))
                                 .foregroundColor(.red.opacity(0.9))
+                                .frame(width: 28, height: 28)
+                                .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .frame(maxWidth: 150, alignment: .leading)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: 160, alignment: .leading)
                     .background(
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .fill(Color.white.opacity(0.92))
@@ -556,22 +682,6 @@ struct ContentView: View {
         )
     }
 
-    private func proactiveSuggestionsJSON(_ suggestions: [ProactiveSuggestionDecision]) -> String {
-        let payload: [[String: Any]] = suggestions.map { s in
-            [
-                "title": s.title,
-                "summary": s.summary,
-                "x_norm": s.xNorm,
-                "y_norm": s.yNorm,
-                "priority": s.priority
-            ]
-        }
-        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else {
-            return "[]"
-        }
-        return String(data: data, encoding: .utf8) ?? "[]"
-    }
-
     private func parseJSONObject(_ text: String) -> [String: Any]? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if let data = trimmed.data(using: .utf8),
@@ -604,6 +714,79 @@ struct ContentView: View {
         return currentJSON != previousJSON
     }
 
+    private func shouldForceProactiveSuggestion(_ description: [String: Any]) -> Bool {
+        let signature = proactiveTaskSignature(from: description)
+        guard let signature else {
+            lastProactiveTaskSignature = nil
+            proactiveTaskPersistenceTicks = 0
+            return false
+        }
+
+        if signature == lastProactiveTaskSignature {
+            proactiveTaskPersistenceTicks += 1
+        } else {
+            lastProactiveTaskSignature = signature
+            proactiveTaskPersistenceTicks = 1
+        }
+        return proactiveTaskPersistenceTicks >= proactiveForceSuggestAfterTicks
+    }
+
+    private func proactiveTaskSignature(from description: [String: Any]) -> String? {
+        let problem = ((description["problem_to_solve"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let objective = ((description["task_objective"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let merged = "\(problem)|\(objective)".trimmingCharacters(in: .whitespacesAndNewlines)
+        if merged.replacingOccurrences(of: "|", with: "").isEmpty {
+            return nil
+        }
+        return merged.lowercased()
+    }
+
+    private func fallbackSuggestionsFromDescription(_ description: [String: Any]) -> [ProactiveSuggestionDecision] {
+        let candidates = (description["suggestion_candidates"] as? [[String: Any]]) ?? []
+        var out: [ProactiveSuggestionDecision] = []
+        for (idx, row) in candidates.enumerated() {
+            let title = ((row["title"] as? String) ?? "Suggestion").trimmingCharacters(in: .whitespacesAndNewlines)
+            let summary = ((row["summary"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let anchor = (row["anchor_norm"] as? [String: Any]) ?? [:]
+            let xNorm = min(max((anchor["x"] as? NSNumber)?.doubleValue ?? 0.5, 0), 1)
+            let yNorm = min(max((anchor["y"] as? NSNumber)?.doubleValue ?? 0.5, 0), 1)
+            let confidence = (row["confidence"] as? NSNumber)?.doubleValue ?? 0.5
+            let priority = max(1, min(5, Int(round((1.0 - confidence) * 4.0)) + 1))
+            out.append(
+                ProactiveSuggestionDecision(
+                    title: title.isEmpty ? "Suggestion" : title,
+                    summary: summary,
+                    xNorm: xNorm,
+                    yNorm: yNorm,
+                    priority: priority
+                )
+            )
+            if out.count >= proactiveMaxSuggestionsPerTick { break }
+            if idx >= 7 { break }
+        }
+
+        if !out.isEmpty {
+            return out
+        }
+
+        let problem = ((description["problem_to_solve"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let objective = ((description["task_objective"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !problem.isEmpty || !objective.isEmpty {
+            return [
+                ProactiveSuggestionDecision(
+                    title: problem.isEmpty ? "Next Step" : problem,
+                    summary: objective,
+                    xNorm: 0.6,
+                    yNorm: 0.35,
+                    priority: 1
+                )
+            ]
+        }
+        return []
+    }
+
     private func canonicalJSON(_ value: [String: Any]) -> String {
         guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]) else {
             return ""
@@ -613,10 +796,14 @@ struct ContentView: View {
 
     private func mappedProactiveOrigin(
         from suggestion: ProactiveSuggestionDecision?,
+        description: [String: Any],
         coordinateSnapshot: [String: Any],
         widgetSize: CGSize
     ) -> CGPoint? {
-        guard let suggestion else { return nil }
+        let anchorNorm = suggestion.map { (x: $0.xNorm, y: $0.yNorm) }
+            ?? inferredAnchorFromMostRecentStroke(coordinateSnapshot)
+            ?? inferredWritingAnchor(from: description)
+        guard let anchorNorm else { return nil }
         guard
             let topLeftAxis = coordinateSnapshot["viewportTopLeftAxis"] as? [String: Any],
             let viewportSize = coordinateSnapshot["viewportSizeCanvas"] as? [String: Any],
@@ -628,15 +815,86 @@ struct ContentView: View {
             return nil
         }
 
-        let axisX = topLeftX + (suggestion.xNorm * viewportW)
-        let axisY = topLeftY + (suggestion.yNorm * viewportH)
+        let axisX = topLeftX + (anchorNorm.x * viewportW)
+        let axisY = topLeftY + (anchorNorm.y * viewportH)
         let canvas = objectManager.canvasPoint(
             forAxisPoint: CGPoint(x: axisX, y: axisY)
         )
         return CGPoint(
-            x: canvas.x - (widgetSize.width * 0.15),
-            y: canvas.y - (widgetSize.height * 0.1)
+            x: canvas.x + 10,
+            y: canvas.y - min(8, widgetSize.height * 0.05)
         )
+    }
+
+    private func inferredWritingAnchor(from description: [String: Any]) -> (x: Double, y: Double)? {
+        let regions = (description["regions"] as? [[String: Any]]) ?? []
+        var bestScore = -1.0
+        var bestAnchor: (x: Double, y: Double)?
+
+        for region in regions {
+            let kind = ((region["kind"] as? String) ?? "unknown").lowercased()
+            let kindWeight: Double = {
+                switch kind {
+                case "text", "equation", "list", "table":
+                    return 1.0
+                case "diagram":
+                    return 0.9
+                default:
+                    return 0.6
+                }
+            }()
+            let salience = (region["salience"] as? NSNumber)?.doubleValue ?? 0
+            let bbox = (region["bbox_norm"] as? [String: Any]) ?? [:]
+            let x = min(max((bbox["x"] as? NSNumber)?.doubleValue ?? 0.5, 0), 1)
+            let y = min(max((bbox["y"] as? NSNumber)?.doubleValue ?? 0.5, 0), 1)
+            let w = min(max((bbox["w"] as? NSNumber)?.doubleValue ?? 0.2, 0), 1)
+            let h = min(max((bbox["h"] as? NSNumber)?.doubleValue ?? 0.15, 0), 1)
+
+            let score = (salience * 0.8) + (kindWeight * 0.2)
+            if score <= bestScore {
+                continue
+            }
+
+            // Place chip just to the right of the written region; clamp inside viewport.
+            let anchorX = min(max(x + w + 0.03, 0.08), 0.92)
+            let anchorY = min(max(y + (h * 0.25), 0.08), 0.92)
+            bestScore = score
+            bestAnchor = (anchorX, anchorY)
+        }
+
+        return bestAnchor
+    }
+
+    private func inferredAnchorFromMostRecentStroke(_ coordinateSnapshot: [String: Any]) -> (x: Double, y: Double)? {
+        guard
+            let center = coordinateSnapshot["mostRecentStrokeCenterAxis"] as? [String: Any],
+            let topLeftAxis = coordinateSnapshot["viewportTopLeftAxis"] as? [String: Any],
+            let viewportSize = coordinateSnapshot["viewportSizeCanvas"] as? [String: Any],
+            let strokeX = (center["x"] as? NSNumber)?.doubleValue,
+            let strokeY = (center["y"] as? NSNumber)?.doubleValue,
+            let viewportMinX = (topLeftAxis["x"] as? NSNumber)?.doubleValue,
+            let viewportMinY = (topLeftAxis["y"] as? NSNumber)?.doubleValue,
+            let viewportW = (viewportSize["width"] as? NSNumber)?.doubleValue,
+            let viewportH = (viewportSize["height"] as? NSNumber)?.doubleValue,
+            viewportW > 1, viewportH > 1
+        else {
+            return nil
+        }
+
+        let xNorm = min(max((strokeX - viewportMinX) / viewportW, 0), 1)
+        let yNorm = min(max((strokeY - viewportMinY) / viewportH, 0), 1)
+        return (xNorm, yNorm)
+    }
+
+    private func fallbackSuggestionHTML(title: String, summary: String) -> String {
+        let safeTitle = title.replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;")
+        let safeSummary = summary.replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;")
+        return """
+        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#fff;border:1px solid #E5E7EB;border-radius:12px;padding:12px;color:#111827;">
+          <div style="font-size:12px;font-weight:700;line-height:1.3;">\(safeTitle)</div>
+          <div style="font-size:11px;color:#4B5563;margin-top:6px;line-height:1.35;">\(safeSummary)</div>
+        </div>
+        """
     }
 
     private func imageFingerprint(from pngData: Data, targetSize: Int = 32) -> [UInt8] {

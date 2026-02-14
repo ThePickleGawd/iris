@@ -26,6 +26,7 @@ You can push interactive HTML widgets to devices using the push_widget tool.
 ## Widget Design Standards
 
 When creating widgets, produce a clean, minimal Apple-style UI — never generic utility HTML.
+Widgets exist to help the user make progress on their current task, not to rephrase what they already wrote.
 
 **Required style:**
 - Light surfaces by default: white / very light gray backgrounds with subtle separators.
@@ -47,11 +48,44 @@ When creating widgets, produce a clean, minimal Apple-style UI — never generic
 - Then call `push_widget` with explicit `x`, `y`, `coordinate_space`, and `anchor`.
 - Prefer `coordinate_space = document_axis` when the request references stable canvas geometry.
 - Use `coordinate_space = viewport_offset` for "near what the user is currently viewing".
+- If coordinate snapshot includes `mostRecentStrokeCenterAxis`, prefer placing assistance widgets near that point when no explicit response area is provided.
 - If screenshot analysis yields pixel anchors and coordinate snapshot provides viewport bounds:
   map using:
   - canvas_x = viewport_min_x + (pixel_x / image_width) * viewport_width
   - canvas_y = viewport_min_y + (pixel_y / image_height) * viewport_height
 - Never omit coordinates for placement-sensitive tasks.
+
+## Latency + Accuracy Contract
+
+- Minimize round trips: at most one `read_screenshot` call before first `push_widget`.
+- Do not ask clarifying questions unless critical ambiguity blocks safe placement.
+- If confidence is sufficient, emit widgets immediately in the same turn.
+- Prefer 1-2 high-value widgets over many low-confidence widgets.
+
+## Deterministic Placement
+
+- Always output `x`, `y`, `coordinate_space`, and `anchor` for every `push_widget`.
+- Default to `coordinate_space=document_axis` and `anchor=top_left` unless request is viewport-relative.
+- If exact anchor is uncertain, place near inferred target with conservative size.
+
+## Fast Widget Generation
+
+- Keep HTML/CSS minimal (no heavy effects, no unnecessary animations, no external assets).
+- Keep payload concise and scannable; avoid long prose blocks.
+- Prefer compact card-style layouts with short labels.
+
+## Suggestion vs Direct Action
+
+- Direct user voice/requested widget creation: place actual widget, not suggestion chip.
+- Proactive workflow: emit suggestion widgets only, with `widget_id` starting `proactive-suggestion-`.
+
+## Output Discipline
+
+- Never emit duplicate widgets in one response.
+- If screenshot signal is weak, return no widget instead of low-confidence placement.
+- Do not merely restate the user's problem in the widget body.
+- Prefer actionable assistance: solve steps, worked examples, error checks, next action options, or decision support.
+- For math/problem-solving contexts, include concrete intermediate reasoning structure (steps/formula/check), not only a paraphrase.
 \
 """
 
@@ -317,6 +351,7 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str) -> dict:
 
     contents = _to_gemini_contents(messages + [{"role": "user", "content": user_message}])
     widgets: list[dict[str, Any]] = []
+    no_candidate_count = 0
 
     for _ in range(MAX_TOOL_ROUNDS):
         body = {
@@ -327,7 +362,19 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str) -> dict:
         data = _gemini_post(model, body, api_key)
         candidates = data.get("candidates")
         if not isinstance(candidates, list) or not candidates:
-            raise RuntimeError("Gemini returned no candidates")
+            no_candidate_count += 1
+            if no_candidate_count < 2:
+                continue
+            prompt_feedback = data.get("promptFeedback") if isinstance(data.get("promptFeedback"), dict) else {}
+            block_reason = str(prompt_feedback.get("blockReason") or "").strip()
+            block_message = str(prompt_feedback.get("blockReasonMessage") or "").strip()
+            detail = "Gemini returned no candidates."
+            if block_reason:
+                detail = f"{detail} blockReason={block_reason}"
+            if block_message:
+                detail = f"{detail} {block_message}"
+            return {"text": detail, "widgets": widgets}
+        no_candidate_count = 0
 
         candidate = candidates[0] if isinstance(candidates[0], dict) else {}
         content = candidate.get("content") if isinstance(candidate.get("content"), dict) else {}

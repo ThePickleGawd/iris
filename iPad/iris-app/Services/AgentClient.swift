@@ -40,6 +40,7 @@ enum AgentClient {
         _ message: String,
         model: String,
         chatID: String,
+        ephemeral: Bool = false,
         coordinateSnapshot: [String: Any]? = nil,
         serverURL: URL
     ) async throws -> AgentResponse {
@@ -77,6 +78,7 @@ enum AgentClient {
             "metadata": [
                 "model": model,
                 "agent": model,
+                "ephemeral": ephemeral,
                 "coordinate_snapshot": coordinateSnapshot ?? [:]
             ]
         ]

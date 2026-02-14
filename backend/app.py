@@ -515,17 +515,39 @@ def v1_agent() -> Any:
     model = (body.get("model") or "").strip() or "gpt-5.2"
     device = body.get("device") or {}
     metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    ephemeral = bool(metadata.get("ephemeral")) if isinstance(metadata, dict) else False
 
-    # Load or create session
-    session = _load_session(session_id)
-    if not session:
-        session = _make_session(session_id, session_id, model)
+    session: dict[str, Any] | None = None
+    context: list[dict[str, str]] = []
+    ts = _now()
 
-    # Build context from session messages
-    context = [{"role": m["role"], "content": m["content"]} for m in session.get("messages", [])]
+    if not ephemeral:
+        # Load or create session
+        session = _load_session(session_id)
+        if not session:
+            session = _make_session(session_id, session_id, model)
 
-    # If empty and caller sent context, seed from it
-    if not context:
+        # Build context from session messages
+        context = [{"role": m["role"], "content": m["content"]} for m in session.get("messages", [])]
+
+        # If empty and caller sent context, seed from it
+        if not context:
+            recent = (body.get("context") or {}).get("recent_messages") or []
+            for msg in recent[-20:]:
+                role = (msg.get("role") or "").strip()
+                text = (msg.get("text") or "").strip()
+                if role in ("user", "assistant") and text:
+                    context.append({"role": role, "content": text})
+
+        # Append user message
+        session.setdefault("messages", []).append({
+            "id": str(uuid.uuid4()),
+            "role": "user",
+            "content": message,
+            "created_at": ts,
+            "device_id": device.get("id"),
+        })
+    else:
         recent = (body.get("context") or {}).get("recent_messages") or []
         for msg in recent[-20:]:
             role = (msg.get("role") or "").strip()
@@ -533,32 +555,32 @@ def v1_agent() -> Any:
             if role in ("user", "assistant") and text:
                 context.append({"role": role, "content": text})
 
-    # Append user message
-    ts = _now()
-    session.setdefault("messages", []).append({
-        "id": str(uuid.uuid4()),
-        "role": "user",
-        "content": message,
-        "created_at": ts,
-        "device_id": device.get("id"),
-    })
-
     # Call agent with optional spatial context from caller metadata.
     enriched_message = message
     spatial_note = _spatial_context_text(metadata)
     if spatial_note:
         enriched_message = f"{message}\n\n{spatial_note}"
-    result = agent_module.run(context, enriched_message, model=model)
+    try:
+        result = agent_module.run(context, enriched_message, model=model)
+    except Exception as exc:
+        return jsonify({
+            "error": "agent_failed",
+            "message": str(exc),
+            "session_id": session_id,
+            "model": model,
+            "timestamp": _now(),
+        }), 502
 
-    # Append assistant response
+    # Persist assistant response only for non-ephemeral requests.
     ts = _now()
-    session["messages"].append({
-        "id": str(uuid.uuid4()),
-        "role": "assistant",
-        "content": result["text"],
-        "created_at": ts,
-        "device_id": None,
-    })
+    if not ephemeral and session is not None:
+        session["messages"].append({
+            "id": str(uuid.uuid4()),
+            "role": "assistant",
+            "content": result["text"],
+            "created_at": ts,
+            "device_id": None,
+        })
 
     # Store widgets in session
     events: list[dict] = []
@@ -574,7 +596,8 @@ def v1_agent() -> Any:
             "anchor": w.get("anchor", "top_left"),
             "created_at": ts,
         }
-        session.setdefault("widgets", []).append(widget_record)
+        if not ephemeral and session is not None:
+            session.setdefault("widgets", []).append(widget_record)
 
         events.append({
             "kind": "widget.open",
@@ -591,8 +614,9 @@ def v1_agent() -> Any:
             },
         })
 
-    session["updated_at"] = ts
-    _save_session(session)
+    if not ephemeral and session is not None:
+        session["updated_at"] = ts
+        _save_session(session)
 
     return jsonify({
         "kind": "message.final",
