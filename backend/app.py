@@ -889,6 +889,17 @@ def get_session(session_id: str) -> Any:
     session = _load_session(session_id)
     if not session:
         return jsonify({"error": "session not found"}), 404
+
+    # Filter widgets by target device when ?target= is provided
+    target = (request.args.get("target") or "").strip().lower()
+    if target:
+        filtered = dict(session)
+        filtered["widgets"] = [
+            w for w in session.get("widgets", [])
+            if (w.get("target") or "mac").lower() == target
+        ]
+        return jsonify(filtered)
+
     return jsonify(session)
 
 
@@ -1412,6 +1423,7 @@ def v1_agent() -> Any:
         widget_record = {
             "id": w.get("widget_id", str(uuid.uuid4())),
             "html": w.get("html", ""),
+            "target": w.get("target", "mac"),
             "width": w.get("width", 320),
             "height": w.get("height", 220),
             "x": w.get("x", 0),
@@ -1423,22 +1435,21 @@ def v1_agent() -> Any:
         if not ephemeral and session is not None:
             session.setdefault("widgets", []).append(widget_record)
 
-        events.append(
-            {
-                "kind": "widget.open",
-                "widget": {
-                    "kind": "html",
-                    "id": widget_record["id"],
-                    "payload": {"html": widget_record["html"]},
-                    "width": widget_record["width"],
-                    "height": widget_record["height"],
-                    "x": widget_record["x"],
-                    "y": widget_record["y"],
-                    "coordinate_space": widget_record["coordinate_space"],
-                    "anchor": widget_record["anchor"],
-                },
-            }
-        )
+        events.append({
+            "kind": "widget.open",
+            "widget": {
+                "kind": "html",
+                "id": widget_record["id"],
+                "target": widget_record["target"],
+                "payload": {"html": widget_record["html"]},
+                "width": widget_record["width"],
+                "height": widget_record["height"],
+                "x": widget_record["x"],
+                "y": widget_record["y"],
+                "coordinate_space": widget_record["coordinate_space"],
+                "anchor": widget_record["anchor"],
+            },
+        })
 
     if not ephemeral and session is not None:
         session["updated_at"] = ts

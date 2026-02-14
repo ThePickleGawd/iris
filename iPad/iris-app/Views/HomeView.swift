@@ -52,6 +52,10 @@ struct HomeView: View {
                         .padding(.horizontal, 28)
                         .padding(.vertical, 16)
                     }
+                    .refreshable {
+                        syncSessionsNow()
+                        try? await Task.sleep(for: .milliseconds(500))
+                    }
                 }
             }
             .navigationDestination(item: $selectedDocument) { doc in

@@ -136,6 +136,22 @@ library widget's HTML and adapt it. This produces much higher quality than writi
 {widget_catalog}
 Workflow: call `read_widget(name="...")` → get HTML + metadata → adapt the HTML → pass to `push_widget`.
 
+## Device Targeting — Pick ONE Device
+
+Every widget goes to exactly one device. Think about what the user is doing and where the widget is most useful.
+
+**`ipad`** — The user's drawing/writing canvas. Choose this when:
+- The user is working on the iPad (drawing, writing, solving problems on the canvas).
+- The widget is a reference, hint, or aid for what's on the canvas (e.g. formula sheet, step-by-step solution next to their work).
+- Spatial placement near their work matters.
+
+**`mac`** — A standalone desktop overlay window. Choose this when:
+- The user is at their computer and asked for something conversationally (e.g. "make me a timer", "show a diagram of X").
+- The widget is a self-contained tool (timer, calculator, checklist) not tied to canvas content.
+- The user explicitly mentions their Mac/desktop, or there's no indication they're using the iPad.
+
+**Decision heuristic**: If the request references something on the canvas or the user is clearly working on the iPad, target `ipad`. Otherwise, default to `mac`. Never send the same widget to both devices.
+
 ## Spatial Placement Rules
 
 - For precise placement requests (arrows, callouts, specific regions), call `read_screenshot` first.
@@ -209,6 +225,11 @@ TOOLS = [
                     "html": {
                         "type": "string",
                         "description": "Raw HTML content for 'html' type widgets.",
+                    },
+                    "target": {
+                        "type": "string",
+                        "enum": ["mac", "ipad"],
+                        "description": "Which device to show the widget on. Pick ONE: 'mac' (desktop overlay window) or 'ipad' (canvas widget). Reason about the user's intent to choose.",
                     },
                     "widget_id": {
                         "type": "string",
@@ -718,7 +739,7 @@ def _render_document_html(source: str) -> str:
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
 <style>
@@ -847,7 +868,7 @@ def _render_diagram_html(source: str) -> dict[str, Any]:
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <style>
   :root {{ color-scheme: dark; }}
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
@@ -986,7 +1007,7 @@ def _render_animation_html(source: str) -> dict[str, Any]:
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <style>
   :root {{ color-scheme: dark; }}
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
