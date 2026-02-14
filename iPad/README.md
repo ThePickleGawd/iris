@@ -332,8 +332,11 @@ All errors return JSON: `{ "error": "description" }`
 
 ```bash
 # Launch on simulator with auto-open
-xcrun simctl launch booted com.dylan.iris -autoOpenFirst
+xcrun simctl launch booted <your.bundle.id> -autoOpenFirst
 
 # Verify
 curl http://localhost:8935/api/v1/health
 ```
+
+Bundle ID defaults are in `iPad/iris-app/Configs/App.xcconfig`. For per-developer overrides,
+create `iPad/iris-app/Configs/App.local.xcconfig` (gitignored).

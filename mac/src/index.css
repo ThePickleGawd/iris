@@ -2,32 +2,61 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ═══════════════════════════════════════════
+   IRIS — Void Glass
+   Truly transparent overlay with violet accent
+   ═══════════════════════════════════════════ */
+
 :root {
-  --text: #0f172a;
-  --muted: #64748b;
-  --border: rgba(15, 23, 42, 0.12);
-  --surface: rgba(255, 255, 255, 0.96);
-  --accent: #2563eb;
-  --accent-strong: #1d4ed8;
+  color-scheme: dark;
+
+  --void: rgba(10, 10, 14, 0.72);
+  --void-deep: rgba(6, 6, 10, 0.82);
+  --pill: rgba(10, 10, 14, 0.65);
+  --pill-hover: rgba(16, 16, 22, 0.75);
+
+  --glass: rgba(255, 255, 255, 0.04);
+  --glass-hover: rgba(255, 255, 255, 0.07);
+
+  --text: rgba(255, 255, 255, 0.88);
+  --text-dim: rgba(255, 255, 255, 0.48);
+  --text-ghost: rgba(255, 255, 255, 0.22);
+
+  --accent: #8b5cf6;
+  --accent-dim: rgba(139, 92, 246, 0.22);
+  --accent-ghost: rgba(139, 92, 246, 0.08);
+
+  --edge: rgba(255, 255, 255, 0.08);
+  --edge-hover: rgba(255, 255, 255, 0.13);
+  --edge-accent: rgba(139, 92, 246, 0.32);
+
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-pill: 999px;
 }
 
 * {
   box-sizing: border-box;
+  margin: 0;
+  padding: 0;
 }
 
 html,
 body,
 #root {
-  margin: 0;
   width: 100%;
   height: 100%;
 }
 
 body {
-  font-family: "SF Pro Text", "Avenir Next", "Segoe UI", sans-serif;
+  font-family: "SF Mono", "Menlo", ui-monospace, monospace;
   color: var(--text);
   background: transparent;
   overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  font-size: 11.5px;
+  line-height: 1.5;
 }
 
 #root {
@@ -35,251 +64,456 @@ body {
   background: transparent;
 }
 
-.app-shell {
+/* ─── Surface ─── */
+
+.iris-surface {
   width: 100%;
   background: transparent;
 }
 
-.assistant-surface {
-  width: 100%;
-}
+/* ─── Shell ─── */
 
-.compact-shell {
-  border-radius: 11px;
-  border: 1px solid rgba(255, 255, 255, 0.74);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 250, 255, 0.92));
-  backdrop-filter: blur(14px);
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
+.iris-shell {
+  position: relative;
+  border-radius: var(--r-lg);
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  padding: 5px;
-  transition: min-height 160ms ease;
+  transition:
+    min-height 220ms cubic-bezier(0.16, 1, 0.3, 1),
+    background 200ms ease,
+    border-color 200ms ease;
+  animation: shell-in 260ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.shell-collapsed {
-  min-height: 58px;
+/* Collapsed: fully transparent container, floating pills */
+.iris-shell.collapsed {
+  min-height: 48px;
+  background: transparent;
+  border: 1px solid transparent;
 }
 
-.shell-expanded {
-  min-height: 430px;
+/* Expanded: dark translucent panel */
+.iris-shell.expanded {
+  min-height: 460px;
+  background: var(--void);
+  border: 1px solid var(--edge);
 }
 
-.compact-header {
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  padding: 5px;
+/* Decorative gradients only when expanded */
+.iris-shell.expanded::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 15% -10%, rgba(139, 92, 246, 0.06), transparent 50%),
+    radial-gradient(ellipse at 85% 110%, rgba(59, 130, 246, 0.03), transparent 50%);
+  pointer-events: none;
+  z-index: 0;
 }
 
-.session-tabs {
+.iris-shell.expanded::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 15%;
+  right: 15%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* ─── Header Bar ─── */
+
+.iris-bar {
+  position: relative;
+  z-index: 2;
   display: flex;
   align-items: center;
-  gap: 5px;
-  overflow-x: auto;
-}
-
-.session-tabs::-webkit-scrollbar {
-  height: 3px;
-}
-
-.session-tabs::-webkit-scrollbar-thumb {
-  background: rgba(100, 116, 139, 0.35);
-  border-radius: 999px;
-}
-
-.session-tab {
-  border: 1px solid rgba(15, 23, 42, 0.12);
-  background: #fff;
-  color: #334155;
-  border-radius: 999px;
-  padding: 6px 10px;
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.session-tab-active {
-  border-color: rgba(37, 99, 235, 0.46);
-  background: rgba(37, 99, 235, 0.14);
-  color: var(--accent-strong);
-}
-
-.session-tab-new {
-  display: inline-flex;
-  align-items: center;
+  justify-content: space-between;
+  padding: 5px 6px;
+  min-height: 40px;
   gap: 4px;
+  animation: content-in 180ms ease-out;
 }
 
-.expand-toggle {
-  width: 100%;
-  min-height: 20px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: #475569;
+.iris-shell.expanded .iris-bar {
+  border-bottom: 1px solid var(--edge);
+  padding: 5px 8px;
+}
+
+/* ─── Tabs ─── */
+
+.iris-tabs {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  overflow-x: auto;
+  flex: 1;
+  scrollbar-width: none;
+}
+
+.iris-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.iris-tab {
+  padding: 5px 10px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--edge);
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  transition: all 130ms ease;
+  cursor: pointer;
+}
+
+/* Collapsed: tabs are standalone pills with their own background */
+.iris-shell.collapsed .iris-tab {
+  background: var(--pill);
+}
+
+.iris-shell.collapsed .iris-tab:hover {
+  background: var(--pill-hover);
+  color: var(--text);
+  border-color: var(--edge-hover);
+}
+
+.iris-shell.collapsed .iris-tab.active {
+  background: rgba(139, 92, 246, 0.28);
+  color: #c4b5fd;
+  border-color: var(--edge-accent);
+}
+
+/* Expanded: tabs are lighter since they're on a dark panel */
+.iris-shell.expanded .iris-tab {
+  background: var(--glass);
+}
+
+.iris-shell.expanded .iris-tab:hover {
+  background: var(--glass-hover);
+  color: var(--text);
+  border-color: var(--edge-hover);
+}
+
+.iris-shell.expanded .iris-tab.active {
+  background: var(--accent-dim);
+  color: #c4b5fd;
+  border-color: var(--edge-accent);
+}
+
+.iris-tab-new {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--text-ghost);
+  border-radius: var(--r-sm);
 }
 
-.chat-panel {
-  border-radius: 9px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  padding: 8px;
+.iris-shell.collapsed .iris-tab-new {
+  background: var(--pill);
+}
+
+.iris-shell.expanded .iris-tab-new {
+  background: var(--glass);
+}
+
+.iris-tab-new:hover {
+  color: var(--accent);
+  background: var(--accent-ghost) !important;
+  border-color: var(--edge-accent);
+}
+
+/* ─── Toggle ─── */
+
+.iris-toggle {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--edge);
+  color: var(--text-ghost);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 130ms ease;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.iris-shell.collapsed .iris-toggle {
+  background: var(--pill);
+}
+
+.iris-shell.expanded .iris-toggle {
+  background: transparent;
+  border-color: transparent;
+}
+
+.iris-toggle:hover {
+  background: var(--pill-hover) !important;
+  color: var(--text-dim);
+  border-color: var(--edge-hover);
+}
+
+/* ─── Chat ─── */
+
+.iris-chat {
+  position: relative;
+  z-index: 1;
+  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  min-height: 0;
+  min-width: 0;
+  padding: 6px;
+  gap: 6px;
+  animation: content-in 200ms ease-out;
 }
 
-.chat-log {
+.iris-messages {
   flex: 1;
-  min-height: 260px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.88);
-  padding: 8px;
   overflow-y: auto;
-}
-
-.chat-empty {
-  text-align: center;
-  color: var(--muted);
-  font-size: 12px;
-  margin-top: 60px;
-}
-
-.chat-row {
-  width: 100%;
   display: flex;
-  margin-bottom: 8px;
+  flex-direction: column;
+  gap: 5px;
+  min-height: 280px;
+  padding: 4px 2px;
 }
 
-.chat-row-user {
+.iris-messages::-webkit-scrollbar {
+  width: 4px;
+}
+
+.iris-messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.iris-messages::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: var(--r-pill);
+}
+
+.iris-messages::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.13);
+}
+
+.iris-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-ghost);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+/* ─── Message Bubbles ─── */
+
+.iris-msg {
+  display: flex;
+  width: 100%;
+}
+
+.iris-msg.user {
   justify-content: flex-end;
 }
 
-.chat-row-assistant {
+.iris-msg.assistant {
   justify-content: flex-start;
 }
 
-.chat-bubble {
+.iris-msg-bubble {
   max-width: 84%;
-  border-radius: 12px;
-  padding: 8px 10px;
-  font-size: 12px;
-  line-height: 1.5;
+  border-radius: var(--r-md);
+  padding: 7px 11px;
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 12.5px;
+  line-height: 1.55;
 }
 
-.message-user {
-  background: linear-gradient(180deg, #3b82f6, #2563eb);
-  color: #fff;
+.iris-msg.user .iris-msg-bubble {
+  background: var(--accent-dim);
+  color: #ddd6fe;
+  border: 1px solid var(--edge-accent);
+  border-bottom-right-radius: 3px;
 }
 
-.message-assistant {
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: #f8fafc;
-  color: #1f2937;
+.iris-msg.assistant .iris-msg-bubble {
+  background: var(--glass);
+  color: var(--text);
+  border: 1px solid var(--edge);
+  border-bottom-left-radius: 3px;
 }
 
-.message-markdown {
+/* ─── Markdown ─── */
+
+.iris-markdown {
   color: inherit;
-  line-height: 1.5;
+  line-height: 1.55;
 }
 
-.message-markdown p {
-  margin: 0 0 7px 0;
+.iris-markdown p {
+  margin: 0 0 5px;
 }
 
-.message-markdown p:last-child {
+.iris-markdown p:last-child {
   margin-bottom: 0;
 }
 
-.message-markdown pre {
-  margin: 8px 0;
-  border-radius: 7px;
-  padding: 8px;
-  background: #0f172a;
+.iris-markdown pre {
+  margin: 5px 0;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: rgba(0, 0, 0, 0.35);
   color: #e2e8f0;
   overflow-x: auto;
+  border: 1px solid var(--edge);
+  font-family: "SF Mono", "Menlo", ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
-.message-markdown code {
-  border-radius: 4px;
-  background: rgba(148, 163, 184, 0.22);
+.iris-markdown code {
   padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  font-family: "SF Mono", "Menlo", ui-monospace, monospace;
+  font-size: 0.88em;
 }
 
-.message-markdown pre code {
+.iris-markdown pre code {
   background: transparent;
   padding: 0;
 }
 
-.message-markdown ul,
-.message-markdown ol {
-  margin: 0 0 0 16px;
+.iris-markdown ul,
+.iris-markdown ol {
+  margin: 0 0 5px 16px;
 }
 
-.chat-compose {
+/* ─── Compose ─── */
+
+.iris-compose {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 5px;
 }
 
-.chat-input {
+.iris-input {
   flex: 1;
   min-height: 34px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: #fff;
-  color: #1f2937;
-  padding: 8px 10px;
-  font-size: 12px;
+  padding: 7px 11px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--edge);
+  background: var(--glass);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 12.5px;
+  transition: border-color 140ms ease, background 140ms ease;
 }
 
-.chat-input::placeholder {
-  color: #94a3b8;
+.iris-input::placeholder {
+  color: var(--text-ghost);
 }
 
-.chat-send {
+.iris-input:focus {
+  outline: none;
+  border-color: var(--edge-accent);
+  background: var(--glass-hover);
+}
+
+.iris-send {
   width: 34px;
   height: 34px;
-  border-radius: 8px;
-  border: 1px solid rgba(37, 99, 235, 0.46);
-  background: linear-gradient(180deg, #3b82f6, #2563eb);
-  color: #fff;
+  border-radius: var(--r-md);
+  border: 1px solid var(--edge-accent);
+  background: var(--accent-dim);
+  color: #c4b5fd;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  transition: all 130ms ease;
+  cursor: pointer;
+  flex-shrink: 0;
 }
 
-.chat-send:disabled {
-  opacity: 0.56;
+.iris-send:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
 }
+
+.iris-send:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+/* ─── Thinking Dots ─── */
+
+.iris-thinking {
+  display: flex;
+  gap: 3px;
+  padding: 2px 0;
+}
+
+.iris-thinking span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse-dot 1.4s infinite ease-in-out;
+}
+
+.iris-thinking span:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.iris-thinking span:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@keyframes pulse-dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.2;
+    transform: scale(0.8);
+  }
+  40% {
+    opacity: 0.9;
+    transform: scale(1.15);
+  }
+}
+
+/* ─── Toast ─── */
 
 .toast-root {
-  border: 1px solid rgba(255, 255, 255, 0.42);
-  backdrop-filter: blur(10px);
-  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.24);
+  border: 1px solid var(--edge);
+  backdrop-filter: blur(20px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
 }
 
 .toast-neutral {
-  background: linear-gradient(180deg, rgba(37, 99, 235, 0.94), rgba(29, 78, 216, 0.9));
-  color: #fff;
+  background: var(--void-deep);
+  color: var(--text);
 }
 
 .toast-success {
-  background: linear-gradient(180deg, rgba(22, 163, 74, 0.94), rgba(21, 128, 61, 0.9));
-  color: #fff;
+  background: rgba(16, 80, 56, 0.88);
+  color: #a7f3d0;
 }
 
 .toast-error {
-  background: linear-gradient(180deg, rgba(220, 38, 38, 0.94), rgba(185, 28, 28, 0.9));
-  color: #fff;
+  background: rgba(120, 30, 36, 0.88);
+  color: #fecaca;
 }
+
+/* ─── Electron Window Drag ─── */
 
 .draggable-area {
   -webkit-app-region: drag;
@@ -302,19 +536,33 @@ select {
 
 button:focus-visible,
 input:focus-visible,
-textarea:focus-visible,
-select:focus-visible {
-  outline: 2px solid transparent;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.22);
+textarea:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-dim);
 }
 
-.chat-log::-webkit-scrollbar {
-  width: 8px;
+/* ─── Animations ─── */
+
+@keyframes shell-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
-.chat-log::-webkit-scrollbar-thumb {
-  background: rgba(100, 116, 139, 0.4);
-  border-radius: 999px;
+@keyframes content-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @media (max-width: 720px) {
@@ -322,7 +570,7 @@ select:focus-visible {
     padding: 4px;
   }
 
-  .shell-expanded {
+  .iris-shell.expanded {
     min-height: 400px;
   }
 }

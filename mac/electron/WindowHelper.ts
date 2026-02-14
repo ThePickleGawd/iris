@@ -93,20 +93,16 @@ export class WindowHelper {
       movable: true,
       x: 100, // Start at a visible position
       y: 100,
-      ...(isMac ? { titleBarStyle: "hiddenInset" as const } : {})
+      // No titleBarStyle — frame:false on Mac gives a fully frameless window (no traffic lights)
     }
 
     this.mainWindow = new BrowserWindow(windowSettings)
     // this.mainWindow.webContents.openDevTools()
-    this.mainWindow.setContentProtection(true)
+    // Allow the window to appear in screenshots/screen recordings.
+    this.mainWindow.setContentProtection(false)
 
     if (process.platform === "darwin") {
       this.mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-      this.mainWindow.setVibrancy("under-window")
-      const macWindow = this.mainWindow as BrowserWindow & {
-        setVisualEffectState?: (state: "active" | "inactive" | "followWindow") => void
-      }
-      macWindow.setVisualEffectState?.("active")
     }
     if (process.platform === "linux") {
       // Linux-specific optimizations for better compatibility
