@@ -53,5 +53,11 @@
         <key>NSAllowsArbitraryLoads</key>
         <true/>
     </dict>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Iris uses the local network so your Mac can send AI-generated widgets to this iPad canvas.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_iris-canvas._tcp</string>
+    </array>
 </dict>
 </plist>
