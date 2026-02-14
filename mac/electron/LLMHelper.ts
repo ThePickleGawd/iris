@@ -37,7 +37,10 @@ export class LLMHelper {
       this.apiKey = apiKey
       console.log(`[LLMHelper] Using Claude model: ${this.claudeModel}`)
     } else {
-      throw new Error("Either provide a Claude API key or enable Ollama mode")
+      // No API key and no Ollama — LLMHelper is available but direct
+      // Claude calls will fail. Chat routes through the Agents Server
+      // so this is fine for normal operation.
+      console.log(`[LLMHelper] No local LLM configured — chat routes through Agents Server`)
     }
   }
 

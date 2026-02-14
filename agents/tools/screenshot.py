@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import base64
-from pathlib import Path
 
 import httpx
 
-BACKEND_SCREENSHOTS_DIR = Path(__file__).resolve().parent.parent.parent / "backend" / "data" / "screenshots"
-BACKEND_URL = "http://localhost:5000"
+import os
+
+BACKEND_URL = os.environ.get("IRIS_BACKEND_URL", "http://localhost:5000")
 
 READ_SCREENSHOT_TOOL = {
     "type": "function",
     "function": {
         "name": "read_screenshot",
-        "description": "Read the latest screenshot from a device. Returns the image as base64-encoded data.",
+        "description": "Read the latest screenshot from a device. Returns the image as base64-encoded data that you can see.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -30,49 +30,69 @@ READ_SCREENSHOT_TOOL = {
 
 def handle_read_screenshot(
     arguments: dict, context: dict
-) -> tuple[str, None]:
+) -> tuple[str | list, None]:
+    """Fetch the latest screenshot and return it as a multimodal content block.
+
+    Returns a list of content blocks (text + image_url) when an image is
+    available so the LLM can actually *see* the screenshot.  Falls back
+    to a plain text message when nothing is found.
+    """
     device = arguments["device"]
     session_id = context.get("session_id")
 
-    # Session-scoped: fetch from backend API
+    # Try session-scoped first, then fall back to device-scoped
+    params: dict[str, str] = {}
     if session_id:
-        try:
-            resp = httpx.get(
-                f"{BACKEND_URL}/api/screenshots",
-                params={"session_id": session_id},
-                timeout=5,
-            )
-            if resp.status_code == 200:
-                screenshots = resp.json()
-                if screenshots:
-                    latest = screenshots[0]
-                    file_path = Path(latest["file_path"])
-                    if file_path.exists():
-                        data = base64.b64encode(file_path.read_bytes()).decode()
-                        suffix = file_path.suffix.lstrip(".")
-                        mime = f"image/{suffix}" if suffix in ("png", "jpeg", "jpg", "gif", "webp") else "application/octet-stream"
-                        return f"Latest screenshot (session {session_id}): {file_path.name} ({mime}, {len(data)} bytes base64)", None
-                return f"No screenshots available for session {session_id}.", None
-        except httpx.HTTPError:
-            return f"Failed to fetch screenshots for session {session_id} from backend.", None
+        params["session_id"] = session_id
+    else:
+        params["device_id"] = device
 
-    # Fallback: read from filesystem directory (mac / general)
-    if not BACKEND_SCREENSHOTS_DIR.exists():
-        return f"No screenshots directory found for {device}.", None
+    try:
+        resp = httpx.get(
+            f"{BACKEND_URL}/api/screenshots",
+            params=params,
+            timeout=5,
+        )
+        if resp.status_code != 200:
+            return f"Failed to list screenshots from backend (HTTP {resp.status_code}).", None
 
-    image_files = sorted(
-        BACKEND_SCREENSHOTS_DIR.glob("**/*"),
-        key=lambda p: p.stat().st_mtime if p.is_file() else 0,
-        reverse=True,
-    )
-    image_files = [f for f in image_files if f.is_file()]
+        data = resp.json()
+        # Backend returns either a list (session query) or {"items": [...]} (paginated)
+        screenshots = data if isinstance(data, list) else data.get("items", [])
+        if not screenshots:
+            return f"No screenshots available for {device}.", None
 
-    if not image_files:
-        return f"No screenshots available for {device}.", None
+        # Take the most recent one (session query is already DESC; paginated is ASC so take last)
+        latest = screenshots[0] if session_id else screenshots[-1]
 
-    latest = image_files[0]
-    data = base64.b64encode(latest.read_bytes()).decode()
-    suffix = latest.suffix.lstrip(".")
-    mime = f"image/{suffix}" if suffix in ("png", "jpeg", "jpg", "gif", "webp") else "application/octet-stream"
+        # Fetch the actual image bytes via the file endpoint
+        screenshot_id = latest["id"]
+        file_resp = httpx.get(
+            f"{BACKEND_URL}/api/screenshots/{screenshot_id}/file",
+            timeout=10,
+        )
+        if file_resp.status_code != 200:
+            return f"Screenshot metadata found but file fetch failed (HTTP {file_resp.status_code}).", None
 
-    return f"Latest screenshot from {device}: {latest.name} ({mime}, {len(data)} bytes base64)", None
+        image_bytes = file_resp.content
+        mime_type = latest.get("mime_type", "image/png")
+        b64_data = base64.b64encode(image_bytes).decode()
+
+        # Return Anthropic-format multimodal content blocks so the LLM sees the image
+        return [
+            {
+                "type": "text",
+                "text": f"Latest screenshot from {device} (id={screenshot_id}, {len(image_bytes)} bytes):",
+            },
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime_type,
+                    "data": b64_data,
+                },
+            },
+        ], None
+
+    except httpx.HTTPError as exc:
+        return f"Failed to fetch screenshots from backend: {exc}", None

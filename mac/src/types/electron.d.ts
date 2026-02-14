@@ -24,7 +24,13 @@ export interface ElectronAPI {
   moveWindowDown: () => Promise<void>
   analyzeAudioFromBase64: (data: string, mimeType: string) => Promise<{ text: string; timestamp: number }>
   analyzeAudioFile: (path: string) => Promise<{ text: string; timestamp: number }>
+  analyzeImageFile: (path: string) => Promise<void>
   quitApp: () => Promise<void>
+  getCurrentLlmConfig: () => Promise<{ provider: "ollama" | "claude"; model: string; isOllama: boolean }>
+  getAvailableOllamaModels: () => Promise<string[]>
+  switchToOllama: (model?: string, url?: string) => Promise<{ success: boolean; error?: string }>
+  switchToClaude: (apiKey?: string) => Promise<{ success: boolean; error?: string }>
+  testLlmConnection: () => Promise<{ success: boolean; error?: string }>
   startClaudeChatStream: (requestId: string, message: string) => Promise<{ success: boolean; error?: string }>
   onClaudeChatStreamChunk: (callback: (data: { requestId: string; chunk: string }) => void) => () => void
   onClaudeChatStreamDone: (callback: (data: { requestId: string; text: string }) => void) => () => void
@@ -46,6 +52,15 @@ export interface ElectronAPI {
       chartConfig?: unknown
     }
   }) => Promise<{ success: boolean; id: string; error?: string }>
+  getNetworkInfo: () => Promise<{ macIp: string; allIps: string[]; hostname: string; connectedDevices: any[] }>
+  connectIpad: (host: string, port?: number) => Promise<{ success: boolean; error?: string }>
+  getIrisDevices: () => Promise<any[]>
+  getIrisDevice: (id: string) => Promise<any | null>
+  getPrimaryIrisDevice: () => Promise<any | null>
+  getMacDeviceId: () => Promise<string>
+  onIrisDeviceFound: (callback: (device: any) => void) => () => void
+  onIrisDeviceLost: (callback: (deviceId: string) => void) => () => void
+  onIrisDeviceUpdated: (callback: (device: any) => void) => () => void
   invoke: (channel: string, ...args: any[]) => Promise<any>
 }
 

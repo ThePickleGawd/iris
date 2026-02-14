@@ -20,7 +20,15 @@ class AgentHTTPServer {
     private weak var objectManager: CanvasObjectManager?
 
     /// Devices that have linked with this iPad via POST /api/v1/link
-    private var linkedDevices: [String: LinkedDevice] = [:]
+    private(set) var linkedDevices: [String: LinkedDevice] = [:]
+
+    /// Returns the URL of the first linked device's agent server (port 8000), if available
+    func agentServerURL() -> URL? {
+        guard let device = linkedDevices.values.first, let ip = device.ip, !ip.isEmpty else {
+            return nil
+        }
+        return URL(string: "http://\(ip):8000")
+    }
 
     let port: UInt16
     let deviceID: String
@@ -182,6 +190,9 @@ class AgentHTTPServer {
         case ("GET", "device", nil):
             handleDeviceInfo(conn)
 
+        case ("POST", "cursor", nil):
+            handleCursorCommand(req, conn)
+
         case ("POST", "link", nil):
             handleLink(req, conn)
 
@@ -339,6 +350,44 @@ class AgentHTTPServer {
             for id in ids { mgr.remove(id: id) }
 
             self.respondJSON(conn, status: 200, body: ["deleted_count": ids.count])
+        }
+    }
+
+    // MARK: - Cursor Handler
+
+    private func handleCursorCommand(_ req: HTTPRequest, _ conn: NWConnection) {
+        guard let json = req.jsonBody, let action = json["action"] as? String else {
+            respondJSON(conn, status: 400, body: ["error": "Missing required field: 'action' (string: appear|move|click|disappear)"])
+            return
+        }
+
+        let x = numericValue(json["x"]) ?? 0
+        let y = numericValue(json["y"]) ?? 0
+
+        guard let mgr = objectManager else {
+            respondJSON(conn, status: 503, body: ["error": "Canvas not ready — open a document first"])
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            let viewport = mgr.viewportCenter
+            let canvasPoint = CGPoint(x: viewport.x + x, y: viewport.y + y)
+
+            switch action {
+            case "appear":
+                mgr.cursorAppear(at: canvasPoint)
+            case "move":
+                mgr.cursorMove(to: canvasPoint)
+            case "click":
+                mgr.cursorClick()
+            case "disappear":
+                mgr.cursorDisappear()
+            default:
+                self?.respondJSON(conn, status: 400, body: ["error": "Unknown action: \(action). Use: appear, move, click, disappear"])
+                return
+            }
+
+            self?.respondJSON(conn, status: 200, body: ["action": action, "x": x, "y": y])
         }
     }
 

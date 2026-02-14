@@ -40,6 +40,17 @@ export class DeviceDiscovery extends EventEmitter {
   start(): void {
     if (this.bonjour) return
 
+    // Direct IP connection mode — skip Bonjour entirely
+    const directHost = process.env.IRIS_IPAD_HOST
+    if (directHost) {
+      const directPort = parseInt(process.env.IRIS_IPAD_PORT || "8935", 10)
+      console.log(`[iris-discovery] Direct mode: connecting to iPad at ${directHost}:${directPort}`)
+      this.connectDirect(directHost, directPort)
+      // Still set up health-check timer
+      this.refreshTimer = setInterval(() => this.pruneStaleDevices(), 15_000)
+      return
+    }
+
     this.bonjour = new Bonjour()
 
     this.browser = this.bonjour.find({ type: "iris-canvas" }, (service: Service) => {
@@ -50,6 +61,37 @@ export class DeviceDiscovery extends EventEmitter {
     this.refreshTimer = setInterval(() => this.pruneStaleDevices(), 15_000)
 
     console.log("[iris-discovery] Browsing for _iris-canvas._tcp services...")
+  }
+
+  /** Connect directly to an iPad at a known IP:port (bypasses Bonjour) */
+  async connectDirect(host: string, port: number): Promise<void> {
+    try {
+      const deviceInfo = await this.fetchJSON<{
+        id: string; name: string; model: string; system: string; port: number
+      }>(`http://${host}:${port}/api/v1/device`)
+
+      const device: IrisDevice = {
+        id: deviceInfo.id,
+        name: deviceInfo.name,
+        model: deviceInfo.model,
+        system: deviceInfo.system,
+        host,
+        port,
+        addresses: [host],
+        linked: false,
+        lastSeen: Date.now()
+      }
+
+      this.devices.set(device.id, device)
+      console.log(`[iris-discovery] Connected to ${device.name} (${device.model}) at ${host}:${port}`)
+      this.emit("device-found", device)
+
+      await this.linkWithDevice(device)
+    } catch (err) {
+      console.error(`[iris-discovery] Failed to connect to iPad at ${host}:${port}:`, err)
+      // Retry in 10 seconds
+      setTimeout(() => this.connectDirect(host, port), 10_000)
+    }
   }
 
   /** Stop browsing */
@@ -147,10 +189,13 @@ export class DeviceDiscovery extends EventEmitter {
   private async linkWithDevice(device: IrisDevice): Promise<void> {
     try {
       const hostname = os.hostname()
+      // Get local IPv4 address to include in link payload
+      const localIp = this.getLocalIPv4()
       const payload = {
         id: this.macDeviceId,
         name: hostname.replace(/\.local$/, ""),
         platform: "macOS",
+        ip: localIp,
         port: 0 // Mac doesn't run a server (yet)
       }
 
@@ -167,10 +212,35 @@ export class DeviceDiscovery extends EventEmitter {
         this.devices.set(device.id, device)
         console.log(`[iris-discovery] Linked with ${device.name}`)
         this.emit("device-updated", device)
+
+        // Register the iPad with the Agents Server so tools can reach it
+        this.registerDeviceWithAgentServer(device).catch((err) =>
+          console.log(`[iris-discovery] Agent server registration failed:`, err)
+        )
       }
     } catch (err) {
       console.log(`[iris-discovery] Failed to link with ${device.name}:`, err)
     }
+  }
+
+  /** Register a discovered device with the Agents Server's /devices endpoint */
+  private async registerDeviceWithAgentServer(device: IrisDevice): Promise<void> {
+    const agentServerUrl = process.env.IRIS_AGENT_URL || "http://localhost:8000"
+    const payload = {
+      id: device.id,
+      name: device.name,
+      host: device.host,
+      port: device.port,
+      platform: device.system.includes("iPad") ? "iPadOS" : device.system,
+      model: device.model,
+      system: device.system,
+    }
+
+    await this.fetchJSON(
+      `${agentServerUrl}/devices`,
+      { method: "POST", body: JSON.stringify(payload) }
+    )
+    console.log(`[iris-discovery] Registered ${device.name} with agent server`)
   }
 
   private pruneStaleDevices(): void {
@@ -203,6 +273,18 @@ export class DeviceDiscovery extends EventEmitter {
     } catch {
       return false
     }
+  }
+
+  private getLocalIPv4(): string | undefined {
+    const interfaces = os.networkInterfaces()
+    for (const name of Object.keys(interfaces)) {
+      for (const iface of interfaces[name] || []) {
+        if (iface.family === "IPv4" && !iface.internal) {
+          return iface.address
+        }
+      }
+    }
+    return undefined
   }
 
   private getOrCreateDeviceId(): string {

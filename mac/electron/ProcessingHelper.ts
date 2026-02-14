@@ -19,23 +19,23 @@ export class ProcessingHelper {
   constructor(appState: AppState) {
     this.appState = appState
     
-    // Check if user wants to use Ollama
+    // Check if user wants to use Ollama for local fallback
     const useOllama = process.env.USE_OLLAMA === "true"
-    const ollamaModel = process.env.OLLAMA_MODEL // Don't set default here, let LLMHelper auto-detect
+    const ollamaModel = process.env.OLLAMA_MODEL
     const ollamaUrl = process.env.OLLAMA_URL || "http://localhost:11434"
-    
+
     if (useOllama) {
-      console.log("[ProcessingHelper] Initializing with Ollama")
+      console.log("[ProcessingHelper] Initializing with Ollama (local fallback)")
       this.llmHelper = new LLMHelper(undefined, true, ollamaModel, ollamaUrl)
     } else {
+      // API key is optional — chat routes through the Agents Server.
+      // If a key is present, LLMHelper can do direct calls for image/audio analysis.
       const apiKey = process.env.CLAUDE_API_KEY || process.env.LM_API_KEY
-      if (!apiKey) {
-        throw new Error(
-          "CLAUDE_API_KEY (or LM_API_KEY) not found. Set an API key or enable Ollama with USE_OLLAMA=true"
-        )
-      }
-      console.log("[ProcessingHelper] Initializing with Claude")
-      this.llmHelper = new LLMHelper(apiKey, false)
+      console.log(apiKey
+        ? "[ProcessingHelper] Initializing with Claude (direct + agent server)"
+        : "[ProcessingHelper] No API key — all LLM calls route through Agents Server"
+      )
+      this.llmHelper = new LLMHelper(apiKey || undefined, false)
     }
   }
 

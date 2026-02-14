@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 
-import sessions
-
-# Track claude session IDs per chat for --resume support
-_claude_sessions: dict[str, str] = {}
+try:
+    from . import sessions, session_store
+except ImportError:
+    import sessions
+    import session_store
 
 
 async def run(chat_id: str, message: str) -> dict:
@@ -15,9 +16,9 @@ async def run(chat_id: str, message: str) -> dict:
     cmd = ["claude", "-p", message, "--output-format", "stream-json"]
 
     # Resume existing session if we have one
-    session_id = _claude_sessions.get(chat_id)
-    if session_id:
-        cmd.extend(["--resume", session_id])
+    stored = session_store.load(chat_id)
+    if stored and stored.get("cli_session_id"):
+        cmd.extend(["--resume", stored["cli_session_id"]])
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -50,7 +51,7 @@ async def run(chat_id: str, message: str) -> dict:
 
         # Capture session ID from init message
         if event.get("type") == "system" and "session_id" in event:
-            _claude_sessions[chat_id] = event["session_id"]
+            session_store.save(chat_id, "claude_code", event["session_id"])
 
         # Accumulate assistant text from result messages
         if event.get("type") == "result":

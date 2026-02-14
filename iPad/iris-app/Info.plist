@@ -46,6 +46,8 @@
     </array>
     <key>NSMicrophoneUsageDescription</key>
     <string>Iris uses the microphone for voice input while holding Apple Pencil squeeze.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Iris uses speech recognition to transcribe your voice into text for the AI assistant.</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>

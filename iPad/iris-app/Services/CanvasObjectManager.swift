@@ -5,7 +5,7 @@ class CanvasObjectManager: ObservableObject {
     @Published private(set) var objects: [UUID: CanvasObject] = [:]
     private(set) var objectViews: [UUID: CanvasObjectWebView] = [:]
 
-    private let httpServer = AgentHTTPServer()
+    let httpServer = AgentHTTPServer()
     private weak var canvasView: NoteCanvasView?
     private weak var cursor: AgentCursorController?
     private var currentZoomScale: CGFloat = 1.0
@@ -109,6 +109,28 @@ class CanvasObjectManager: ObservableObject {
         for (_, webView) in objectViews {
             webView.updateForZoomScale(scale)
         }
+    }
+
+    // MARK: - Cursor Control
+
+    func cursorAppear(at point: CGPoint) {
+        guard let canvasView, let cursor else { return }
+        let screenPoint = canvasToScreenPoint(point, in: canvasView)
+        cursor.appear(at: screenPoint)
+    }
+
+    func cursorMove(to point: CGPoint) {
+        guard let canvasView, let cursor else { return }
+        let screenPoint = canvasToScreenPoint(point, in: canvasView)
+        cursor.moveTo(screenPoint)
+    }
+
+    func cursorClick() {
+        cursor?.click()
+    }
+
+    func cursorDisappear() {
+        cursor?.disappear()
     }
 
     // MARK: - Helpers

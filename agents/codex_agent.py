@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 
-import sessions
-
-# Track codex session IDs per chat for continuity
-_codex_sessions: dict[str, str] = {}
+try:
+    from . import sessions, session_store
+except ImportError:
+    import sessions
+    import session_store
 
 
 async def run(chat_id: str, message: str) -> dict:
@@ -44,7 +45,7 @@ async def run(chat_id: str, message: str) -> dict:
             continue
 
         if event.get("type") == "system" and "session_id" in event:
-            _codex_sessions[chat_id] = event["session_id"]
+            session_store.save(chat_id, "codex", event["session_id"])
 
         if event.get("type") == "result":
             assistant_text = event.get("result", assistant_text)

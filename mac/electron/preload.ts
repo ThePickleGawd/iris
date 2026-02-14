@@ -254,6 +254,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
     }
   }) => ipcRenderer.invoke("open-widget", spec),
   
+  // ─── Network Info & Device Connection ──────────────
+  getNetworkInfo: () => ipcRenderer.invoke("get-network-info"),
+  connectIpad: (host: string, port?: number) => ipcRenderer.invoke("connect-ipad", host, port),
+
   // ─── Iris Device Discovery ─────────────────────────
   getIrisDevices: () => ipcRenderer.invoke("get-iris-devices"),
   getIrisDevice: (id: string) => ipcRenderer.invoke("get-iris-device", id),

@@ -1,8 +1,12 @@
 // ipcHandlers.ts
 
 import { ipcMain, app, Notification } from "electron"
+import http from "http"
 import { AppState } from "./main"
 import { WidgetWindowManager, WidgetSpec } from "./WidgetWindowManager"
+import { uploadScreenshotToBackend } from "./backendUploader"
+
+const AGENT_SERVER_URL = process.env.IRIS_AGENT_URL || "http://localhost:8000"
 
 export function initializeIpcHandlers(appState: AppState): void {
   let notificationsEnabled = true
@@ -145,40 +149,81 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   ipcMain.handle("claude-chat", async (event, message: string) => {
     try {
+      // Upload latest screenshot to backend before sending chat
       const latestScreenshotPath = getLatestScreenshotPathFromQueues()
-      const result = await appState
-        .processingHelper
-        .getLLMHelper()
-        .chatWithClaude(message, latestScreenshotPath || undefined);
-      notifyAgentReply(result);
-      event.sender.send("agent-reply", { text: result });
-      return result;
+      if (latestScreenshotPath) {
+        await uploadScreenshotToBackend(latestScreenshotPath, {
+          deviceId: appState.deviceDiscovery.getDeviceId(),
+          source: "chat-context",
+        }).catch(() => {})
+      }
+
+      // Route through Agents Server
+      const result = await agentChatNonStreaming(message)
+      notifyAgentReply(result)
+      event.sender.send("agent-reply", { text: result })
+      return result
     } catch (error: any) {
-      console.error("Error in claude-chat handler:", error);
-      throw error;
+      // Fallback to local Ollama if agent server is unavailable
+      if (appState.processingHelper.getLLMHelper().isUsingOllama()) {
+        const latestScreenshotPath = getLatestScreenshotPathFromQueues()
+        const result = await appState.processingHelper.getLLMHelper()
+          .chatWithClaude(message, latestScreenshotPath || undefined)
+        notifyAgentReply(result)
+        event.sender.send("agent-reply", { text: result })
+        return result
+      }
+      console.error("Error in claude-chat handler:", error)
+      throw error
     }
   });
 
   ipcMain.handle("claude-chat-stream", async (event, requestId: string, message: string) => {
     try {
-      const llm = appState.processingHelper.getLLMHelper();
+      // Upload latest screenshot to backend before sending chat
       const latestScreenshotPath = getLatestScreenshotPathFromQueues()
-      const full = await llm.chatWithClaudeStream(
-        message,
-        latestScreenshotPath || undefined,
-        (chunk) => {
-        event.sender.send("claude-chat-stream-chunk", { requestId, chunk });
-      });
-      notifyAgentReply(full);
-      event.sender.send("agent-reply", { text: full });
-      event.sender.send("claude-chat-stream-done", { requestId, text: full });
-      return { success: true };
+      if (latestScreenshotPath) {
+        await uploadScreenshotToBackend(latestScreenshotPath, {
+          deviceId: appState.deviceDiscovery.getDeviceId(),
+          source: "chat-context",
+        }).catch(() => {})
+      }
+
+      // Route through Agents Server SSE endpoint
+      const full = await agentChatStream(message, (chunk) => {
+        event.sender.send("claude-chat-stream-chunk", { requestId, chunk })
+      })
+      notifyAgentReply(full)
+      event.sender.send("agent-reply", { text: full })
+      event.sender.send("claude-chat-stream-done", { requestId, text: full })
+      return { success: true }
     } catch (error: any) {
+      // Fallback to local Ollama if agent server is unavailable
+      if (appState.processingHelper.getLLMHelper().isUsingOllama()) {
+        try {
+          const latestScreenshotPath = getLatestScreenshotPathFromQueues()
+          const full = await appState.processingHelper.getLLMHelper()
+            .chatWithClaudeStream(message, latestScreenshotPath || undefined, (chunk) => {
+              event.sender.send("claude-chat-stream-chunk", { requestId, chunk })
+            })
+          notifyAgentReply(full)
+          event.sender.send("agent-reply", { text: full })
+          event.sender.send("claude-chat-stream-done", { requestId, text: full })
+          return { success: true }
+        } catch (fallbackError: any) {
+          event.sender.send("claude-chat-stream-error", {
+            requestId,
+            error: fallbackError?.message || String(fallbackError)
+          })
+          return { success: false, error: fallbackError?.message || String(fallbackError) }
+        }
+      }
+
       event.sender.send("claude-chat-stream-error", {
         requestId,
         error: error?.message || String(error)
-      });
-      return { success: false, error: error?.message || String(error) };
+      })
+      return { success: false, error: error?.message || String(error) }
     }
   });
 
@@ -274,6 +319,142 @@ export function initializeIpcHandlers(appState: AppState): void {
       return { success: false, error: error.message };
     }
   });
+
+  // ─── Agent Server Helpers ─────────────────────────────────
+
+  function agentChatNonStreaming(message: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const chatId = `mac-${appState.deviceDiscovery.getDeviceId()}`
+      const body = JSON.stringify({ agent: "iris", chat_id: chatId, message })
+      const parsed = new URL(`${AGENT_SERVER_URL}/chat`)
+
+      const req = http.request(
+        {
+          hostname: parsed.hostname,
+          port: parsed.port,
+          path: parsed.pathname,
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+          timeout: 120_000,
+        },
+        (res) => {
+          let data = ""
+          res.on("data", (chunk) => (data += chunk))
+          res.on("end", () => {
+            if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+              try {
+                resolve(JSON.parse(data).response || data)
+              } catch {
+                resolve(data)
+              }
+            } else {
+              reject(new Error(`Agent server error ${res.statusCode}: ${data.slice(0, 300)}`))
+            }
+          })
+        }
+      )
+      req.on("error", reject)
+      req.on("timeout", () => { req.destroy(); reject(new Error("Agent server timeout")) })
+      req.write(body)
+      req.end()
+    })
+  }
+
+  function agentChatStream(message: string, onChunk: (chunk: string) => void): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const chatId = `mac-${appState.deviceDiscovery.getDeviceId()}`
+      const body = JSON.stringify({ agent: "iris", chat_id: chatId, message })
+      const parsed = new URL(`${AGENT_SERVER_URL}/chat/stream`)
+
+      const req = http.request(
+        {
+          hostname: parsed.hostname,
+          port: parsed.port,
+          path: parsed.pathname,
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(body),
+            "Accept": "text/event-stream",
+          },
+          timeout: 120_000,
+        },
+        (res) => {
+          if (res.statusCode && res.statusCode >= 400) {
+            let errData = ""
+            res.on("data", (chunk) => (errData += chunk))
+            res.on("end", () => reject(new Error(`Agent server error ${res.statusCode}: ${errData.slice(0, 300)}`)))
+            return
+          }
+
+          let buffer = ""
+          let fullText = ""
+
+          res.on("data", (chunk: Buffer) => {
+            buffer += chunk.toString()
+            const lines = buffer.split("\n")
+            buffer = lines.pop() || ""
+
+            for (const line of lines) {
+              const trimmed = line.trim()
+              if (!trimmed.startsWith("data:")) continue
+              const payload = trimmed.slice(5).trim()
+              if (!payload || payload === "[DONE]") continue
+
+              try {
+                const event = JSON.parse(payload)
+                if (event.kind === "message.delta" && event.delta) {
+                  fullText += event.delta
+                  onChunk(event.delta)
+                } else if (event.kind === "message.final" && event.text) {
+                  fullText = event.text
+                }
+              } catch {
+                // ignore malformed SSE lines
+              }
+            }
+          })
+
+          res.on("end", () => resolve(fullText))
+          res.on("error", reject)
+        }
+      )
+      req.on("error", reject)
+      req.on("timeout", () => { req.destroy(); reject(new Error("Agent server stream timeout")) })
+      req.write(body)
+      req.end()
+    })
+  }
+
+  // ─── Network Info & Direct Connection ─────────────────────
+
+  ipcMain.handle("get-network-info", async () => {
+    const os = require("os")
+    const interfaces = os.networkInterfaces()
+    const ips: string[] = []
+    for (const name of Object.keys(interfaces)) {
+      for (const iface of interfaces[name] || []) {
+        if (iface.family === "IPv4" && !iface.internal) {
+          ips.push(iface.address)
+        }
+      }
+    }
+    return {
+      macIp: ips[0] || "unknown",
+      allIps: ips,
+      hostname: os.hostname(),
+      connectedDevices: appState.deviceDiscovery.getDevices(),
+    }
+  })
+
+  ipcMain.handle("connect-ipad", async (_, host: string, port?: number) => {
+    try {
+      await appState.deviceDiscovery.connectDirect(host, port || 8935)
+      return { success: true }
+    } catch (error: any) {
+      return { success: false, error: error.message || String(error) }
+    }
+  })
 
   // ─── Device Discovery (Iris iPad) ─────────────────────────
 
