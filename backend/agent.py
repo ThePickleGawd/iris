@@ -5,9 +5,11 @@ import base64
 import html as html_module
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -48,6 +50,27 @@ Best for: flowcharts, system architecture, sequence diagrams, state machines, ER
   auth -> db: Query
   db -> auth: Result
   auth -> user: Token
+  ```
+
+### `animation` — Mathematical animations (Manim)
+Best for: step-by-step derivations, geometric transformations, graph animations, \
+anything where **motion aids understanding**.
+- Set `type: "animation"` and `source` to a **complete Manim scene** (Python code).
+- The source MUST define exactly one class that extends `Scene` with a `construct` method.
+- Use ManimCE (Community Edition) API. Key classes: `MathTex`, `Tex`, `Text`, \
+`Create`, `Write`, `FadeIn`, `Transform`, `Axes`, `NumberPlane`, `Arrow`, `Circle`, etc.
+- Do NOT set `html` — the backend renders the animation automatically.
+- Renders at 480p/30fps for speed. Keep animations concise (under 15 seconds).
+- **Only use when motion genuinely helps.** If a static equation or diagram suffices, \
+prefer `document` or `diagram` — they render instantly.
+- Example:
+  ```python
+  from manim import *
+  class Example(Scene):
+      def construct(self):
+          eq = MathTex("e^{i\\pi} + 1 = 0")
+          self.play(Write(eq))
+          self.wait()
   ```
 
 ### `html` — Interactive tools (default)
@@ -122,12 +145,12 @@ TOOLS = [
                 "properties": {
                     "type": {
                         "type": "string",
-                        "enum": ["html", "document", "diagram"],
-                        "description": "Widget type: 'document' for markdown/LaTeX, 'diagram' for D2, 'html' for raw interactive HTML. Default 'html'.",
+                        "enum": ["html", "document", "diagram", "animation"],
+                        "description": "Widget type: 'document' for markdown/LaTeX, 'diagram' for D2, 'animation' for Manim, 'html' for raw interactive HTML. Default 'html'.",
                     },
                     "source": {
                         "type": "string",
-                        "description": "Source content for document (Markdown with LaTeX) or diagram (D2 code) types.",
+                        "description": "Source content for document (Markdown with LaTeX), diagram (D2 code), or animation (Manim Python scene) types.",
                     },
                     "html": {
                         "type": "string",
@@ -666,11 +689,15 @@ def _render_document_html(source: str) -> str:
 </html>"""
 
 
-def _render_diagram_html(source: str) -> str:
-    """Render D2 diagram source to SVG via the d2 CLI, wrapped in dark HTML."""
+def _render_diagram_html(source: str) -> dict[str, Any]:
+    """Render D2 diagram source to SVG via the d2 CLI, wrapped in dark HTML.
+
+    Returns {"html": str, "width": int, "height": int}.
+    """
     d2_bin = shutil.which("d2")
     if not d2_bin:
-        return _diagram_error_html("d2 binary not found in PATH. Install from https://d2lang.com")
+        return {"html": _diagram_error_html("d2 binary not found in PATH. Install from https://d2lang.com"),
+                "width": 400, "height": 180}
 
     try:
         result = subprocess.run(
@@ -680,16 +707,34 @@ def _render_diagram_html(source: str) -> str:
             timeout=30,
         )
     except subprocess.TimeoutExpired:
-        return _diagram_error_html("d2 rendering timed out (30s limit)")
+        return {"html": _diagram_error_html("d2 rendering timed out (30s limit)"),
+                "width": 400, "height": 180}
     except OSError as exc:
-        return _diagram_error_html(f"Failed to run d2: {exc}")
+        return {"html": _diagram_error_html(f"Failed to run d2: {exc}"),
+                "width": 400, "height": 180}
 
     if result.returncode != 0:
         stderr = result.stderr.decode("utf-8", errors="replace").strip()
-        return _diagram_error_html(f"d2 error (exit {result.returncode}):\n{stderr}")
+        return {"html": _diagram_error_html(f"d2 error (exit {result.returncode}):\n{stderr}"),
+                "width": 400, "height": 180}
 
     svg = result.stdout.decode("utf-8")
-    return f"""\
+
+    # Extract natural dimensions from the SVG viewBox
+    svg_w, svg_h = 320, 220
+    vb = re.search(r'viewBox="[\d.\-]+ [\d.\-]+ ([\d.]+) ([\d.]+)"', svg)
+    if vb:
+        try:
+            svg_w = int(float(vb.group(1)))
+            svg_h = int(float(vb.group(2)))
+        except (ValueError, IndexError):
+            pass
+
+    # Widget = SVG + body padding (16px each side)
+    widget_w = svg_w + 32
+    widget_h = svg_h + 32
+
+    html = f"""\
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -710,6 +755,7 @@ def _render_diagram_html(source: str) -> str:
 {svg}
 </body>
 </html>"""
+    return {"html": html, "width": widget_w, "height": widget_h}
 
 
 def _diagram_error_html(message: str) -> str:
@@ -752,17 +798,172 @@ def _diagram_error_html(message: str) -> str:
 </html>"""
 
 
+def _render_animation_html(source: str) -> dict[str, Any]:
+    """Render a Manim scene to MP4 and embed in HTML.
+
+    Returns {"html": str, "width": int, "height": int}.
+    """
+    # Prefer the venv's manim, fall back to PATH
+    venv_manim = Path(__file__).resolve().parent / ".venv" / "bin" / "manim"
+    manim_bin = str(venv_manim) if venv_manim.is_file() else shutil.which("manim")
+    if not manim_bin:
+        return {"html": _animation_error_html("manim not found. Run: cd backend && uv sync"),
+                "width": 480, "height": 200}
+
+    # Extract the Scene class name from source
+    match = re.search(r'class\s+(\w+)\s*\(.*Scene.*\)', source)
+    if not match:
+        return {"html": _animation_error_html("No Scene subclass found in source. Define a class like:\n\nclass MyScene(Scene):\n    def construct(self): ..."),
+                "width": 480, "height": 200}
+    scene_name = match.group(1)
+
+    with tempfile.TemporaryDirectory(prefix="iris_manim_") as tmpdir:
+        scene_file = Path(tmpdir) / "scene.py"
+        scene_file.write_text(source, encoding="utf-8")
+
+        # Ensure TeX binaries (dvisvgm, etc.) are on PATH
+        env = os.environ.copy()
+        home = Path.home()
+        for tex_bin in [
+            home / "Library" / "TinyTeX" / "bin" / "universal-darwin",
+            home / "Library" / "TinyTeX" / "bin" / "x86_64-darwin",
+            Path("/usr/local/texlive/2025/bin/universal-darwin"),
+        ]:
+            if tex_bin.is_dir():
+                env["PATH"] = f"{tex_bin}:{env.get('PATH', '')}"
+                break
+
+        try:
+            result = subprocess.run(
+                [
+                    manim_bin, "render",
+                    "-ql",              # low quality: 480p, 15fps — fast
+                    "--format=mp4",
+                    "--media_dir", tmpdir,
+                    str(scene_file),
+                    scene_name,
+                ],
+                capture_output=True,
+                timeout=90,
+                cwd=tmpdir,
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            return {"html": _animation_error_html("Manim render timed out (90s limit). Simplify the animation."),
+                    "width": 480, "height": 200}
+        except OSError as exc:
+            return {"html": _animation_error_html(f"Failed to run manim: {exc}"),
+                    "width": 480, "height": 200}
+
+        if result.returncode != 0:
+            stderr = result.stderr.decode("utf-8", errors="replace").strip()
+            # Truncate very long tracebacks
+            if len(stderr) > 1500:
+                stderr = stderr[:1500] + "\n... (truncated)"
+            return {"html": _animation_error_html(f"manim error (exit {result.returncode}):\n{stderr}"),
+                    "width": 480, "height": 200}
+
+        # Find the output MP4 — manim puts it under media/videos/scene/480p15/
+        mp4_files = list(Path(tmpdir).rglob("*.mp4"))
+        if not mp4_files:
+            return {"html": _animation_error_html("Manim produced no output file. Check that construct() creates animations."),
+                    "width": 480, "height": 200}
+
+        mp4_path = mp4_files[0]
+        video_b64 = base64.b64encode(mp4_path.read_bytes()).decode("ascii")
+
+    # 480p = 854x480
+    html = f"""\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {{ color-scheme: dark; }}
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{
+    background: #18181b; display: flex;
+    align-items: center; justify-content: center;
+    min-height: 100vh;
+  }}
+  video {{
+    max-width: 100%; height: auto; border-radius: 6px;
+  }}
+</style>
+</head>
+<body>
+<video autoplay loop muted playsinline>
+  <source src="data:video/mp4;base64,{video_b64}" type="video/mp4">
+</video>
+</body>
+</html>"""
+    return {"html": html, "width": 854, "height": 480}
+
+
+def _animation_error_html(message: str) -> str:
+    """Fallback HTML showing a Manim rendering error."""
+    escaped = html_module.escape(message)
+    return f"""\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  :root {{ color-scheme: dark; }}
+  body {{
+    background: #18181b; color: #fca5a5;
+    font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    font-size: 14px; padding: 24px;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh;
+  }}
+  .error-box {{
+    background: #27171a; border: 1px solid #991b1b;
+    border-radius: 10px; padding: 20px 24px; max-width: 520px;
+  }}
+  .error-box h3 {{
+    margin: 0 0 8px; font-size: 15px; font-weight: 600; color: #fecaca;
+  }}
+  .error-box pre {{
+    margin: 0; font-family: "SF Mono", Menlo, monospace;
+    font-size: 12px; white-space: pre-wrap; word-break: break-word;
+    color: #fca5a5;
+  }}
+</style>
+</head>
+<body>
+<div class="error-box">
+  <h3>Animation Rendering Failed</h3>
+  <pre>{escaped}</pre>
+</div>
+</body>
+</html>"""
+
+
 def _normalize_widget_args(args: dict[str, Any]) -> dict[str, Any]:
     widget_type = str(args.get("type") or "html").strip().lower()
-    if widget_type not in {"html", "document", "diagram"}:
+    if widget_type not in {"html", "document", "diagram", "animation"}:
         widget_type = "html"
 
     source = str(args.get("source") or "")
 
+    # Defaults for width/height — may be overridden by diagram renderer
+    natural_width: int | None = None
+    natural_height: int | None = None
+
     if widget_type == "document":
         rendered_html = _render_document_html(source)
     elif widget_type == "diagram":
-        rendered_html = _render_diagram_html(source)
+        diagram = _render_diagram_html(source)
+        rendered_html = diagram["html"]
+        natural_width = diagram["width"]
+        natural_height = diagram["height"]
+    elif widget_type == "animation":
+        anim = _render_animation_html(source)
+        rendered_html = anim["html"]
+        natural_width = anim["width"]
+        natural_height = anim["height"]
     else:
         rendered_html = str(args.get("html") or "")
 
@@ -770,8 +971,8 @@ def _normalize_widget_args(args: dict[str, Any]) -> dict[str, Any]:
         "widget_id": str(args.get("widget_id") or "widget"),
         "html": rendered_html,
         "target": str(args.get("target") or "mac").strip().lower(),
-        "width": _clamp(args.get("width"), 320),
-        "height": _clamp(args.get("height"), 220),
+        "width": _clamp(args.get("width") or natural_width, 320),
+        "height": _clamp(args.get("height") or natural_height, 220),
         "x": _coerce_float(args.get("x"), 0.0),
         "y": _coerce_float(args.get("y"), 0.0),
         "coordinate_space": _normalize_coordinate_space(args.get("coordinate_space")),
