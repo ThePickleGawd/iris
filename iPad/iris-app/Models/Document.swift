@@ -125,7 +125,7 @@ class DocumentStore: ObservableObject {
         }
     }
 
-    /// Fetch sessions from the agent server and merge remote-only sessions into the local list.
+    /// Fetch sessions from the agent server and mirror them locally (upsert + prune).
     func syncSessions(agentServerURL: URL) {
         let url = agentServerURL.appendingPathComponent("sessions")
         var request = URLRequest(url: url)
@@ -140,34 +140,42 @@ class DocumentStore: ObservableObject {
                 return
             }
 
-            let localIDs = Set(documents.map { $0.id.uuidString.lowercased() })
+            var seenIDs = Set<UUID>()
             let remoteDocs: [Document] = items.compactMap { item in
                 guard let idStr = item["id"] as? String else { return nil }
-                if localIDs.contains(idStr.lowercased()) { return nil }
+                let docID = UUID(uuidString: idStr) ?? UUID(uuidString: stableUUID(from: idStr)) ?? UUID()
+                guard seenIDs.insert(docID).inserted else { return nil }
 
-                let docID: UUID
-                if let parsed = UUID(uuidString: idStr) {
-                    docID = parsed
-                } else {
-                    docID = UUID(uuidString: stableUUID(from: idStr)) ?? UUID()
-                }
-
-                if localIDs.contains(docID.uuidString.lowercased()) { return nil }
-
-                let name = (item["name"] as? String) ?? "Remote Chat"
+                let rawName = ((item["name"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let name = rawName.isEmpty ? "Untitled" : rawName
                 let model = (item["model"] as? String) ?? (item["agent"] as? String) ?? "gpt-5.2"
                 return Document(id: docID, name: name, model: model, lastOpened: Date.distantPast)
             }
 
-            guard !remoteDocs.isEmpty else { return }
-
             await MainActor.run {
-                let existingIDs = Set(documents.map { $0.id })
-                let toAdd = remoteDocs.filter { !existingIDs.contains($0.id) }
-                if !toAdd.isEmpty {
-                    documents.append(contentsOf: toAdd)
-                    saveDocuments()
+                let oldDocuments = documents
+                let existingByID = Dictionary(uniqueKeysWithValues: oldDocuments.map { ($0.id, $0) })
+                let remoteIDs = Set(remoteDocs.map(\.id))
+
+                let merged: [Document] = remoteDocs.map { remote in
+                    guard let existing = existingByID[remote.id] else { return remote }
+                    return Document(
+                        id: remote.id,
+                        name: remote.name,
+                        model: remote.model,
+                        lastOpened: existing.lastOpened
+                    )
                 }
+
+                guard merged != oldDocuments else { return }
+
+                let removed = oldDocuments.filter { !remoteIDs.contains($0.id) }
+                for doc in removed {
+                    doc.deleteDrawingFile()
+                }
+
+                documents = merged
+                saveDocuments()
             }
         }
     }

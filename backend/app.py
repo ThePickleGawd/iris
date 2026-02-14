@@ -113,10 +113,11 @@ def health() -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Sessions
+# Sessions (served at /api/sessions and /sessions for client compat)
 # ---------------------------------------------------------------------------
 
 @app.post("/api/sessions")
+@app.post("/sessions")
 def create_session() -> Any:
     body = request.get_json(silent=True) or {}
     session_id = (body.get("id") or "").strip() or str(uuid.uuid4())
@@ -148,6 +149,7 @@ def create_session() -> Any:
 
 
 @app.get("/api/sessions")
+@app.get("/sessions")
 def list_sessions() -> Any:
     limit = min(int(request.args.get("limit", 50)), 200)
     rows = _list("sessions")
@@ -156,6 +158,7 @@ def list_sessions() -> Any:
 
 
 @app.get("/api/sessions/<session_id>")
+@app.get("/sessions/<session_id>")
 def get_session(session_id: str) -> Any:
     row = _read("sessions", session_id)
     if not row:
@@ -164,6 +167,7 @@ def get_session(session_id: str) -> Any:
 
 
 @app.delete("/api/sessions/<session_id>")
+@app.delete("/sessions/<session_id>")
 def delete_session(session_id: str) -> Any:
     if not _read("sessions", session_id):
         return jsonify({"error": "session not found"}), 404
@@ -179,6 +183,7 @@ def delete_session(session_id: str) -> Any:
 # ---------------------------------------------------------------------------
 
 @app.post("/api/sessions/<session_id>/messages")
+@app.post("/sessions/<session_id>/messages")
 def create_message(session_id: str) -> Any:
     body = request.get_json(silent=True) or {}
     role = body.get("role")
@@ -223,6 +228,7 @@ def create_message(session_id: str) -> Any:
 
 
 @app.get("/api/sessions/<session_id>/messages")
+@app.get("/sessions/<session_id>/messages")
 def list_messages(session_id: str) -> Any:
     limit = min(int(request.args.get("limit", 200)), 200)
     since = request.args.get("since")

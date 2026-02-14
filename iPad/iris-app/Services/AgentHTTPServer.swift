@@ -30,13 +30,13 @@ class AgentHTTPServer {
         return URL(string: "http://\(ip):8000")
     }
 
-    /// Returns the URL of the first linked device's backend server (default port 5050), if available.
+    /// Returns the URL of the first linked device's backend server (port 8000), if available.
     func backendServerURL() -> URL? {
         guard let device = linkedDevices.values.first, let ip = device.ip, !ip.isEmpty else {
             return nil
         }
         let backendPort = UserDefaults.standard.integer(forKey: "iris_backend_port")
-        let port = backendPort > 0 ? backendPort : 5050
+        let port = backendPort > 0 ? backendPort : 8000
         return URL(string: "http://\(ip):\(port)")
     }
 

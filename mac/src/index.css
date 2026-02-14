@@ -614,6 +614,196 @@ body {
   color: var(--text-dim);
 }
 
+/* ─── Session Toggle (header button) ─── */
+
+.iris-session-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: all 150ms ease;
+  text-align: left;
+}
+
+.iris-session-toggle:hover {
+  background: var(--glass);
+  border-color: var(--edge);
+  color: var(--text);
+}
+
+.iris-session-toggle.active {
+  background: var(--glass-hover);
+  border-color: var(--edge-hover);
+  color: var(--text);
+}
+
+.iris-session-toggle-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iris-session-chevron {
+  flex-shrink: 0;
+  opacity: 0.4;
+  transition: transform 200ms ease, opacity 200ms ease;
+}
+
+.iris-session-toggle:hover .iris-session-chevron {
+  opacity: 0.7;
+}
+
+.iris-session-chevron.open {
+  transform: rotate(180deg);
+  opacity: 0.7;
+}
+
+/* ─── Session Drawer ─── */
+
+.iris-session-drawer {
+  position: relative;
+  z-index: 2;
+  border-bottom: 1px solid var(--edge);
+  background: rgba(6, 6, 10, 0.6);
+  animation: drawer-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  overflow: hidden;
+}
+
+@keyframes drawer-in {
+  from {
+    opacity: 0;
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 280px;
+  }
+}
+
+.iris-session-list {
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 4px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.iris-session-list::-webkit-scrollbar {
+  width: 3px;
+}
+
+.iris-session-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.iris-session-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: var(--r-pill);
+}
+
+.iris-session-empty {
+  padding: 20px 0;
+  text-align: center;
+  color: var(--text-ghost);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+
+/* ─── Session Row ─── */
+
+.iris-session-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  transition: all 120ms ease;
+  text-align: left;
+  min-height: 32px;
+}
+
+.iris-session-row:hover {
+  background: var(--glass);
+  border-color: var(--edge);
+}
+
+.iris-session-row.active {
+  background: var(--accent-ghost);
+  border-color: var(--edge-accent);
+}
+
+.iris-session-row-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.iris-session-row-name {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 120ms ease;
+}
+
+.iris-session-row:hover .iris-session-row-name {
+  color: var(--text);
+}
+
+.iris-session-row.active .iris-session-row-name {
+  color: #c4b5fd;
+  font-weight: 600;
+}
+
+.iris-session-row-model {
+  flex-shrink: 0;
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-ghost);
+  padding: 1px 5px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--edge);
+  background: var(--glass);
+  white-space: nowrap;
+}
+
+.iris-session-row.active .iris-session-row-model {
+  color: rgba(196, 181, 253, 0.6);
+  border-color: rgba(139, 92, 246, 0.2);
+  background: rgba(139, 92, 246, 0.06);
+}
+
+.iris-session-row-time {
+  flex-shrink: 0;
+  font-size: 9px;
+  color: var(--text-ghost);
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ─── Electron Window Drag ─── */
 
 .draggable-area {

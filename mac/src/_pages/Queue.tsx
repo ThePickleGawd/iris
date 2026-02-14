@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useRef, useState } from "react"
-import { ChevronDown, ChevronUp, Plus, SendHorizontal, X } from "lucide-react"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { ChevronDown, ChevronUp, MessageSquare, Plus, SendHorizontal, X } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"
@@ -29,6 +29,21 @@ interface SessionInfo {
   name: string
 }
 
+function formatRelativeTime(iso: string): string {
+  const d = new Date(iso)
+  const now = Date.now()
+  const diff = now - d.getTime()
+  if (diff < 0) return "now"
+  const mins = Math.floor(diff / 60_000)
+  if (mins < 1) return "now"
+  if (mins < 60) return `${mins}m`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return `${hrs}h`
+  const days = Math.floor(hrs / 24)
+  if (days < 7) return `${days}d`
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+}
+
 const modelChoices = [
   { id: "gpt-5.2", name: "GPT-5.2", subtitle: "OpenAI general-purpose model" },
   { id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5", subtitle: "Best for screenshot and widget workflows" },
@@ -47,6 +62,7 @@ const Queue: React.FC = () => {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatLoading, setChatLoading] = useState(false)
   const [showModelPicker, setShowModelPicker] = useState(false)
+  const [showSessionDrawer, setShowSessionDrawer] = useState(false)
 
   const [backendBaseUrl] = useState("http://localhost:8000")
   const [backendPath] = useState("/v1/agent")
@@ -146,8 +162,22 @@ const Queue: React.FC = () => {
 
   const handleModelPick = useCallback(async (modelId: string) => {
     setShowModelPicker(false)
+    setShowSessionDrawer(false)
     await handleNewChat(modelId)
   }, [handleNewChat])
+
+  const handlePickSession = useCallback(async (session: SessionInfo) => {
+    setShowSessionDrawer(false)
+    await handleSelectSession(session)
+  }, [handleSelectSession])
+
+  const sortedSessions = useMemo(() => {
+    return [...sessions].sort((a, b) => {
+      const ta = (a as any).updated_at || (a as any).created_at || ""
+      const tb = (b as any).updated_at || (b as any).created_at || ""
+      return tb.localeCompare(ta)
+    })
+  }, [sessions])
 
   const sendChatMessage = async (message: string) => {
     const trimmed = message.trim()
@@ -222,6 +252,20 @@ const Queue: React.FC = () => {
     } finally {
       activeStreamRequestRef.current = null
       setChatLoading(false)
+
+      // Reload from server so all messages have _ids (prevents poller duplication)
+      try {
+        const data = await window.electronAPI.getSessionMessages(selectedSession.id)
+        const msgs = (data?.items || []).map((m: any) => ({
+          role: m.role as "user" | "assistant",
+          text: m.content,
+          _id: m.id
+        }))
+        if (msgs.length > 0) setChatMessages(msgs)
+      } catch {
+        // keep local state
+      }
+
       chatInputRef.current?.focus()
     }
   }
@@ -346,9 +390,21 @@ const Queue: React.FC = () => {
             >
               <Plus size={11} />
             </button>
-            <span className="iris-bar-title">
-              {currentSession?.name || "Iris"}
-            </span>
+            <button
+              type="button"
+              className={`iris-session-toggle interactive ${showSessionDrawer ? "active" : ""}`}
+              onClick={() => setShowSessionDrawer((v) => !v)}
+              title="Browse sessions"
+            >
+              <MessageSquare size={10} />
+              <span className="iris-session-toggle-label">
+                {currentSession?.name || "Iris"}
+              </span>
+              <ChevronDown
+                size={9}
+                className={`iris-session-chevron ${showSessionDrawer ? "open" : ""}`}
+              />
+            </button>
             <button
               type="button"
               className="iris-toggle interactive"
@@ -358,6 +414,40 @@ const Queue: React.FC = () => {
               <ChevronUp size={13} />
             </button>
           </header>
+
+          {showSessionDrawer && (
+            <div className="iris-session-drawer interactive">
+              <div className="iris-session-list">
+                {sortedSessions.length === 0 ? (
+                  <div className="iris-session-empty">No sessions yet</div>
+                ) : (
+                  sortedSessions.map((s) => {
+                    const isActive = currentSession?.id === s.id
+                    const ts = (s as any).updated_at || (s as any).created_at || ""
+                    const modelLabel = s.model?.includes("claude") ? "Claude" : s.model === "gpt-5.2" ? "GPT-5.2" : s.model || "GPT-5.2"
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        className={`iris-session-row ${isActive ? "active" : ""}`}
+                        onClick={() => handlePickSession(s)}
+                      >
+                        <div className="iris-session-row-main">
+                          <span className="iris-session-row-name">{s.name || "Untitled"}</span>
+                          <span className="iris-session-row-model">{modelLabel}</span>
+                        </div>
+                        {ts && (
+                          <span className="iris-session-row-time">
+                            {formatRelativeTime(ts)}
+                          </span>
+                        )}
+                      </button>
+                    )
+                  })
+                )}
+              </div>
+            </div>
+          )}
 
           <main className="iris-chat">
             <div ref={messageListRef} className="iris-messages interactive">

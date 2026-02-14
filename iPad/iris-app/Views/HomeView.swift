@@ -141,70 +141,118 @@ private struct AgentPickerOverlay: View {
     @Binding var isPresented: Bool
     let onCreated: (Document) -> Void
 
-    @State private var name = ""
-
     var body: some View {
         ZStack {
-            Color.black.opacity(0.55)
+            Color.black.opacity(0.46)
                 .ignoresSafeArea()
                 .onTapGesture { isPresented = false }
 
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 18) {
+                Capsule()
+                    .fill(Color.white.opacity(0.28))
+                    .frame(width: 42, height: 5)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 2)
+
                 Text("New Note")
-                    .font(.system(size: 22, weight: .bold))
+                    .font(.system(size: 28, weight: .semibold, design: .rounded))
                     .foregroundColor(.white)
 
-                TextField("Document name", text: $name)
-                    .textFieldStyle(.plain)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(Color.white.opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                Text("Choose a model to start. The note title will be Untitled.")
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundColor(.white.opacity(0.72))
+                    .fixedSize(horizontal: false, vertical: true)
 
-                Text("Choose Model")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.8))
-                    .padding(.top, 4)
+                VStack(spacing: 10) {
+                    ForEach(Array(choices.enumerated()), id: \.element.id) { index, choice in
+                        Button {
+                            let doc = documentStore.addDocument(
+                                name: "",
+                                model: choice.id
+                            )
+                            isPresented = false
+                            onCreated(doc)
+                        } label: {
+                            HStack(spacing: 12) {
+                                ZStack {
+                                    Circle()
+                                        .fill(modelAccent(for: index).opacity(0.18))
+                                        .frame(width: 34, height: 34)
+                                    Image(systemName: modelSymbol(for: index))
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundColor(modelAccent(for: index))
+                                }
 
-                ForEach(choices) { choice in
-                    Button {
-                        let doc = documentStore.addDocument(
-                            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
-                            model: choice.id
-                        )
-                        isPresented = false
-                        onCreated(doc)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(choice.name)
-                                .font(.system(size: 15, weight: .semibold))
-                            Text(choice.subtitle)
-                                .font(.system(size: 12))
-                                .foregroundColor(.white.opacity(0.7))
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(choice.name)
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundColor(.white)
+                                    Text(choice.subtitle)
+                                        .font(.system(size: 12, weight: .regular))
+                                        .foregroundColor(.white.opacity(0.66))
+                                        .lineLimit(1)
+                                }
+
+                                Spacer(minLength: 0)
+
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.white.opacity(0.32))
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(Color.white.opacity(0.08))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                            )
                         }
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
-                        .background(Color.white.opacity(0.1))
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .buttonStyle(.plain)
                     }
                 }
 
                 Button("Cancel") {
                     isPresented = false
                 }
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(.white.opacity(0.8))
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(.white.opacity(0.9))
                 .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.top, 4)
+                .padding(.top, 2)
             }
-            .padding(16)
+            .padding(22)
             .frame(maxWidth: 430)
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(Color(red: 0.13, green: 0.13, blue: 0.16))
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(Color.white.opacity(0.15), lineWidth: 1)
             )
+            .shadow(color: Color.black.opacity(0.3), radius: 22, x: 0, y: 12)
             .padding(24)
+        }
+    }
+
+    private func modelAccent(for index: Int) -> Color {
+        switch index {
+        case 0:
+            return Color(red: 0.39, green: 0.62, blue: 1.0)
+        case 1:
+            return Color(red: 0.62, green: 0.64, blue: 1.0)
+        default:
+            return Color(red: 0.43, green: 0.86, blue: 0.74)
+        }
+    }
+
+    private func modelSymbol(for index: Int) -> String {
+        switch index {
+        case 0:
+            return "circle.grid.2x2.fill"
+        case 1:
+            return "bolt.fill"
+        default:
+            return "square.stack.3d.down.forward.fill"
         }
     }
 }

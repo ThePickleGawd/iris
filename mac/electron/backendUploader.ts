@@ -2,7 +2,7 @@ import fs from "node:fs"
 import path from "node:path"
 import http from "node:http"
 
-const BACKEND_URL = process.env.IRIS_BACKEND_URL || "http://localhost:5050"
+const BACKEND_URL = process.env.IRIS_BACKEND_URL || "http://localhost:8000"
 
 /**
  * Upload a screenshot file to the Backend's /api/screenshots endpoint
