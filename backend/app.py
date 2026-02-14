@@ -50,7 +50,8 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 SESSIONS_DIR = DATA_DIR / "sessions"
 SCREENSHOTS_DIR = DATA_DIR / "screenshots"
-SCREENSHOTS_META_DIR = DATA_DIR / "screenshots"
+SCREENSHOTS_META_DIR = DATA_DIR / "screenshot_meta"
+PROACTIVE_DESCRIPTIONS_DIR = DATA_DIR / "proactive_descriptions"
 CODEX_SESSIONS_ROOT = Path(
     os.environ.get("CODEX_SESSIONS_ROOT", str(Path.home() / ".codex" / "sessions"))
 )
@@ -63,7 +64,7 @@ CODEX_MESSAGE_DEDUP_WINDOW_SECONDS = 20
 _codex_rollout_cache: dict[str, Path] = {}
 _claude_code_rollout_cache: dict[str, Path] = {}
 
-for d in [SESSIONS_DIR, SCREENSHOTS_DIR, SCREENSHOTS_META_DIR]:
+for d in [SESSIONS_DIR, SCREENSHOTS_DIR, SCREENSHOTS_META_DIR, PROACTIVE_DESCRIPTIONS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
@@ -151,6 +152,21 @@ def _session_summary(session: dict) -> dict:
     }
 
 
+def _spatial_context_text(metadata: dict[str, Any] | None) -> str:
+    if not isinstance(metadata, dict):
+        return ""
+    snapshot = metadata.get("coordinate_snapshot")
+    if not isinstance(snapshot, dict):
+        return ""
+    try:
+        return (
+            "Coordinate snapshot (document_axis): "
+            + json.dumps(snapshot, ensure_ascii=False)
+        )
+    except (TypeError, ValueError):
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # Codex sync helpers
 # ---------------------------------------------------------------------------
@@ -223,6 +239,7 @@ def _resolve_codex_rollout_path(conversation_id: str) -> Path | None:
         return cached
     if not CODEX_SESSIONS_ROOT.exists():
         return None
+
     def _mtime(path: Path) -> float:
         try:
             return path.stat().st_mtime
@@ -750,6 +767,8 @@ def _execute_linked_provider(
 # ---------------------------------------------------------------------------
 # Screenshot storage helpers (kept simple — separate files)
 # ---------------------------------------------------------------------------
+
+
 def _screenshot_meta_path(screenshot_id: str) -> Path:
     return SCREENSHOTS_META_DIR / f"{screenshot_id}.json"
 
@@ -779,6 +798,16 @@ def _list_screenshots() -> list[dict]:
         except (json.JSONDecodeError, OSError):
             continue
     return rows
+
+
+def _save_proactive_description(payload: dict[str, Any]) -> None:
+    screenshot_id = str(payload.get("screenshot_id") or "").strip()
+    if not screenshot_id:
+        return
+    path = PROACTIVE_DESCRIPTIONS_DIR / f"{screenshot_id}.json"
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False))
+    tmp.replace(path)
 
 
 # ---------------------------------------------------------------------------
@@ -1119,6 +1148,51 @@ def get_screenshot_file(screenshot_id: str) -> Any:
     return send_file(fp, mimetype=row.get("mime_type", "application/octet-stream"))
 
 
+@app.post("/api/proactive/describe")
+def proactive_describe_screenshot() -> Any:
+    body = request.get_json(silent=True) or {}
+    screenshot_id = str(body.get("screenshot_id") or "").strip()
+    if not screenshot_id:
+        return jsonify({"error": "screenshot_id is required"}), 400
+
+    row = _load_screenshot(screenshot_id)
+    if not row:
+        return jsonify({"error": "screenshot not found"}), 404
+
+    fp = Path(str(row.get("file_path") or ""))
+    if not fp.exists():
+        return jsonify({"error": "screenshot file missing"}), 410
+
+    coordinate_snapshot = body.get("coordinate_snapshot")
+    if not isinstance(coordinate_snapshot, dict):
+        coordinate_snapshot = None
+
+    previous_description = body.get("previous_description")
+    if not isinstance(previous_description, dict):
+        previous_description = None
+
+    try:
+        description = agent_module.describe_screenshot_with_gemini(
+            fp,
+            str(row.get("mime_type") or "image/png"),
+            coordinate_snapshot=coordinate_snapshot,
+            previous_description=previous_description,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"description failed: {exc}"}), 500
+
+    result = {
+        "screenshot_id": screenshot_id,
+        "session_id": row.get("session_id"),
+        "device_id": row.get("device_id"),
+        "created_at": _now(),
+        "model": os.environ.get("PROACTIVE_GEMINI_MODEL", agent_module.DEFAULT_GEMINI_MODEL),
+        "description": description,
+    }
+    _save_proactive_description(result)
+    return jsonify(result), 200
+
+
 @app.delete("/api/screenshots/<screenshot_id>")
 def delete_screenshot(screenshot_id: str) -> Any:
     row = _load_screenshot(screenshot_id)
@@ -1178,92 +1252,121 @@ def v1_agent() -> Any:
     model = (body.get("model") or "").strip() or "gpt-5.2"
     device = body.get("device") or {}
     request_metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    ephemeral = bool(request_metadata.get("ephemeral"))
 
-    # Load or create session
-    session = _load_session(session_id)
-    if not session:
-        session = _make_session(session_id, session_id, model)
-    session.setdefault("metadata", {})
-    conversation_id = request_metadata.get("claude_code_conversation_id")
-    if isinstance(conversation_id, str) and conversation_id.strip():
-        session["metadata"]["claude_code_conversation_id"] = conversation_id.strip()
-    claude_code_cwd = request_metadata.get("claude_code_cwd")
-    if isinstance(claude_code_cwd, str) and claude_code_cwd.strip():
-        session["metadata"]["claude_code_cwd"] = claude_code_cwd.strip()
-    codex_conversation_id = request_metadata.get("codex_conversation_id")
-    if isinstance(codex_conversation_id, str) and codex_conversation_id.strip():
-        session["metadata"]["codex_conversation_id"] = codex_conversation_id.strip()
-    codex_cwd = request_metadata.get("codex_cwd")
-    if isinstance(codex_cwd, str) and codex_cwd.strip():
-        session["metadata"]["codex_cwd"] = codex_cwd.strip()
+    session: dict[str, Any] | None = None
+    context: list[dict[str, str]] = []
 
-    claude_code_mode = model.strip().lower() == "claude_code" or bool(
-        str(session["metadata"].get("claude_code_conversation_id") or "").strip()
-    )
-    if claude_code_mode:
-        session["model"] = "claude_code"
-        try:
-            result = _execute_linked_provider(
-                session,
-                provider="claude_code",
-                prompt=message,
-                device_id=device.get("id"),
-                source_suffix="v1",
+    if not ephemeral:
+        # Load or create session
+        session = _load_session(session_id)
+        if not session:
+            session = _make_session(session_id, session_id, model)
+        session.setdefault("metadata", {})
+
+        # Merge provider-link metadata from request into persisted session metadata.
+        conversation_id = request_metadata.get("claude_code_conversation_id")
+        if isinstance(conversation_id, str) and conversation_id.strip():
+            session["metadata"]["claude_code_conversation_id"] = conversation_id.strip()
+        claude_code_cwd = request_metadata.get("claude_code_cwd")
+        if isinstance(claude_code_cwd, str) and claude_code_cwd.strip():
+            session["metadata"]["claude_code_cwd"] = claude_code_cwd.strip()
+        codex_conversation_id = request_metadata.get("codex_conversation_id")
+        if isinstance(codex_conversation_id, str) and codex_conversation_id.strip():
+            session["metadata"]["codex_conversation_id"] = codex_conversation_id.strip()
+        codex_cwd = request_metadata.get("codex_cwd")
+        if isinstance(codex_cwd, str) and codex_cwd.strip():
+            session["metadata"]["codex_cwd"] = codex_cwd.strip()
+
+        session["model"] = model
+
+        claude_code_mode = model.strip().lower() == "claude_code" or bool(
+            str(session["metadata"].get("claude_code_conversation_id") or "").strip()
+        )
+        if claude_code_mode:
+            session["model"] = "claude_code"
+            try:
+                linked_result = _execute_linked_provider(
+                    session,
+                    provider="claude_code",
+                    prompt=message,
+                    device_id=device.get("id"),
+                    source_suffix="v1",
+                )
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            except RuntimeError as exc:
+                return jsonify({"error": str(exc)}), 502
+
+            _save_session(session)
+            return jsonify(
+                {
+                    "kind": "message.final",
+                    "request_id": body.get("request_id", ""),
+                    "session_id": session_id,
+                    "model": "claude_code",
+                    "text": linked_result["text"],
+                    "events": [],
+                    "timestamp": _now(),
+                }
             )
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
-        except RuntimeError as exc:
-            return jsonify({"error": str(exc)}), 502
 
-        _save_session(session)
-        return jsonify(
+        codex_mode = model.strip().lower() == "codex" or bool(
+            str(session["metadata"].get("codex_conversation_id") or "").strip()
+        )
+        if codex_mode:
+            session["model"] = "codex"
+            try:
+                linked_result = _execute_linked_provider(
+                    session,
+                    provider="codex",
+                    prompt=message,
+                    device_id=device.get("id"),
+                    source_suffix="v1",
+                )
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            except RuntimeError as exc:
+                return jsonify({"error": str(exc)}), 502
+
+            _save_session(session)
+            return jsonify(
+                {
+                    "kind": "message.final",
+                    "request_id": body.get("request_id", ""),
+                    "session_id": session_id,
+                    "model": "codex",
+                    "text": linked_result["text"],
+                    "events": [],
+                    "timestamp": _now(),
+                }
+            )
+
+        # Build context from session messages
+        context = [{"role": m["role"], "content": m["content"]} for m in session.get("messages", [])]
+
+        # If empty and caller sent context, seed from it
+        if not context:
+            recent = (body.get("context") or {}).get("recent_messages") or []
+            for msg in recent[-20:]:
+                role = (msg.get("role") or "").strip()
+                text = (msg.get("text") or "").strip()
+                if role in ("user", "assistant") and text:
+                    context.append({"role": role, "content": text})
+
+        # Append user message
+        user_ts = _now()
+        session.setdefault("messages", []).append(
             {
-                "kind": "message.final",
-                "request_id": body.get("request_id", ""),
-                "session_id": session_id,
-                "model": "claude_code",
-                "text": result["text"],
-                "events": [],
-                "timestamp": _now(),
+                "id": str(uuid.uuid4()),
+                "role": "user",
+                "content": message,
+                "created_at": user_ts,
+                "device_id": device.get("id"),
+                "source": "agent.v1",
             }
         )
-
-    codex_mode = model.strip().lower() == "codex" or bool(
-        str(session["metadata"].get("codex_conversation_id") or "").strip()
-    )
-    if codex_mode:
-        session["model"] = "codex"
-        try:
-            result = _execute_linked_provider(
-                session,
-                provider="codex",
-                prompt=message,
-                device_id=device.get("id"),
-                source_suffix="v1",
-            )
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
-        except RuntimeError as exc:
-            return jsonify({"error": str(exc)}), 502
-
-        _save_session(session)
-        return jsonify(
-            {
-                "kind": "message.final",
-                "request_id": body.get("request_id", ""),
-                "session_id": session_id,
-                "model": "codex",
-                "text": result["text"],
-                "events": [],
-                "timestamp": _now(),
-            }
-        )
-
-    # Build context from session messages
-    context = [{"role": m["role"], "content": m["content"]} for m in session.get("messages", [])]
-
-    # If empty and caller sent context, seed from it
-    if not context:
+    else:
         recent = (body.get("context") or {}).get("recent_messages") or []
         for msg in recent[-20:]:
             role = (msg.get("role") or "").strip()
@@ -1271,28 +1374,37 @@ def v1_agent() -> Any:
             if role in ("user", "assistant") and text:
                 context.append({"role": role, "content": text})
 
-    # Append user message
-    ts = _now()
-    session.setdefault("messages", []).append({
-        "id": str(uuid.uuid4()),
-        "role": "user",
-        "content": message,
-        "created_at": ts,
-        "device_id": device.get("id"),
-    })
+    # Call agent with optional spatial context from caller metadata.
+    enriched_message = message
+    spatial_note = _spatial_context_text(request_metadata)
+    if spatial_note:
+        enriched_message = f"{message}\n\n{spatial_note}"
+    try:
+        result = agent_module.run(context, enriched_message, model=model)
+    except Exception as exc:
+        return jsonify(
+            {
+                "error": "agent_failed",
+                "message": str(exc),
+                "session_id": session_id,
+                "model": model,
+                "timestamp": _now(),
+            }
+        ), 502
 
-    # Call agent
-    result = agent_module.run(context, message, model=model)
-
-    # Append assistant response
+    # Persist assistant response only for non-ephemeral requests.
     ts = _now()
-    session["messages"].append({
-        "id": str(uuid.uuid4()),
-        "role": "assistant",
-        "content": result["text"],
-        "created_at": ts,
-        "device_id": None,
-    })
+    if not ephemeral and session is not None:
+        session["messages"].append(
+            {
+                "id": str(uuid.uuid4()),
+                "role": "assistant",
+                "content": result["text"],
+                "created_at": ts,
+                "device_id": None,
+                "source": "agent.v1",
+            }
+        )
 
     # Store widgets in session
     events: list[dict] = []
@@ -1302,33 +1414,47 @@ def v1_agent() -> Any:
             "html": w.get("html", ""),
             "width": w.get("width", 320),
             "height": w.get("height", 220),
+            "x": w.get("x", 0),
+            "y": w.get("y", 0),
+            "coordinate_space": w.get("coordinate_space", "viewport_offset"),
+            "anchor": w.get("anchor", "top_left"),
             "created_at": ts,
         }
-        session.setdefault("widgets", []).append(widget_record)
+        if not ephemeral and session is not None:
+            session.setdefault("widgets", []).append(widget_record)
 
-        events.append({
-            "kind": "widget.open",
-            "widget": {
-                "kind": "html",
-                "id": widget_record["id"],
-                "payload": {"html": widget_record["html"]},
-                "width": widget_record["width"],
-                "height": widget_record["height"],
-            },
-        })
+        events.append(
+            {
+                "kind": "widget.open",
+                "widget": {
+                    "kind": "html",
+                    "id": widget_record["id"],
+                    "payload": {"html": widget_record["html"]},
+                    "width": widget_record["width"],
+                    "height": widget_record["height"],
+                    "x": widget_record["x"],
+                    "y": widget_record["y"],
+                    "coordinate_space": widget_record["coordinate_space"],
+                    "anchor": widget_record["anchor"],
+                },
+            }
+        )
 
-    session["updated_at"] = ts
-    _save_session(session)
+    if not ephemeral and session is not None:
+        session["updated_at"] = ts
+        _save_session(session)
 
-    return jsonify({
-        "kind": "message.final",
-        "request_id": body.get("request_id", ""),
-        "session_id": session_id,
-        "model": model,
-        "text": result["text"],
-        "events": events,
-        "timestamp": _now(),
-    })
+    return jsonify(
+        {
+            "kind": "message.final",
+            "request_id": body.get("request_id", ""),
+            "session_id": session_id,
+            "model": model,
+            "text": result["text"],
+            "events": events,
+            "timestamp": _now(),
+        }
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -53,7 +53,8 @@ interface ElectronAPI {
       chartConfig?: unknown
     }
   }) => Promise<{ success: boolean; id: string; error?: string }>
-  
+  registerRenderedWidget: (id: string) => Promise<{ success: boolean }>
+
   // Session Management
   getSessions: () => Promise<{ items: any[]; count: number }>
   getCurrentSession: () => Promise<{
@@ -267,6 +268,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
       chartConfig?: unknown
     }
   }) => ipcRenderer.invoke("open-widget", spec),
+  registerRenderedWidget: (id: string) => ipcRenderer.invoke("register-rendered-widget", id),
   
   // ─── Session Management ──────────────────────────────
   getSessions: () => ipcRenderer.invoke("get-sessions"),

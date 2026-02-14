@@ -1,3 +1,4 @@
+import Foundation
 import UIKit
 
 struct CanvasCoordinateSnapshot: Codable {
@@ -7,6 +8,13 @@ struct CanvasCoordinateSnapshot: Codable {
     }
 
     struct Size: Codable {
+        let width: Double
+        let height: Double
+    }
+
+    struct Rect: Codable {
+        let x: Double
+        let y: Double
         let width: Double
         let height: Double
     }
@@ -22,6 +30,9 @@ struct CanvasCoordinateSnapshot: Codable {
     let viewportBottomRightAxis: Point
     let viewportSizeCanvas: Size
     let zoomScale: Double
+    let mostRecentStrokeCenterAxis: Point?
+    let mostRecentStrokeBoundsAxis: Rect?
+    let mostRecentStrokeUpdatedAt: String?
 }
 
 struct CanvasSuggestion: Identifiable {
@@ -45,6 +56,8 @@ final class CanvasObjectManager: ObservableObject {
 
     private weak var canvasView: NoteCanvasView?
     private weak var cursor: AgentCursorController?
+    private var mostRecentStrokeBoundsCanvas: CGRect?
+    private var mostRecentStrokeUpdatedAt: Date?
 
     func attach(to canvas: NoteCanvasView, cursor: AgentCursorController) {
         self.canvasView = canvas
@@ -83,6 +96,24 @@ final class CanvasObjectManager: ObservableObject {
         CGPoint(x: p.x + documentAxisOrigin.x, y: p.y + documentAxisOrigin.y)
     }
 
+    func screenPoint(forCanvasPoint p: CGPoint) -> CGPoint {
+        guard let canvasView else { return p }
+        return canvasView.screenPoint(forCanvasPoint: p)
+    }
+
+    func canvasPoint(forScreenPoint p: CGPoint) -> CGPoint {
+        guard let canvasView else { return p }
+        return canvasView.canvasPoint(forScreenPoint: p)
+    }
+
+    func updateMostRecentStrokeBounds(_ boundsCanvas: CGRect?) {
+        guard let boundsCanvas, boundsCanvas.width > 0, boundsCanvas.height > 0 else {
+            return
+        }
+        mostRecentStrokeBoundsCanvas = boundsCanvas
+        mostRecentStrokeUpdatedAt = Date()
+    }
+
     func makeCoordinateSnapshot(documentID: UUID?) -> CanvasCoordinateSnapshot {
         let viewport = viewportCanvasRect()
         let topLeftAxis = axisPoint(forCanvasPoint: viewport.origin)
@@ -97,6 +128,19 @@ final class CanvasObjectManager: ObservableObject {
         )
         let viewportCenter = viewportCenter
         let viewportCenterAxis = axisPoint(forCanvasPoint: viewportCenter)
+        let strokeCenterAxis: CanvasCoordinateSnapshot.Point? = {
+            guard let b = mostRecentStrokeBoundsCanvas else { return nil }
+            let center = axisPoint(forCanvasPoint: CGPoint(x: b.midX, y: b.midY))
+            return .init(x: center.x, y: center.y)
+        }()
+        let strokeBoundsAxis: CanvasCoordinateSnapshot.Rect? = {
+            guard let b = mostRecentStrokeBoundsCanvas else { return nil }
+            let topLeft = axisPoint(forCanvasPoint: b.origin)
+            return .init(x: topLeft.x, y: topLeft.y, width: b.width, height: b.height)
+        }()
+        let strokeUpdatedAt = mostRecentStrokeUpdatedAt.map {
+            ISO8601DateFormatter().string(from: $0)
+        }
         guard let cv = canvasView else {
             return CanvasCoordinateSnapshot(
                 documentID: documentID?.uuidString,
@@ -109,7 +153,10 @@ final class CanvasObjectManager: ObservableObject {
                 viewportBottomLeftAxis: .init(x: bottomLeftAxis.x, y: bottomLeftAxis.y),
                 viewportBottomRightAxis: .init(x: bottomRightAxis.x, y: bottomRightAxis.y),
                 viewportSizeCanvas: .init(width: viewport.width, height: viewport.height),
-                zoomScale: 1
+                zoomScale: 1,
+                mostRecentStrokeCenterAxis: strokeCenterAxis,
+                mostRecentStrokeBoundsAxis: strokeBoundsAxis,
+                mostRecentStrokeUpdatedAt: strokeUpdatedAt
             )
         }
         return CanvasCoordinateSnapshot(
@@ -123,7 +170,10 @@ final class CanvasObjectManager: ObservableObject {
             viewportBottomLeftAxis: .init(x: bottomLeftAxis.x, y: bottomLeftAxis.y),
             viewportBottomRightAxis: .init(x: bottomRightAxis.x, y: bottomRightAxis.y),
             viewportSizeCanvas: .init(width: viewport.width, height: viewport.height),
-            zoomScale: cv.zoomScale
+            zoomScale: cv.zoomScale,
+            mostRecentStrokeCenterAxis: strokeCenterAxis,
+            mostRecentStrokeBoundsAxis: strokeBoundsAxis,
+            mostRecentStrokeUpdatedAt: strokeUpdatedAt
         )
     }
 
@@ -138,10 +188,19 @@ final class CanvasObjectManager: ObservableObject {
         guard let canvasView else { return object }
 
         if animated, let cursor {
-            let p = canvasView.screenPoint(forCanvasPoint: position)
-            cursor.appear(at: CGPoint(x: p.x - 54, y: p.y - 54))
+            let cursorSize = CGSize(width: 20, height: 30)
+            let widgetCenterCanvas = CGPoint(
+                x: position.x + (size.width * 0.5),
+                y: position.y + (size.height * 0.5)
+            )
+            let widgetCenterScreen = canvasView.screenPoint(forCanvasPoint: widgetCenterCanvas)
+            let cursorOrigin = CGPoint(
+                x: widgetCenterScreen.x - (cursorSize.width * 0.5),
+                y: widgetCenterScreen.y - (cursorSize.height * 0.5)
+            )
+            cursor.appear(at: cursorOrigin)
             try? await Task.sleep(nanoseconds: 160_000_000)
-            cursor.moveTo(p, duration: 0.34)
+            cursor.moveTo(cursorOrigin, duration: 0.34)
             try? await Task.sleep(nanoseconds: 300_000_000)
             cursor.click()
         }
@@ -205,11 +264,22 @@ final class CanvasObjectManager: ObservableObject {
         return suggestion
     }
 
-    func approveSuggestion(id: UUID) async -> CanvasObject? {
+    func approveSuggestion(
+        id: UUID,
+        preferredScreenCenter: CGPoint? = nil
+    ) async -> CanvasObject? {
         guard let suggestion = suggestions.removeValue(forKey: id) else { return nil }
+        let position: CGPoint = {
+            guard let preferredScreenCenter else { return suggestion.position }
+            let centerCanvas = canvasPoint(forScreenPoint: preferredScreenCenter)
+            return CGPoint(
+                x: centerCanvas.x - (suggestion.size.width * 0.5),
+                y: centerCanvas.y - (suggestion.size.height * 0.5)
+            )
+        }()
         return await place(
             html: suggestion.html,
-            at: suggestion.position,
+            at: position,
             size: suggestion.size,
             animated: suggestion.animateOnPlace
         )

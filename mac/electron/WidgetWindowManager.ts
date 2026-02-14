@@ -21,6 +21,11 @@ export interface WidgetSpec {
 export class WidgetWindowManager {
   private windows = new Map<string, BrowserWindow>()
   private nextOffset = 0
+  private onClosedCallback: ((id: string) => void) | null = null
+
+  public onWidgetClosed(callback: (id: string) => void): void {
+    this.onClosedCallback = callback
+  }
 
   public openWidget(spec: WidgetSpec): { success: boolean; id: string; error?: string } {
     try {
@@ -71,6 +76,7 @@ export class WidgetWindowManager {
 
       win.on("closed", () => {
         this.windows.delete(id)
+        this.onClosedCallback?.(id)
       })
 
       this.windows.set(id, win)
@@ -108,6 +114,11 @@ export class WidgetWindowManager {
         font-size: 13px;
         line-height: 1.55;
         -webkit-font-smoothing: antialiased;
+        height: 100%;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
       }
       /* Draggable title bar area */
       .titlebar {
@@ -126,11 +137,12 @@ export class WidgetWindowManager {
         overflow: hidden;
         text-overflow: ellipsis;
       }
-      .wrap { padding: 0 14px 14px; }
-      .content { -webkit-app-region: no-drag; }
+      .wrap { padding: 0 14px 14px; flex: 1; display: flex; flex-direction: column; min-height: 0; }
+      .content { -webkit-app-region: no-drag; flex: 1; display: flex; flex-direction: column; min-height: 0; }
       .widget-iframe {
         width: 100%;
-        min-height: 280px;
+        flex: 1;
+        min-height: 0;
         border: 1px solid var(--border);
         border-radius: 10px;
         background: #0a0a0e;
@@ -164,9 +176,7 @@ export class WidgetWindowManager {
     </style>
   </head>
   <body>
-    <div class="titlebar">
-      <span class="titlebar-text">${escapeHtml(spec.title || "Iris")}</span>
-    </div>
+    <div class="titlebar"></div>
     <div class="wrap">
       <div id="content" class="content"></div>
     </div>

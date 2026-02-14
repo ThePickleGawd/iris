@@ -17,10 +17,19 @@ import type { AgentTransportSettings } from "../lib/agentProtocol"
 import { requestAgentResponse } from "../lib/agentTransport"
 import { extractWidgetBlocks, normalizeWidgetSpec } from "../lib/widgetProtocol"
 
+interface ToolCallInfo {
+  name: string
+  target?: string
+  widget_id?: string
+  width?: number
+  height?: number
+}
+
 interface ChatMessage {
   role: "user" | "assistant"
   text: string
   _id?: string
+  toolCalls?: ToolCallInfo[]
 }
 
 interface SessionInfo {
@@ -54,6 +63,7 @@ const modelChoices = [
   { id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5", subtitle: "Best for screenshot and widget workflows" },
   { id: "claude_code", name: "Claude Code", subtitle: "Link this Iris session to a Claude Code conversation" },
   { id: "codex", name: "Codex", subtitle: "Link this Iris session to a Codex conversation" },
+  { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", subtitle: "Fast multimodal model for lightweight tasks" },
 ] as const
 
 const CLAUDE_CODE_MODEL_ID = "claude_code"
@@ -120,6 +130,9 @@ const Queue: React.FC = () => {
     if (!spec) return false
     try {
       const result = await window.electronAPI.openWidget(spec)
+      if (result.success && result.id) {
+        window.electronAPI.registerRenderedWidget(result.id).catch(() => {})
+      }
       if (!result.success && result.error) {
         console.warn("Failed to open widget:", result.error)
       }
@@ -181,7 +194,8 @@ const Queue: React.FC = () => {
       const messages = (data?.items || []).map((m: any) => ({
         role: m.role as "user" | "assistant",
         text: m.content,
-        _id: m.id
+        _id: m.id,
+        ...(m.tool_calls?.length ? { toolCalls: m.tool_calls } : {})
       }))
       setChatMessages(messages)
     } catch {
@@ -546,7 +560,19 @@ const Queue: React.FC = () => {
               }
             },
             onStatus: () => {},
-            onToolCall: () => {},
+            onToolCall: (name, input) => {
+              if (activeStreamRequestRef.current !== requestId) return
+              const tc = input as ToolCallInfo | undefined
+              setChatMessages((msgs) => {
+                if (msgs.length === 0) return msgs
+                const updated = [...msgs]
+                const idx = updated.length - 1
+                const prev = updated[idx]
+                const existing = prev.toolCalls || []
+                updated[idx] = { ...prev, toolCalls: [...existing, { name, ...tc }] }
+                return updated
+              })
+            },
             onToolResult: () => {},
             onWidgetOpen: (widget) => {
               if (activeStreamRequestRef.current !== requestId) return
@@ -623,7 +649,8 @@ const Queue: React.FC = () => {
       const incoming = (data.messages || []).map((m: any) => ({
         role: m.role as "user" | "assistant",
         text: m.content,
-        _id: m.id
+        _id: m.id,
+        ...(m.tool_calls?.length ? { toolCalls: m.tool_calls } : {})
       }))
 
       if (incoming.length === 0) return
@@ -825,6 +852,8 @@ const Queue: React.FC = () => {
                         ? "Codex"
                       : s.model?.includes("claude")
                         ? "Claude"
+                      : s.model?.includes("gemini")
+                        ? "Gemini"
                         : s.model === "gpt-5.2"
                           ? "GPT-5.2"
                           : s.model || "GPT-5.2"
@@ -868,6 +897,16 @@ const Queue: React.FC = () => {
                 chatMessages.map((msg, idx) => (
                   <div key={idx} className={`iris-msg ${msg.role}`}>
                     <div className="iris-msg-bubble">
+                      {msg.role === "assistant" && msg.toolCalls?.length ? (
+                        <div className="iris-tool-calls">
+                          {msg.toolCalls.map((tc, i) => (
+                            <span key={i} className="iris-tool-chip">
+                              <span className="iris-tool-chip-name">{tc.name}</span>
+                              {tc.target && <span className="iris-tool-chip-target">{tc.target}</span>}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
                       {msg.role === "assistant" ? (
                         msg.text ? (
                           <ReactMarkdown
@@ -877,7 +916,7 @@ const Queue: React.FC = () => {
                           >
                             {msg.text}
                           </ReactMarkdown>
-                        ) : (
+                        ) : msg.toolCalls?.length ? null : (
                           <div className="iris-thinking">
                             <span />
                             <span />

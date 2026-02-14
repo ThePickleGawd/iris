@@ -96,6 +96,14 @@ final class CanvasObjectWebView: UIView, WKNavigationDelegate {
     }
 
     private func loadHTML(_ content: String) {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let isFullDocument = trimmed.hasPrefix("<!doctype") || trimmed.hasPrefix("<html") || trimmed.contains("<body")
+
+        if isFullDocument {
+            webView.loadHTMLString(content, baseURL: nil)
+            return
+        }
+
         let css = """
         * { box-sizing: border-box; }
         html, body { margin:0; padding:0; }

@@ -7,12 +7,22 @@ struct AgentWidget {
     let html: String
     let width: CGFloat
     let height: CGFloat
+    let x: CGFloat
+    let y: CGFloat
+    let coordinateSpace: String
+    let anchor: String
 }
 
 /// Full result from the agent — text reply plus any widgets.
 struct AgentResponse {
     let text: String
     let widgets: [AgentWidget]
+}
+
+struct ProactiveDescriptionResult {
+    let model: String
+    let description: [String: Any]
+    let descriptionJSON: String
 }
 
 /// Sends user messages to the agents server running on the linked Mac.
@@ -30,6 +40,8 @@ enum AgentClient {
         _ message: String,
         model: String,
         chatID: String,
+        ephemeral: Bool = false,
+        coordinateSnapshot: [String: Any]? = nil,
         serverURL: URL
     ) async throws -> AgentResponse {
         let url = serverURL
@@ -65,7 +77,9 @@ enum AgentClient {
             "model": model,
             "metadata": [
                 "model": model,
-                "agent": model
+                "agent": model,
+                "ephemeral": ephemeral,
+                "coordinate_snapshot": coordinateSnapshot ?? [:]
             ]
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
@@ -114,7 +128,12 @@ enum AgentClient {
         sessionID: String,
         serverURL: URL
     ) async -> [AgentWidget] {
-        let url = serverURL.appendingPathComponent("sessions").appendingPathComponent(sessionID)
+        var components = URLComponents(
+            url: serverURL.appendingPathComponent("sessions").appendingPathComponent(sessionID),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [URLQueryItem(name: "target", value: "ipad")]
+        let url = components.url!
         var request = URLRequest(url: url)
         request.timeoutInterval = 5
 
@@ -145,9 +164,12 @@ enum AgentClient {
         if let events = json["events"] as? [[String: Any]] {
             for event in events {
                 guard let kind = event["kind"] as? String, kind == "widget.open" else { continue }
-                if let widgetDict = event["widget"] as? [String: Any],
-                   let widget = parseWidgetFromEvent(widgetDict) {
-                    widgets.append(widget)
+                if let widgetDict = event["widget"] as? [String: Any] {
+                    let target = (widgetDict["target"] as? String ?? "mac").lowercased()
+                    guard target == "ipad" else { continue }
+                    if let widget = parseWidgetFromEvent(widgetDict) {
+                        widgets.append(widget)
+                    }
                 }
             }
         }
@@ -163,8 +185,21 @@ enum AgentClient {
         let id = (dict["id"] as? String) ?? (dict["widget_id"] as? String) ?? UUID().uuidString
         let width = CGFloat((dict["width"] as? NSNumber)?.doubleValue ?? 320)
         let height = CGFloat((dict["height"] as? NSNumber)?.doubleValue ?? 220)
+        let x = CGFloat((dict["x"] as? NSNumber)?.doubleValue ?? 0)
+        let y = CGFloat((dict["y"] as? NSNumber)?.doubleValue ?? 0)
+        let coordinateSpace = (dict["coordinate_space"] as? String) ?? "viewport_offset"
+        let anchor = (dict["anchor"] as? String) ?? "top_left"
 
-        return AgentWidget(id: id, html: html, width: width, height: height)
+        return AgentWidget(
+            id: id,
+            html: html,
+            width: width,
+            height: height,
+            x: x,
+            y: y,
+            coordinateSpace: coordinateSpace,
+            anchor: anchor
+        )
     }
 
     private static func parseWidgetDict(_ dict: [String: Any]) -> AgentWidget? {
@@ -172,7 +207,20 @@ enum AgentClient {
         let id = (dict["id"] as? String) ?? UUID().uuidString
         let width = CGFloat((dict["width"] as? NSNumber)?.doubleValue ?? 320)
         let height = CGFloat((dict["height"] as? NSNumber)?.doubleValue ?? 220)
-        return AgentWidget(id: id, html: html, width: width, height: height)
+        let x = CGFloat((dict["x"] as? NSNumber)?.doubleValue ?? 0)
+        let y = CGFloat((dict["y"] as? NSNumber)?.doubleValue ?? 0)
+        let coordinateSpace = (dict["coordinate_space"] as? String) ?? "viewport_offset"
+        let anchor = (dict["anchor"] as? String) ?? "top_left"
+        return AgentWidget(
+            id: id,
+            html: html,
+            width: width,
+            height: height,
+            x: x,
+            y: y,
+            coordinateSpace: coordinateSpace,
+            anchor: anchor
+        )
     }
 
     private static func getOrCreateDeviceID() -> String {
@@ -214,7 +262,8 @@ enum BackendClient {
         deviceID: String,
         backendURL: URL,
         sessionID: String? = nil,
-        notes: String? = nil
+        notes: String? = nil,
+        coordinateSnapshot: [String: Any]? = nil
     ) async throws -> String {
         let endpoint = backendURL.appendingPathComponent("api/screenshots")
         var request = URLRequest(url: endpoint)
@@ -228,7 +277,8 @@ enum BackendClient {
             boundary: boundary,
             deviceID: deviceID,
             sessionID: sessionID,
-            notes: notes
+            notes: notes,
+            coordinateSnapshot: coordinateSnapshot
         )
         request.httpBody = body
         request.setValue(String(body.count), forHTTPHeaderField: "Content-Length")
@@ -257,7 +307,8 @@ enum BackendClient {
         boundary: String,
         deviceID: String,
         sessionID: String?,
-        notes: String?
+        notes: String?,
+        coordinateSnapshot: [String: Any]?
     ) -> Data {
         var body = Data()
 
@@ -283,6 +334,14 @@ enum BackendClient {
             append("--\(boundary)\r\n")
             append("Content-Disposition: form-data; name=\"notes\"\r\n\r\n")
             append("\(notes)\r\n")
+        }
+        if let coordinateSnapshot,
+           let snapshotData = try? JSONSerialization.data(withJSONObject: coordinateSnapshot),
+           let snapshotJSON = String(data: snapshotData, encoding: .utf8),
+           !snapshotJSON.isEmpty {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"coordinate_snapshot\"\r\n\r\n")
+            append("\(snapshotJSON)\r\n")
         }
 
         append("--\(boundary)\r\n")
@@ -315,6 +374,75 @@ enum BackendClient {
             "captured_at": ISO8601DateFormatter().string(from: Date())
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw BackendClientError.invalidResponse
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw BackendClientError.serverError(statusCode: http.statusCode, body: body)
+        }
+    }
+
+    static func describeProactiveScreenshot(
+        screenshotID: String,
+        coordinateSnapshot: [String: Any],
+        backendURL: URL,
+        previousDescription: [String: Any]? = nil
+    ) async throws -> ProactiveDescriptionResult {
+        let endpoint = backendURL
+            .appendingPathComponent("api")
+            .appendingPathComponent("proactive")
+            .appendingPathComponent("describe")
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        var payload: [String: Any] = [
+            "screenshot_id": screenshotID,
+            "coordinate_snapshot": coordinateSnapshot
+        ]
+        if let previousDescription {
+            payload["previous_description"] = previousDescription
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw BackendClientError.invalidResponse
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw BackendClientError.serverError(statusCode: http.statusCode, body: body)
+        }
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw BackendClientError.invalidResponse
+        }
+        guard let description = json["description"] as? [String: Any] else {
+            throw BackendClientError.invalidResponse
+        }
+        let model = (json["model"] as? String) ?? "gemini-2.0-flash"
+        let descriptionData = try JSONSerialization.data(withJSONObject: description, options: [.sortedKeys])
+        let descriptionJSON = String(data: descriptionData, encoding: .utf8) ?? "{}"
+        return ProactiveDescriptionResult(
+            model: model,
+            description: description,
+            descriptionJSON: descriptionJSON
+        )
+    }
+
+    static func deleteScreenshot(
+        screenshotID: String,
+        backendURL: URL
+    ) async throws {
+        let endpoint = backendURL
+            .appendingPathComponent("api")
+            .appendingPathComponent("screenshots")
+            .appendingPathComponent(screenshotID)
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "DELETE"
 
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
