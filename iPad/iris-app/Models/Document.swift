@@ -7,6 +7,11 @@ struct Document: Identifiable, Codable, Hashable {
     var model: String
     var lastOpened: Date
     var preview: String
+    var backendSessionID: String?
+    var codexConversationID: String?
+    var codexCWD: String?
+    var claudeCodeConversationID: String?
+    var claudeCodeCWD: String?
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -15,14 +20,35 @@ struct Document: Identifiable, Codable, Hashable {
         case agent
         case lastOpened
         case preview
+        case backendSessionID
+        case codexConversationID
+        case codexCWD
+        case claudeCodeConversationID
+        case claudeCodeCWD
     }
 
-    init(id: UUID = UUID(), name: String, model: String = "gpt-5.2", lastOpened: Date = Date(), preview: String = "") {
+    init(
+        id: UUID = UUID(),
+        name: String,
+        model: String = "gpt-5.2",
+        lastOpened: Date = Date(),
+        preview: String = "",
+        backendSessionID: String? = nil,
+        codexConversationID: String? = nil,
+        codexCWD: String? = nil,
+        claudeCodeConversationID: String? = nil,
+        claudeCodeCWD: String? = nil
+    ) {
         self.id = id
         self.name = name
         self.model = model
         self.lastOpened = lastOpened
         self.preview = preview
+        self.backendSessionID = backendSessionID
+        self.codexConversationID = codexConversationID
+        self.codexCWD = codexCWD
+        self.claudeCodeConversationID = claudeCodeConversationID
+        self.claudeCodeCWD = claudeCodeCWD
     }
 
     init(from decoder: Decoder) throws {
@@ -34,6 +60,11 @@ struct Document: Identifiable, Codable, Hashable {
             ?? "gpt-5.2"
         lastOpened = try container.decode(Date.self, forKey: .lastOpened)
         preview = try container.decodeIfPresent(String.self, forKey: .preview) ?? ""
+        backendSessionID = try container.decodeIfPresent(String.self, forKey: .backendSessionID)
+        codexConversationID = try container.decodeIfPresent(String.self, forKey: .codexConversationID)
+        codexCWD = try container.decodeIfPresent(String.self, forKey: .codexCWD)
+        claudeCodeConversationID = try container.decodeIfPresent(String.self, forKey: .claudeCodeConversationID)
+        claudeCodeCWD = try container.decodeIfPresent(String.self, forKey: .claudeCodeCWD)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -45,6 +76,11 @@ struct Document: Identifiable, Codable, Hashable {
         try container.encode(model, forKey: .agent)
         try container.encode(lastOpened, forKey: .lastOpened)
         try container.encode(preview, forKey: .preview)
+        try container.encodeIfPresent(backendSessionID, forKey: .backendSessionID)
+        try container.encodeIfPresent(codexConversationID, forKey: .codexConversationID)
+        try container.encodeIfPresent(codexCWD, forKey: .codexCWD)
+        try container.encodeIfPresent(claudeCodeConversationID, forKey: .claudeCodeConversationID)
+        try container.encodeIfPresent(claudeCodeCWD, forKey: .claudeCodeCWD)
     }
 
     /// Human-readable model display name
@@ -74,6 +110,14 @@ struct Document: Identifiable, Codable, Hashable {
             return "gpt-5.2"
         }
         return model
+    }
+
+    var resolvedSessionID: String {
+        let candidate = (backendSessionID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if candidate.isEmpty {
+            return id.uuidString
+        }
+        return candidate
     }
 
     // MARK: - Drawing Persistence
@@ -160,7 +204,28 @@ class DocumentStore: ObservableObject {
                 let name = rawName.isEmpty ? "Untitled" : rawName
                 let model = (item["model"] as? String) ?? (item["agent"] as? String) ?? "gpt-5.2"
                 let preview = (item["last_message_preview"] as? String) ?? ""
-                return Document(id: docID, name: name, model: model, lastOpened: Date.distantPast, preview: preview)
+                let metadata = item["metadata"] as? [String: Any] ?? [:]
+                let codexConversationID = (metadata["codex_conversation_id"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let codexCWD = (metadata["codex_cwd"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let claudeCodeConversationID = (metadata["claude_code_conversation_id"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let claudeCodeCWD = (metadata["claude_code_cwd"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                return Document(
+                    id: docID,
+                    name: name,
+                    model: model,
+                    lastOpened: Date.distantPast,
+                    preview: preview,
+                    backendSessionID: idStr,
+                    codexConversationID: codexConversationID?.isEmpty == false ? codexConversationID : nil,
+                    codexCWD: codexCWD?.isEmpty == false ? codexCWD : nil,
+                    claudeCodeConversationID: claudeCodeConversationID?.isEmpty == false ? claudeCodeConversationID : nil,
+                    claudeCodeCWD: claudeCodeCWD?.isEmpty == false ? claudeCodeCWD : nil
+                )
             }
 
             await MainActor.run {
@@ -175,7 +240,12 @@ class DocumentStore: ObservableObject {
                         name: remote.name,
                         model: remote.model,
                         lastOpened: existing.lastOpened,
-                        preview: remote.preview
+                        preview: remote.preview,
+                        backendSessionID: remote.backendSessionID ?? existing.backendSessionID,
+                        codexConversationID: remote.codexConversationID ?? existing.codexConversationID,
+                        codexCWD: remote.codexCWD ?? existing.codexCWD,
+                        claudeCodeConversationID: remote.claudeCodeConversationID ?? existing.claudeCodeConversationID,
+                        claudeCodeCWD: remote.claudeCodeCWD ?? existing.claudeCodeCWD
                     )
                 }
 

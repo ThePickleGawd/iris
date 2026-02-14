@@ -157,10 +157,13 @@ private let choices: [ModelChoice] = [
 /// A remote session discovered from the backend for Claude Code / Codex linking.
 private struct RemoteSession: Identifiable {
     let id: String
+    let sessionID: String
     let name: String
     let model: String
     let updatedAt: String
     let preview: String
+    let conversationID: String?
+    let cwd: String?
 }
 
 private struct AgentPickerOverlay: View {
@@ -172,6 +175,8 @@ private struct AgentPickerOverlay: View {
     @State private var sessionPickerModelID: String = ""
     @State private var remoteSessions: [RemoteSession] = []
     @State private var loadingSessions = false
+    @State private var creatingLinkedSession = false
+    @State private var sessionPickerError: String?
 
     var body: some View {
         ZStack {
@@ -263,13 +268,6 @@ private struct AgentPickerOverlay: View {
                 }
             }
 
-            Button("Cancel") {
-                isPresented = false
-            }
-            .font(.system(size: 16, weight: .semibold))
-            .foregroundColor(.white.opacity(0.9))
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.top, 2)
         }
         .padding(22)
         .frame(maxWidth: 430)
@@ -356,65 +354,88 @@ private struct AgentPickerOverlay: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 20)
             } else {
-                ScrollView {
-                    VStack(spacing: 8) {
-                        ForEach(remoteSessions) { session in
-                            Button {
-                                selectRemoteSession(session)
-                            } label: {
-                                HStack(spacing: 12) {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(session.name)
-                                            .font(.system(size: 15, weight: .semibold))
-                                            .foregroundColor(.white)
-                                            .lineLimit(1)
-                                        if !session.preview.isEmpty {
-                                            Text(session.preview)
-                                                .font(.system(size: 12))
-                                                .foregroundColor(.white.opacity(0.5))
-                                                .lineLimit(2)
-                                        }
+                List {
+                    ForEach(remoteSessions) { session in
+                        Button {
+                            selectRemoteSession(session)
+                        } label: {
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(session.name)
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundColor(.white)
+                                        .lineLimit(1)
+                                    if !session.preview.isEmpty {
+                                        Text(session.preview)
+                                            .font(.system(size: 12))
+                                            .foregroundColor(.white.opacity(0.5))
+                                            .lineLimit(2)
                                     }
-
-                                    Spacer(minLength: 0)
-
-                                    Image(systemName: "chevron.right")
-                                        .font(.system(size: 12, weight: .semibold))
-                                        .foregroundColor(.white.opacity(0.32))
                                 }
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 12)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                        .fill(Color.white.opacity(0.08))
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
-                                )
+
+                                Spacer(minLength: 0)
+
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.white.opacity(0.32))
                             }
-                            .buttonStyle(.plain)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(Color.white.opacity(0.08))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                            )
                         }
+                        .buttonStyle(.plain)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
                     }
                 }
-                .frame(maxHeight: 300)
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 220, maxHeight: 340)
+            }
+
+            if creatingLinkedSession {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .tint(.white)
+                    Text("Starting new \(sessionPickerModelID == "claude_code" ? "Claude Code" : "Codex") session...")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white.opacity(0.72))
+                }
+            }
+
+            if let sessionPickerError, !sessionPickerError.isEmpty {
+                Text(sessionPickerError)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(Color(red: 1.0, green: 0.62, blue: 0.62))
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack(spacing: 16) {
                 Button("Back") {
                     showSessionPicker = false
                     remoteSessions = []
+                    sessionPickerError = nil
                 }
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundColor(.white.opacity(0.9))
+                .disabled(creatingLinkedSession)
 
                 Spacer()
 
-                Button("Cancel") {
-                    isPresented = false
+                Button(creatingLinkedSession ? "Starting..." : "New Session") {
+                    startNewLinkedSession()
                 }
                 .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(.white.opacity(0.6))
+                .foregroundColor(.white.opacity(creatingLinkedSession ? 0.4 : 0.9))
+                .disabled(creatingLinkedSession || loadingSessions)
             }
             .padding(.top, 2)
         }
@@ -439,6 +460,8 @@ private struct AgentPickerOverlay: View {
         }
 
         loadingSessions = true
+        sessionPickerError = nil
+        creatingLinkedSession = false
         showSessionPicker = true
 
         Task {
@@ -450,7 +473,134 @@ private struct AgentPickerOverlay: View {
         }
     }
 
+    private func startNewLinkedSession() {
+        guard sessionPickerModelID == "codex" || sessionPickerModelID == "claude_code" else { return }
+        guard let urlStr = UserDefaults.standard.string(forKey: "iris_agent_server_url"),
+              let serverURL = URL(string: urlStr) else {
+            sessionPickerError = "No linked server URL found."
+            return
+        }
+
+        creatingLinkedSession = true
+        sessionPickerError = nil
+
+        Task {
+            let created = await Self.startLinkedSession(modelID: sessionPickerModelID, serverURL: serverURL)
+            await MainActor.run {
+                creatingLinkedSession = false
+                guard let created else {
+                    sessionPickerError = "Could not start a new session. Check backend/CLI auth and try again."
+                    return
+                }
+                selectRemoteSession(created)
+            }
+        }
+    }
+
+    private static func startLinkedSession(modelID: String, serverURL: URL) async -> RemoteSession? {
+        let endpoint = serverURL.appendingPathComponent("linked-sessions").appendingPathComponent("start")
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 25
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let payload: [String: Any] = [
+            "provider": modelID,
+            "name": ""
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200...299).contains(http.statusCode),
+              let item = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+
+        let sessionID = ((item["id"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sessionID.isEmpty else { return nil }
+        let metadata = item["metadata"] as? [String: Any] ?? [:]
+        let conversationIDKey = modelID == "claude_code" ? "claude_code_conversation_id" : "codex_conversation_id"
+        let cwdKey = modelID == "claude_code" ? "claude_code_cwd" : "codex_cwd"
+        let conversationID = ((item["conversation_id"] as? String) ?? (metadata[conversationIDKey] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let cwd = ((item["cwd"] as? String) ?? (metadata[cwdKey] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let titleRaw = ((item["name"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = titleRaw.isEmpty ? (modelID == "claude_code" ? "Claude Code Session" : "Codex Session") : titleRaw
+        let updatedAt = ((item["updated_at"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let preview = ((item["last_message_preview"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return RemoteSession(
+            id: "\(sessionID)::\(conversationID)",
+            sessionID: sessionID,
+            name: title,
+            model: modelID,
+            updatedAt: updatedAt,
+            preview: preview,
+            conversationID: conversationID.isEmpty ? nil : conversationID,
+            cwd: cwd.isEmpty ? nil : cwd
+        )
+    }
+
     private static func fetchLinkedSessions(modelID: String, serverURL: URL) async -> [RemoteSession] {
+        if modelID == "codex" {
+            let discovered = await fetchCodexSessions(serverURL: serverURL)
+            if !discovered.isEmpty {
+                return discovered
+            }
+        }
+
+        return await fetchSessionBackedLinkedSessions(modelID: modelID, serverURL: serverURL)
+    }
+
+    private static func fetchCodexSessions(serverURL: URL) async -> [RemoteSession] {
+        let endpoint = serverURL.appendingPathComponent("codex").appendingPathComponent("sessions")
+        var request = URLRequest(url: endpoint)
+        request.timeoutInterval = 5
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200...299).contains(http.statusCode),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let items = json["items"] as? [[String: Any]] else {
+            return []
+        }
+
+        return items.compactMap { item in
+            let conversationID = (item["conversation_id"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolvedConversationID = (conversationID?.isEmpty == false) ? conversationID! : (
+                ((item["id"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+            guard !resolvedConversationID.isEmpty else { return nil }
+
+            let candidateSessionID = ((item["session_id"] as? String) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let sessionID = candidateSessionID.isEmpty ? resolvedConversationID : candidateSessionID
+            let titleRaw = ((item["title"] as? String) ?? (item["name"] as? String) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = titleRaw.isEmpty ? "Codex Session" : titleRaw
+            let updatedAt = ((item["updated_at"] as? String) ?? (item["timestamp"] as? String) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let preview = ((item["last_message_preview"] as? String) ?? (item["preview"] as? String) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let cwd = (item["cwd"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            return RemoteSession(
+                id: "\(sessionID)::\(resolvedConversationID)",
+                sessionID: sessionID,
+                name: title,
+                model: "codex",
+                updatedAt: updatedAt,
+                preview: preview,
+                conversationID: resolvedConversationID,
+                cwd: cwd?.isEmpty == false ? cwd : nil
+            )
+        }
+    }
+
+    private static func fetchSessionBackedLinkedSessions(modelID: String, serverURL: URL) async -> [RemoteSession] {
         let url = serverURL.appendingPathComponent("sessions")
         var request = URLRequest(url: url)
         request.timeoutInterval = 5
@@ -489,8 +639,22 @@ private struct AgentPickerOverlay: View {
             let name = rawName.isEmpty ? "Untitled" : rawName
             let updatedAt = item["updated_at"] as? String ?? ""
             let preview = (item["last_message_preview"] as? String) ?? ""
+            let conversationID = (metadata[metadataKey] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let cwdKey = isClaudeCode ? "claude_code_cwd" : "codex_cwd"
+            let cwd = (metadata[cwdKey] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
 
-            return RemoteSession(id: id, name: name, model: model, updatedAt: updatedAt, preview: preview)
+            return RemoteSession(
+                id: id,
+                sessionID: id,
+                name: name,
+                model: model,
+                updatedAt: updatedAt,
+                preview: preview,
+                conversationID: conversationID?.isEmpty == false ? conversationID : nil,
+                cwd: cwd?.isEmpty == false ? cwd : nil
+            )
         }
 
         let sorted = matches.sorted {
@@ -529,36 +693,90 @@ private struct AgentPickerOverlay: View {
     }
 
     private func selectRemoteSession(_ session: RemoteSession) {
-        // Find or create a local document pointing to this backend session
-        let docID = UUID(uuidString: session.id) ?? UUID()
-        if let existing = documentStore.documents.first(where: { $0.id == docID }) {
-            documentStore.updateLastOpened(existing)
-            isPresented = false
-            onCreated(existing)
+        // Keep local document IDs deterministic even when backend session IDs are not UUIDs.
+        let docID = Self.stableDocumentID(from: session.sessionID)
+        let isCodex = sessionPickerModelID == "codex"
+        let isClaudeCode = sessionPickerModelID == "claude_code"
+
+        let linkedDoc = Document(
+            id: docID,
+            name: session.name,
+            model: sessionPickerModelID,
+            lastOpened: Date(),
+            preview: session.preview,
+            backendSessionID: session.sessionID,
+            codexConversationID: isCodex
+                ? ((session.conversationID?.isEmpty == false) ? session.conversationID : session.sessionID)
+                : nil,
+            codexCWD: isCodex ? session.cwd : nil,
+            claudeCodeConversationID: isClaudeCode
+                ? ((session.conversationID?.isEmpty == false) ? session.conversationID : session.sessionID)
+                : nil,
+            claudeCodeCWD: isClaudeCode ? session.cwd : nil
+        )
+
+        if let index = documentStore.documents.firstIndex(where: { $0.id == docID }) {
+            documentStore.documents[index] = linkedDoc
+            documentStore.updateLastOpened(linkedDoc)
         } else {
-            let doc = Document(
-                id: docID,
-                name: session.name,
-                model: sessionPickerModelID,
-                lastOpened: Date()
-            )
-            documentStore.documents.insert(doc, at: 0)
-            isPresented = false
-            onCreated(doc)
+            documentStore.documents.insert(linkedDoc, at: 0)
+            documentStore.updateLastOpened(linkedDoc)
         }
+        registerSessionOnBackend(linkedDoc)
+        isPresented = false
+        onCreated(linkedDoc)
     }
 
     private func registerSessionOnBackend(_ doc: Document) {
         guard let urlStr = UserDefaults.standard.string(forKey: "iris_agent_server_url"),
               let serverURL = URL(string: urlStr) else { return }
+        let model = doc.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "gpt-5.2" : doc.model
+        var metadata: [String: Any] = [:]
+        if let codexConversationID = doc.codexConversationID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !codexConversationID.isEmpty {
+            metadata["codex_conversation_id"] = codexConversationID
+        }
+        if let codexCWD = doc.codexCWD?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !codexCWD.isEmpty {
+            metadata["codex_cwd"] = codexCWD
+        }
+        if let claudeCodeConversationID = doc.claudeCodeConversationID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !claudeCodeConversationID.isEmpty {
+            metadata["claude_code_conversation_id"] = claudeCodeConversationID
+        }
+        if let claudeCodeCWD = doc.claudeCodeCWD?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !claudeCodeCWD.isEmpty {
+            metadata["claude_code_cwd"] = claudeCodeCWD
+        }
         Task {
             await AgentClient.registerSession(
-                id: doc.id.uuidString,
+                id: doc.resolvedSessionID,
                 name: doc.name.isEmpty ? "Untitled" : doc.name,
-                model: doc.resolvedModel,
+                model: model,
+                metadata: metadata,
                 serverURL: serverURL
             )
         }
+    }
+
+    private static func stableDocumentID(from raw: String) -> UUID {
+        if let existing = UUID(uuidString: raw) {
+            return existing
+        }
+        var bytes = [UInt8](repeating: 0, count: 16)
+        for (index, byte) in Array(raw.utf8).enumerated() {
+            bytes[index % 16] ^= byte
+        }
+        bytes[6] = (bytes[6] & 0x0F) | 0x40
+        bytes[8] = (bytes[8] & 0x3F) | 0x80
+        let hex = bytes.map { String(format: "%02x", $0) }.joined()
+        let p1 = String(hex.prefix(8))
+        let p2 = String(hex.dropFirst(8).prefix(4))
+        let p3 = String(hex.dropFirst(12).prefix(4))
+        let p4 = String(hex.dropFirst(16).prefix(4))
+        let p5 = String(hex.dropFirst(20).prefix(12))
+        let uuidString = "\(p1)-\(p2)-\(p3)-\(p4)-\(p5)"
+        return UUID(uuidString: uuidString) ?? UUID()
     }
 
     private func modelAccent(for index: Int) -> Color {
