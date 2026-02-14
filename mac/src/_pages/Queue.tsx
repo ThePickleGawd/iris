@@ -294,10 +294,45 @@ const Queue: React.FC = () => {
         <ToastDescription>{toastMessage.description}</ToastDescription>
       </Toast>
 
-      <div className={`iris-shell draggable-area ${isExpanded ? "expanded" : "collapsed"}`}>
-        {!isExpanded ? (
+      {!isExpanded ? (
+        /* Collapsed: simple flex bar — no shell wrapper, no overflow:hidden,
+           no border-radius clipping that kills backgrounds on transparent windows */
+        <div className="iris-floating-bar draggable-area">
+          <div className="iris-tabs">
+            {sessions.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                className={`iris-tab ${currentSession?.id === s.id ? "active" : ""}`}
+                onClick={() => handleSelectSession(s)}
+                title={s.name}
+              >
+                {s.name}
+              </button>
+            ))}
+            <button
+              type="button"
+              className="iris-tab iris-tab-new"
+              onClick={handleNewChat}
+              title="New chat"
+            >
+              <Plus size={11} />
+            </button>
+          </div>
+          <button
+            type="button"
+            className="iris-toggle interactive"
+            onClick={() => setIsExpanded(true)}
+            aria-label="Expand"
+          >
+            <ChevronDown size={13} />
+          </button>
+        </div>
+      ) : (
+        /* Expanded: shell with dark background, overflow:hidden is safe here */
+        <div className="iris-shell draggable-area">
           <header className="iris-bar draggable-area">
-            <div className="iris-tabs interactive">
+            <div className="iris-tabs">
               {sessions.map((s) => (
                 <button
                   key={s.id}
@@ -321,107 +356,73 @@ const Queue: React.FC = () => {
             <button
               type="button"
               className="iris-toggle interactive"
-              onClick={() => setIsExpanded(true)}
-              aria-label="Expand"
+              onClick={() => setIsExpanded(false)}
+              aria-label="Collapse"
             >
-              <ChevronDown size={13} />
+              <ChevronUp size={13} />
             </button>
           </header>
-        ) : (
-          <>
-            <header className="iris-bar draggable-area">
-              <div className="iris-tabs interactive">
-                {sessions.map((s) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    className={`iris-tab ${currentSession?.id === s.id ? "active" : ""}`}
-                    onClick={() => handleSelectSession(s)}
-                    title={s.name}
-                  >
-                    {s.name}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  className="iris-tab iris-tab-new"
-                  onClick={handleNewChat}
-                  title="New chat"
-                >
-                  <Plus size={11} />
-                </button>
-              </div>
-              <button
-                type="button"
-                className="iris-toggle interactive"
-                onClick={() => setIsExpanded(false)}
-                aria-label="Collapse"
-              >
-                <ChevronUp size={13} />
-              </button>
-            </header>
 
-            <main className="iris-chat">
-              <div ref={messageListRef} className="iris-messages interactive">
-                {chatMessages.length === 0 ? (
-                  <div className="iris-empty">Start a conversation</div>
-                ) : (
-                  chatMessages.map((msg, idx) => (
-                    <div key={idx} className={`iris-msg ${msg.role}`}>
-                      <div className="iris-msg-bubble">
-                        {msg.role === "assistant" ? (
-                          msg.text ? (
-                            <ReactMarkdown
-                              className="iris-markdown"
-                              remarkPlugins={[remarkGfm, remarkMath]}
-                              rehypePlugins={[rehypeKatex]}
-                            >
-                              {msg.text}
-                            </ReactMarkdown>
-                          ) : (
-                            <div className="iris-thinking">
-                              <span />
-                              <span />
-                              <span />
-                            </div>
-                          )
+          <main className="iris-chat">
+            <div ref={messageListRef} className="iris-messages interactive">
+              {chatMessages.length === 0 ? (
+                <div className="iris-empty">Start a conversation</div>
+              ) : (
+                chatMessages.map((msg, idx) => (
+                  <div key={idx} className={`iris-msg ${msg.role}`}>
+                    <div className="iris-msg-bubble">
+                      {msg.role === "assistant" ? (
+                        msg.text ? (
+                          <ReactMarkdown
+                            className="iris-markdown"
+                            remarkPlugins={[remarkGfm, remarkMath]}
+                            rehypePlugins={[rehypeKatex]}
+                          >
+                            {msg.text}
+                          </ReactMarkdown>
                         ) : (
-                          msg.text
-                        )}
-                      </div>
+                          <div className="iris-thinking">
+                            <span />
+                            <span />
+                            <span />
+                          </div>
+                        )
+                      ) : (
+                        msg.text
+                      )}
                     </div>
-                  ))
-                )}
-              </div>
+                  </div>
+                ))
+              )}
+            </div>
 
-              <form
-                className="iris-compose interactive"
-                onSubmit={(e) => {
-                  e.preventDefault()
-                  handleChatSend()
-                }}
+            <form
+              className="iris-compose interactive"
+              onSubmit={(e) => {
+                e.preventDefault()
+                handleChatSend()
+              }}
+            >
+              <input
+                ref={chatInputRef}
+                className="iris-input"
+                placeholder="Message..."
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                disabled={chatLoading}
+              />
+              <button
+                type="submit"
+                className="iris-send"
+                disabled={chatLoading || !chatInput.trim()}
+                aria-label="Send"
               >
-                <input
-                  ref={chatInputRef}
-                  className="iris-input"
-                  placeholder="Message..."
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  disabled={chatLoading}
-                />
-                <button
-                  type="submit"
-                  className="iris-send"
-                  disabled={chatLoading || !chatInput.trim()}
-                  aria-label="Send"
-                >
-                  <SendHorizontal size={14} />
-                </button>
-              </form>
-            </main>
-          </>
-        )}
-      </div>
+                <SendHorizontal size={14} />
+              </button>
+            </form>
+          </main>
+        </div>
+      )}
     </div>
   )
 }
