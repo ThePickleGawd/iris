@@ -1,0 +1,11 @@
+// Shared defaults for the iPad app.
+// Developers can override locally via App.local.xcconfig.
+IRIS_BUNDLE_ID = com.dylan.iris
+IRIS_BUNDLE_ID_DEVICE = $(IRIS_BUNDLE_ID)
+IRIS_DEVELOPMENT_TEAM =
+
+PRODUCT_BUNDLE_IDENTIFIER = $(IRIS_BUNDLE_ID)
+PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*] = $(IRIS_BUNDLE_ID_DEVICE)
+DEVELOPMENT_TEAM = $(IRIS_DEVELOPMENT_TEAM)
+
+#include? "App.local.xcconfig"

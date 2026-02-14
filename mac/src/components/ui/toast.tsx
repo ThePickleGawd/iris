@@ -34,9 +34,9 @@ interface ToastProps
 }
 
 const toastVariants: Record<ToastVariant, string> = {
-  neutral: "bg-yellow-500 text-white",
-  success: "bg-green-500 text-white",
-  error: "bg-red-500 text-white"
+  neutral: "toast-neutral",
+  success: "toast-success",
+  error: "toast-error"
 }
 
 const Toast = React.forwardRef<
@@ -46,7 +46,7 @@ const Toast = React.forwardRef<
   <ToastPrimitive.Root
     ref={ref}
     className={cn(
-      "group fixed top-4 left-4 z-50 w-auto max-w-sm px-4 py-2 rounded-lg shadow-lg animate-in fade-in slide-in-from-bottom",
+      "group fixed top-4 left-4 z-50 w-auto max-w-sm px-4 py-2 rounded-xl shadow-lg animate-in fade-in slide-in-from-bottom toast-root",
       toastVariants[variant],
       className
     )}
@@ -61,7 +61,7 @@ const ToastAction = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <ToastPrimitive.Action
     ref={ref}
-    className={cn("text-xs font-medium text-white hover:opacity-90", className)}
+    className={cn("text-xs font-medium text-white/90 hover:text-white", className)}
     {...props}
   />
 ))
@@ -74,7 +74,7 @@ const ToastClose = React.forwardRef<
   <ToastPrimitive.Close
     ref={ref}
     className={cn(
-      "absolute top-2 right-2 text-white opacity-70 hover:opacity-100",
+      "absolute top-2 right-2 text-white/70 hover:text-white",
       className
     )}
     {...props}

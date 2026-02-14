@@ -7,8 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		A1B2C3D4E5F6A7B8C9D0E1F2 /* AgentClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2E1D0C9B8A7F6E5D4C3B2A1 /* AgentClient.swift */; };
-		B3C4D5E6F7A8B9C0D1E2F3A4 /* SpeechTranscriber.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4F3E2D1C0B9A8F7E6D5C4B3 /* SpeechTranscriber.swift */; };
 		17E60C80FDC4A2808714E6EC /* AgentCursorController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 278380535E958F02600CE772 /* AgentCursorController.swift */; };
 		23CBE2E269A29858DE1636BF /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4447B54A78BABCBD8C4C1ADA /* HomeView.swift */; };
 		3AAEF8B9B2F499BD02C92897 /* ToolbarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED9B8D88EA08F0E403FE6A18 /* ToolbarView.swift */; };
@@ -21,7 +19,9 @@
 		8E30310AD5F2757AEDE01DCB /* UIColor+Compare.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9FEAD6A33D7DDB32C018D67 /* UIColor+Compare.swift */; };
 		8E4801B41004DED9CAB70CE8 /* CanvasObject.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEA1A265F40648670A08EB43 /* CanvasObject.swift */; };
 		986114D967F1F157EAA23A40 /* CanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21D7011A03C852C41F3FFB14 /* CanvasView.swift */; };
+		A1B2C3D4E5F6A7B8C9D0E1F2 /* AgentClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2E1D0C9B8A7F6E5D4C3B2A1 /* AgentClient.swift */; };
 		A56656EDEC905594D32DDC48 /* AudioCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92AF51999DEF219ECD85152E /* AudioCaptureService.swift */; };
+		B3C4D5E6F7A8B9C0D1E2F3A4 /* SpeechTranscriber.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4F3E2D1C0B9A8F7E6D5C4B3 /* SpeechTranscriber.swift */; };
 		CAB92F8795B396CCC8843716 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D736B18FC1B35992674D11 /* ContentView.swift */; };
 		D98381BE4ED8E12EEA81194A /* Document.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58D2E5AC26FC9A307BE3DCE1 /* Document.swift */; };
 		D9B87B010A228FE7959CF50F /* CanvasState.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10C96DC8207EE1FB895FC7E /* CanvasState.swift */; };
@@ -29,8 +29,6 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		F2E1D0C9B8A7F6E5D4C3B2A1 /* AgentClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentClient.swift; sourceTree = "<group>"; };
-		A4F3E2D1C0B9A8F7E6D5C4B3 /* SpeechTranscriber.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechTranscriber.swift; sourceTree = "<group>"; };
 		21D7011A03C852C41F3FFB14 /* CanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasView.swift; sourceTree = "<group>"; };
 		278380535E958F02600CE772 /* AgentCursorController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentCursorController.swift; sourceTree = "<group>"; };
 		3D697CF0F308BFC61AB43682 /* CanvasObjectWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasObjectWebView.swift; sourceTree = "<group>"; };
@@ -39,9 +37,12 @@
 		500965FF3D6545FC19025F45 /* iris-design-system.css */ = {isa = PBXFileReference; lastKnownFileType = text.css; path = "iris-design-system.css"; sourceTree = "<group>"; };
 		58D2E5AC26FC9A307BE3DCE1 /* Document.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Document.swift; sourceTree = "<group>"; };
 		5B753874BF2FF744F81B2C4E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		6C88B51901C84B66AB5446F1 /* App.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = App.xcconfig; sourceTree = "<group>"; };
+		6C88B51901C84B66AB5446F2 /* App.local.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = App.local.xcconfig.example; sourceTree = "<group>"; };
 		85533FD0A237F2DC940E1E85 /* AgentHTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHTTPServer.swift; sourceTree = "<group>"; };
 		92AF51999DEF219ECD85152E /* AudioCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureService.swift; sourceTree = "<group>"; };
 		96D736B18FC1B35992674D11 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A4F3E2D1C0B9A8F7E6D5C4B3 /* SpeechTranscriber.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechTranscriber.swift; sourceTree = "<group>"; };
 		BFCC9ADAF74286DBEC5E706A /* AgentCursorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentCursorView.swift; sourceTree = "<group>"; };
 		D9FEAD6A33D7DDB32C018D67 /* UIColor+Compare.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UIColor+Compare.swift"; sourceTree = "<group>"; };
 		E09763122009619753BA1136 /* CanvasObjectManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasObjectManager.swift; sourceTree = "<group>"; };
@@ -50,6 +51,7 @@
 		EE02367B7EA6D6876B16BE67 /* iris-app.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "iris-app.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		EEA1A265F40648670A08EB43 /* CanvasObject.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasObject.swift; sourceTree = "<group>"; };
 		F00F15CCDC205EAE406CC038 /* SiriGlowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SiriGlowView.swift; sourceTree = "<group>"; };
+		F2E1D0C9B8A7F6E5D4C3B2A1 /* AgentClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentClient.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -69,6 +71,7 @@
 				96D736B18FC1B35992674D11 /* ContentView.swift */,
 				5B753874BF2FF744F81B2C4E /* Info.plist */,
 				483EDD123E3B6F607D24A94F /* IrisApp.swift */,
+				6C88B51901C84B66AB5446F3 /* Configs */,
 				7A271E4BCA81D6016F4BF2E2 /* Extensions */,
 				22092B8E8D4ED1C90A48405F /* Models */,
 				5B0878F98E585B7E29901CE4 /* Resources */,
@@ -97,6 +100,15 @@
 				500965FF3D6545FC19025F45 /* iris-design-system.css */,
 			);
 			path = Resources;
+			sourceTree = "<group>";
+		};
+		6C88B51901C84B66AB5446F3 /* Configs */ = {
+			isa = PBXGroup;
+			children = (
+				6C88B51901C84B66AB5446F1 /* App.xcconfig */,
+				6C88B51901C84B66AB5446F2 /* App.local.xcconfig.example */,
+			);
+			path = Configs;
 			sourceTree = "<group>";
 		};
 		7331A134E29A3DE1B237BD78 /* Products */ = {
@@ -231,17 +243,19 @@
 /* Begin XCBuildConfiguration section */
 		720A15BBBB3EC2408370D5EA /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 6C88B51901C84B66AB5446F1 /* App.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = P8W47WSLD9;
+				DEVELOPMENT_TEAM = 9Q69669L82;
 				INFOPLIST_FILE = "iris-app/Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.dylan.iris;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(IRIS_BUNDLE_ID)";
+				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = com.ishan.iris;
 				SDKROOT = iphoneos;
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				TARGETED_DEVICE_FAMILY = 2;
@@ -369,17 +383,19 @@
 		};
 		E516D6F3EE7A43CAC1BE2815 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 6C88B51901C84B66AB5446F1 /* App.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = P8W47WSLD9;
+				DEVELOPMENT_TEAM = 9Q69669L82;
 				INFOPLIST_FILE = "iris-app/Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.dylan.iris;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(IRIS_BUNDLE_ID)";
+				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = com.ishan.iris;
 				SDKROOT = iphoneos;
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				TARGETED_DEVICE_FAMILY = 2;

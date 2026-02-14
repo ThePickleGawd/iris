@@ -1,47 +1,48 @@
 import SwiftUI
-import PencilKit
 
 struct ContentView: View {
     @EnvironmentObject var canvasState: CanvasState
-    @StateObject private var audioService = AudioCaptureService()
-    @StateObject private var transcriber = SpeechTranscriber()
-    @StateObject private var cursor = AgentCursorController()
-    @StateObject private var objectManager = CanvasObjectManager()
+
     let document: Document
     var onBack: (() -> Void)?
 
+    @StateObject private var objectManager = CanvasObjectManager()
+    @StateObject private var cursor = AgentCursorController()
+    @StateObject private var audioService = AudioCaptureService()
+    @StateObject private var transcriber = SpeechTranscriber()
+
     @State private var isProcessing = false
     @State private var lastResponse: String?
+    @State private var widgetSyncTimer: Timer?
+    @State private var renderedWidgetIDs: Set<String> = []
 
     var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .top) {
-                CanvasView(document: document, objectManager: objectManager, cursor: cursor)
-                    .environmentObject(canvasState)
-
-                SiriGlowView(isActive: canvasState.isRecording, audioLevel: audioService.audioLevel)
-
-                ToolbarView(
-                    onBack: onBack,
-                    onAITap: { canvasState.isRecording.toggle() },
-                    isRecording: canvasState.isRecording
-                )
+        ZStack(alignment: .top) {
+            CanvasView(document: document, objectManager: objectManager, cursor: cursor)
                 .environmentObject(canvasState)
-                .allowsHitTesting(true)
 
-                AgentCursorView(controller: cursor)
+            SiriGlowView(isActive: canvasState.isRecording, audioLevel: audioService.audioLevel)
 
-                // Response toast
-                if let response = lastResponse {
-                    responseToast(response)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
+            ToolbarView(
+                onBack: onBack,
+                onAITap: { canvasState.isRecording.toggle() },
+                isRecording: canvasState.isRecording,
+                onZoomIn: { objectManager.zoom(by: 0.06) },
+                onZoomOut: { objectManager.zoom(by: -0.06) },
+                onZoomReset: { objectManager.setZoomScale(1.0) }
+            )
+            .environmentObject(canvasState)
+            .zIndex(20)
 
-                // Processing indicator
-                if isProcessing {
-                    processingIndicator
-                        .transition(.opacity)
-                }
+            AgentCursorView(controller: cursor)
+                .zIndex(50)
+
+            if isProcessing {
+                processingIndicator
+            }
+
+            if let response = lastResponse {
+                responseToast(response)
             }
         }
         .ignoresSafeArea(.all, edges: .bottom)
@@ -55,13 +56,13 @@ struct ContentView: View {
         .onDisappear {
             canvasState.isRecording = false
             audioService.stopCapture()
+            widgetSyncTimer?.invalidate()
         }
         .onAppear {
             SpeechTranscriber.requestAuthorization { _ in }
+            startWidgetSync()
         }
     }
-
-    // MARK: - Recording Flow
 
     private func startRecording() {
         lastResponse = nil
@@ -74,12 +75,14 @@ struct ContentView: View {
 
     private func stopRecordingAndSend() {
         audioService.stopCapture()
-        let transcript = transcriber.stopTranscribing()
+        let transcript = transcriber.stopTranscribing().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !transcript.isEmpty else { return }
+        sendPromptToAgent(transcript)
+    }
 
-        guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-
+    private func sendPromptToAgent(_ prompt: String) {
         guard let serverURL = objectManager.httpServer.agentServerURL() else {
-            withAnimation { lastResponse = "No linked Mac found — open the iris Mac app first." }
+            withAnimation { lastResponse = "No linked Mac found. Open the Iris Mac app first." }
             autoDismissResponse()
             return
         }
@@ -88,14 +91,77 @@ struct ContentView: View {
 
         Task {
             do {
-                let response = try await AgentClient.sendMessage(
-                    transcript,
-                    agent: document.agent,
+                var message = prompt
+                var screenshotID: String?
+                var screenshotUploadWarning: String?
+                if let backendURL = objectManager.httpServer.backendServerURL() {
+                    do {
+                        try await BackendClient.ingestTranscript(
+                            text: prompt,
+                            sessionID: document.id.uuidString,
+                            deviceID: "ipad",
+                            backendURL: backendURL
+                        )
+                    } catch {
+                        screenshotUploadWarning = "Transcript upload warning: \(error.localizedDescription)"
+                    }
+
+                    do {
+                        screenshotID = try await uploadCurrentCanvasScreenshot(prompt: prompt, backendURL: backendURL)
+                    } catch {
+                        if let existingWarning = screenshotUploadWarning, !existingWarning.isEmpty {
+                            screenshotUploadWarning = "\(existingWarning)\nScreenshot upload warning: \(error.localizedDescription)"
+                        } else {
+                            screenshotUploadWarning = "Screenshot upload warning: \(error.localizedDescription)"
+                        }
+                    }
+                }
+
+                if document.usesScreenshotWorkflow, let screenshotID {
+                    if !screenshotID.isEmpty {
+                        message = """
+                        User voice command:
+                        \(prompt)
+
+                        I uploaded an iPad canvas screenshot with device_id "ipad" and screenshot id \(screenshotID).
+                        First call read_screenshot for device "ipad" to inspect the drawing.
+                        Then create and push iPad widgets matching the drawing.
+                        """
+                    }
+                }
+
+                await AgentClient.registerSession(
+                    id: document.id.uuidString,
+                    name: document.name,
+                    model: document.resolvedModel,
+                    serverURL: serverURL
+                )
+
+                let agentResponse = try await AgentClient.sendMessage(
+                    message,
+                    model: document.resolvedModel,
                     chatID: document.id.uuidString,
                     serverURL: serverURL
                 )
+
+                // Place widgets on the canvas and track them
+                for widget in agentResponse.widgets {
+                    let pos = objectManager.viewportCenter
+                    await objectManager.place(
+                        html: widget.html,
+                        at: pos,
+                        size: CGSize(width: widget.width, height: widget.height)
+                    )
+                    renderedWidgetIDs.insert(widget.id)
+                }
+
                 await MainActor.run {
-                    withAnimation { lastResponse = response }
+                    let text = agentResponse.text
+                    if let screenshotUploadWarning {
+                        withAnimation { lastResponse = "\(screenshotUploadWarning)\n\n\(text)" }
+                    } else {
+                        withAnimation { lastResponse = text }
+                    }
                     isProcessing = false
                     autoDismissResponse()
                 }
@@ -109,13 +175,53 @@ struct ContentView: View {
         }
     }
 
+    @MainActor
+    private func uploadCurrentCanvasScreenshot(prompt: String, backendURL: URL) async throws -> String? {
+        guard let pngData = objectManager.captureViewportPNGData() else {
+            return nil
+        }
+
+        return try await BackendClient.uploadScreenshot(
+            pngData: pngData,
+            deviceID: "ipad",
+            backendURL: backendURL,
+            sessionID: document.id.uuidString,
+            notes: "Voice command: \(prompt.prefix(180))"
+        )
+    }
+
+    private func startWidgetSync() {
+        widgetSyncTimer?.invalidate()
+        widgetSyncTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
+            Task { await syncWidgets() }
+        }
+    }
+
+    @MainActor
+    private func syncWidgets() async {
+        guard let serverURL = objectManager.httpServer.agentServerURL() else { return }
+
+        let widgets = await AgentClient.fetchSessionWidgets(
+            sessionID: document.id.uuidString,
+            serverURL: serverURL
+        )
+
+        for widget in widgets where !renderedWidgetIDs.contains(widget.id) {
+            let pos = objectManager.viewportCenter
+            await objectManager.place(
+                html: widget.html,
+                at: pos,
+                size: CGSize(width: widget.width, height: widget.height)
+            )
+            renderedWidgetIDs.insert(widget.id)
+        }
+    }
+
     private func autoDismissResponse() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
             withAnimation { lastResponse = nil }
         }
     }
-
-    // MARK: - UI Components
 
     private func responseToast(_ text: String) -> some View {
         VStack {
@@ -124,50 +230,35 @@ struct ContentView: View {
                 .font(.system(size: 14))
                 .foregroundColor(.white)
                 .padding(16)
-                .frame(maxWidth: 500, alignment: .leading)
+                .frame(maxWidth: 560, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .fill(Color(white: 0.12))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .strokeBorder(.white.opacity(0.08), lineWidth: 0.5)
-                        )
                 )
-                .shadow(color: .black.opacity(0.4), radius: 20, y: 8)
-                .padding(.horizontal, 32)
-                .padding(.bottom, 40)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 28)
                 .onTapGesture {
                     withAnimation { lastResponse = nil }
                 }
         }
+        .zIndex(30)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     private var processingIndicator: some View {
         VStack {
             Spacer()
             HStack(spacing: 8) {
-                ProgressView()
-                    .tint(.white)
+                ProgressView().tint(.white)
                 Text("Thinking...")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.white.opacity(0.7))
+                    .foregroundColor(.white.opacity(0.8))
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
-            .background(
-                Capsule()
-                    .fill(Color(white: 0.12))
-                    .overlay(
-                        Capsule()
-                            .strokeBorder(.white.opacity(0.08), lineWidth: 0.5)
-                    )
-            )
-            .padding(.bottom, 40)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Capsule().fill(Color(white: 0.12)))
+            .padding(.bottom, 30)
         }
+        .zIndex(25)
     }
-}
-
-#Preview {
-    ContentView(document: Document(name: "Preview"))
-        .environmentObject(CanvasState())
 }

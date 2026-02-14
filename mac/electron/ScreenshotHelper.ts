@@ -26,26 +26,27 @@ export class ScreenshotHelper {
     this.view = view
     this.majorChangeThreshold = Number(process.env.SCREENSHOT_DIFF_THRESHOLD) || 0.12
 
+    const backendMacScreenshotDir = path.resolve(process.cwd(), "../backend/data/screenshots/mac")
+    const preferredMonitorDir =
+      process.env.IRIS_MONITOR_SCREENSHOT_DIR?.trim() || backendMacScreenshotDir
+
     // Initialize directories
     this.screenshotDir = path.join(app.getPath("userData"), "screenshots")
     this.extraScreenshotDir = path.join(
       app.getPath("userData"),
       "extra_screenshots"
     )
-    this.monitorScreenshotDir = path.join(
-      app.getPath("userData"),
-      "monitor_screenshots"
-    )
+    this.monitorScreenshotDir = preferredMonitorDir
 
     // Create directories if they don't exist
     if (!fs.existsSync(this.screenshotDir)) {
-      fs.mkdirSync(this.screenshotDir)
+      fs.mkdirSync(this.screenshotDir, { recursive: true })
     }
     if (!fs.existsSync(this.extraScreenshotDir)) {
-      fs.mkdirSync(this.extraScreenshotDir)
+      fs.mkdirSync(this.extraScreenshotDir, { recursive: true })
     }
     if (!fs.existsSync(this.monitorScreenshotDir)) {
-      fs.mkdirSync(this.monitorScreenshotDir)
+      fs.mkdirSync(this.monitorScreenshotDir, { recursive: true })
     }
   }
 
@@ -93,15 +94,10 @@ export class ScreenshotHelper {
   }
 
   public async takeScreenshot(
-    hideMainWindow: () => void,
-    showMainWindow: () => void
+    _hideMainWindow: () => void,
+    _showMainWindow: () => void
   ): Promise<string> {
     try {
-      hideMainWindow()
-      
-      // Add a small delay to ensure window is hidden
-      await new Promise(resolve => setTimeout(resolve, 100))
-      
       let screenshotPath = ""
 
       if (this.view === "queue") {
@@ -147,9 +143,6 @@ export class ScreenshotHelper {
     } catch (error) {
       console.error("Error taking screenshot:", error)
       throw new Error(`Failed to take screenshot: ${error.message}`)
-    } finally {
-      // Ensure window is always shown again
-      showMainWindow()
     }
   }
 

@@ -1,97 +1,8 @@
 import { ToastProvider } from "./components/ui/toast"
 import Queue from "./_pages/Queue"
 import { ToastViewport } from "@radix-ui/react-toast"
-import { useEffect, useRef, useState } from "react"
-import Solutions from "./_pages/Solutions"
+import { useEffect, useRef } from "react"
 import { QueryClient, QueryClientProvider } from "react-query"
-
-declare global {
-  interface Window {
-    electronAPI: {
-      //RANDOM GETTER/SETTERS
-      updateContentDimensions: (dimensions: {
-        width: number
-        height: number
-      }) => Promise<void>
-      getScreenshots: () => Promise<Array<{ path: string; preview: string }>>
-
-      //GLOBAL EVENTS
-      //TODO: CHECK THAT PROCESSING NO SCREENSHOTS AND TAKE SCREENSHOTS ARE BOTH CONDITIONAL
-      onUnauthorized: (callback: () => void) => () => void
-      onScreenshotTaken: (
-        callback: (data: { path: string; preview: string }) => void
-      ) => () => void
-      onProcessingNoScreenshots: (callback: () => void) => () => void
-      onResetView: (callback: () => void) => () => void
-      takeScreenshot: () => Promise<void>
-
-      //INITIAL SOLUTION EVENTS
-      deleteScreenshot: (
-        path: string
-      ) => Promise<{ success: boolean; error?: string }>
-      onSolutionStart: (callback: () => void) => () => void
-      onSolutionError: (callback: (error: string) => void) => () => void
-      onSolutionSuccess: (callback: (data: any) => void) => () => void
-      onProblemExtracted: (callback: (data: any) => void) => () => void
-
-      onDebugSuccess: (callback: (data: any) => void) => () => void
-
-      onDebugStart: (callback: () => void) => () => void
-      onDebugError: (callback: (error: string) => void) => () => void
-
-      // Audio Processing
-      analyzeAudioFromBase64: (data: string, mimeType: string) => Promise<{ text: string; timestamp: number }>
-      analyzeAudioFile: (path: string) => Promise<{ text: string; timestamp: number }>
-
-      moveWindowLeft: () => Promise<void>
-      moveWindowRight: () => Promise<void>
-      moveWindowUp: () => Promise<void>
-      moveWindowDown: () => Promise<void>
-      quitApp: () => Promise<void>
-      
-      // LLM Model Management
-      getCurrentLlmConfig: () => Promise<{ provider: "ollama" | "claude"; model: string; isOllama: boolean }>
-      getAvailableOllamaModels: () => Promise<string[]>
-      switchToOllama: (model?: string, url?: string) => Promise<{ success: boolean; error?: string }>
-      switchToClaude: (apiKey?: string) => Promise<{ success: boolean; error?: string }>
-      testLlmConnection: () => Promise<{ success: boolean; error?: string }>
-      startClaudeChatStream: (requestId: string, message: string) => Promise<{ success: boolean; error?: string }>
-      onClaudeChatStreamChunk: (callback: (data: { requestId: string; chunk: string }) => void) => () => void
-      onClaudeChatStreamDone: (callback: (data: { requestId: string; text: string }) => void) => () => void
-      onClaudeChatStreamError: (callback: (data: { requestId: string; error: string }) => void) => () => void
-      onAgentReply: (callback: (data: { text: string }) => void) => () => void
-      setNotificationsEnabled: (enabled: boolean) => Promise<{ success: boolean }>
-      openWidget: (spec: {
-        id?: string
-        title?: string
-        kind: "html" | "markdown" | "text" | "image" | "chart"
-        width?: number
-        height?: number
-        css?: string
-        payload: {
-          html?: string
-          markdown?: string
-          text?: string
-          imageUrl?: string
-          chartConfig?: unknown
-        }
-      }) => Promise<{ success: boolean; id: string; error?: string }>
-      
-      // Network & Devices
-      getNetworkInfo: () => Promise<{ macIp: string; allIps: string[]; hostname: string; connectedDevices: any[] }>
-      connectIpad: (host: string, port?: number) => Promise<{ success: boolean; error?: string }>
-      getIrisDevices: () => Promise<any[]>
-      getIrisDevice: (id: string) => Promise<any | null>
-      getPrimaryIrisDevice: () => Promise<any | null>
-      getMacDeviceId: () => Promise<string>
-      onIrisDeviceFound: (callback: (device: any) => void) => () => void
-      onIrisDeviceLost: (callback: (deviceId: string) => void) => () => void
-      onIrisDeviceUpdated: (callback: (device: any) => void) => () => void
-
-      invoke: (channel: string, ...args: any[]) => Promise<any>
-    }
-  }
-}
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -103,32 +14,15 @@ const queryClient = new QueryClient({
 })
 
 const App: React.FC = () => {
-  const [view, setView] = useState<"queue" | "solutions" | "debug">("queue")
   const containerRef = useRef<HTMLDivElement>(null)
 
-  // Effect for height monitoring
   useEffect(() => {
-    const cleanup = window.electronAPI.onResetView(() => {
-      console.log("Received 'reset-view' message from main process.")
-      queryClient.invalidateQueries(["screenshots"])
-      queryClient.invalidateQueries(["problem_statement"])
-      queryClient.invalidateQueries(["solution"])
-      queryClient.invalidateQueries(["new_solution"])
-      setView("queue")
-    })
-
-    return () => {
-      cleanup()
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!containerRef.current) return
+    const container = containerRef.current
+    if (!container) return
 
     const updateHeight = () => {
-      if (!containerRef.current) return
-      const height = containerRef.current.scrollHeight
-      const width = containerRef.current.scrollWidth
+      const height = container.scrollHeight
+      const width = container.scrollWidth
       window.electronAPI?.updateContentDimensions({ width, height })
     }
 
@@ -140,14 +34,14 @@ const App: React.FC = () => {
     updateHeight()
 
     // Observe for changes
-    resizeObserver.observe(containerRef.current)
+    resizeObserver.observe(container)
 
     // Also update height when view changes
     const mutationObserver = new MutationObserver(() => {
       updateHeight()
     })
 
-    mutationObserver.observe(containerRef.current, {
+    mutationObserver.observe(container, {
       childList: true,
       subtree: true,
       attributes: true,
@@ -158,57 +52,25 @@ const App: React.FC = () => {
       resizeObserver.disconnect()
       mutationObserver.disconnect()
     }
-  }, [view]) // Re-run when view changes
+  }, [])
 
   useEffect(() => {
     const cleanupFunctions = [
-      window.electronAPI.onSolutionStart(() => {
-        setView("solutions")
-        console.log("starting processing")
-      }),
-
       window.electronAPI.onUnauthorized(() => {
         queryClient.removeQueries(["screenshots"])
-        queryClient.removeQueries(["solution"])
-        queryClient.removeQueries(["problem_statement"])
-        setView("queue")
-        console.log("Unauthorized")
       }),
-      // Update this reset handler
       window.electronAPI.onResetView(() => {
-        console.log("Received 'reset-view' message from main process")
-
-        queryClient.removeQueries(["screenshots"])
-        queryClient.removeQueries(["solution"])
-        queryClient.removeQueries(["problem_statement"])
-        setView("queue")
-        console.log("View reset to 'queue' via Command+R shortcut")
-      }),
-      window.electronAPI.onProblemExtracted((data: any) => {
-        if (view === "queue") {
-          console.log("Problem extracted successfully")
-          queryClient.invalidateQueries(["problem_statement"])
-          queryClient.setQueryData(["problem_statement"], data)
-        }
+        queryClient.invalidateQueries(["screenshots"])
       })
     ]
     return () => cleanupFunctions.forEach((cleanup) => cleanup())
   }, [])
 
   return (
-    <div ref={containerRef} className="app-shell min-h-0">
-      <div className="window-titlebar draggable-area">
-        <span className="window-title">Iris</span>
-      </div>
+    <div ref={containerRef} className="app-shell">
       <QueryClientProvider client={queryClient}>
         <ToastProvider>
-          {view === "queue" ? (
-            <Queue setView={setView} />
-          ) : view === "solutions" ? (
-            <Solutions setView={setView} />
-          ) : (
-            <></>
-          )}
+          <Queue />
           <ToastViewport />
         </ToastProvider>
       </QueryClientProvider>

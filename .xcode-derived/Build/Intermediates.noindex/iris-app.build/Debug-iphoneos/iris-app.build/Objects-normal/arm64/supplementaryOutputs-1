@@ -1,0 +1,23 @@
+{
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Services/AgentClient.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentClient.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentClient.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentClient.dia",
+    "object" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentClient.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentClient.swiftdeps"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Services/AgentCursorController.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorController.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorController.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorController.dia",
+    "object" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorController.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorController.swiftdeps"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Views/AgentCursorView.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorView.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorView.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorView.dia",
+    "object" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorView.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorView.swiftdeps"
+  }
+}

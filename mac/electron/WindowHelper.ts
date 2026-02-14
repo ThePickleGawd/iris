@@ -27,10 +27,38 @@ export class WindowHelper {
     this.appState = appState
   }
 
+  private applyStickyBehavior(): void {
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return
+
+    this.mainWindow.setAlwaysOnTop(true, "floating")
+
+    if (process.platform === "darwin") {
+      this.mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+      this.mainWindow.setFullScreenable(false)
+    }
+  }
+
   public setWindowDimensions(_width: number, height: number): void {
-    // Intentionally disabled: renderer-driven auto-resize was fighting manual resize.
-    // Keep manual OS resize behavior as the single source of truth.
-    return
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return
+
+    const [minWidth, minHeight] = this.mainWindow.getMinimumSize()
+    const maxHeight = Math.floor(screen.getPrimaryDisplay().workAreaSize.height * 0.9)
+    const targetHeight = Math.max(minHeight, Math.min(maxHeight, Math.ceil(height)))
+
+    const bounds = this.mainWindow.getBounds()
+    if (Math.abs(bounds.height - targetHeight) < 2) return
+
+    this.mainWindow.setBounds({
+      x: bounds.x,
+      y: bounds.y,
+      width: Math.max(minWidth, bounds.width),
+      height: targetHeight
+    })
+
+    this.windowSize = {
+      width: Math.max(minWidth, bounds.width),
+      height: targetHeight
+    }
   }
 
   public createWindow(): void {
@@ -40,39 +68,45 @@ export class WindowHelper {
     const workArea = primaryDisplay.workAreaSize
     this.screenWidth = workArea.width
     this.screenHeight = workArea.height
+    const isMac = process.platform === "darwin"
 
     
     const windowSettings: Electron.BrowserWindowConstructorOptions = {
       width: 400,
-      height: 600,
+      height: 92,
       minWidth: 300,
-      minHeight: 200,
+      minHeight: 72,
       webPreferences: {
         nodeIntegration: true,
         contextIsolation: true,
         preload: path.join(__dirname, "preload.js")
       },
       show: false, // Start hidden, then show after setup
-      alwaysOnTop: false,
-      frame: true,
-      transparent: false,
+      alwaysOnTop: true,
+      frame: !isMac,
+      transparent: isMac,
       fullscreenable: false,
       hasShadow: true,
-      backgroundColor: "#F3F6F8",
+      backgroundColor: isMac ? "#00000000" : "#F3F6F8",
       focusable: true,
       resizable: true,
       movable: true,
       x: 100, // Start at a visible position
-      y: 100
+      y: 100,
+      // titleBarStyle: "hidden" is required on macOS for proper CSS rendering
+      // on transparent windows. Without it, child element backgrounds don't composite.
+      // Traffic lights are hidden programmatically via setWindowButtonVisibility(false).
+      ...(isMac ? { titleBarStyle: "hidden" as const } : {})
     }
 
     this.mainWindow = new BrowserWindow(windowSettings)
     // this.mainWindow.webContents.openDevTools()
-    this.mainWindow.setContentProtection(true)
+    // Allow the window to appear in screenshots/screen recordings.
+    this.mainWindow.setContentProtection(false)
 
     if (process.platform === "darwin") {
-      // Use standard desktop window behavior on macOS (not overlay-style).
-      this.mainWindow.setAlwaysOnTop(false)
+      this.mainWindow.setWindowButtonVisibility(false)
+      this.mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
     }
     if (process.platform === "linux") {
       // Linux-specific optimizations for better compatibility
@@ -83,7 +117,7 @@ export class WindowHelper {
       this.mainWindow.setFocusable(true)
     } 
     this.mainWindow.setSkipTaskbar(false)
-    this.mainWindow.setAlwaysOnTop(false)
+    this.applyStickyBehavior()
 
     this.mainWindow.loadURL(startUrl).catch((err) => {
       console.error("Failed to load URL:", err)
@@ -96,7 +130,7 @@ export class WindowHelper {
         this.centerWindow()
         this.mainWindow.show()
         this.mainWindow.focus()
-        this.mainWindow.setAlwaysOnTop(false)
+        this.applyStickyBehavior()
         console.log("Window is now visible and centered")
       }
     })
@@ -176,6 +210,7 @@ export class WindowHelper {
     }
 
     this.mainWindow.showInactive()
+    this.applyStickyBehavior()
 
     this.isWindowVisible = true
   }
@@ -229,7 +264,7 @@ export class WindowHelper {
     this.centerWindow()
     this.mainWindow.show()
     this.mainWindow.focus()
-    this.mainWindow.setAlwaysOnTop(false)
+    this.applyStickyBehavior()
     this.isWindowVisible = true
     
     console.log(`Window centered and shown`)
@@ -308,5 +343,19 @@ export class WindowHelper {
       Math.round(this.currentX),
       Math.round(this.currentY)
     )
+  }
+
+  public moveWindowBy(dx: number, dy: number): void {
+    if (!this.mainWindow) return
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return
+
+    const bounds = this.mainWindow.getBounds()
+    const nextX = Math.round(bounds.x + dx)
+    const nextY = Math.round(bounds.y + dy)
+    this.mainWindow.setPosition(nextX, nextY)
+
+    this.windowPosition = { x: nextX, y: nextY }
+    this.currentX = nextX
+    this.currentY = nextY
   }
 }

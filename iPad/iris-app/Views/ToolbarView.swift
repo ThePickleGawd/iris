@@ -1,31 +1,43 @@
 import SwiftUI
-import PencilKit
 
 struct ToolbarView: View {
     @EnvironmentObject var canvasState: CanvasState
+
     var onBack: (() -> Void)?
     var onAITap: (() -> Void)?
     var isRecording: Bool = false
+
+    // Compatibility hooks from newer call sites.
+    var onAddWidget: (() -> Void)?
+    var onSpeak: (() -> Void)?
+    var onZoomIn: (() -> Void)?
+    var onZoomOut: (() -> Void)?
+    var onZoomReset: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 0) {
             if let onBack {
                 Button(action: onBack) {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(.primary)
-                        .frame(width: 40, height: 40)
-                        .background(.ultraThinMaterial)
-                        .clipShape(Circle())
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.9))
+                        .frame(width: 30, height: 30)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color(red: 0.03, green: 0.04, blue: 0.09).opacity(0.95))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .strokeBorder(.white.opacity(0.15), lineWidth: 0.75)
+                                )
+                        )
                 }
                 .padding(.leading, 16)
             }
 
             Spacer().allowsHitTesting(false)
 
-            // Center: Tool palette
-            VStack(spacing: 4) {
-                HStack(spacing: 2) {
+            VStack(spacing: 0) {
+                HStack(spacing: 6) {
                     ToolbarToolButton(icon: "pencil.tip", isSelected: canvasState.currentTool == .pen) {
                         canvasState.currentTool = .pen
                     }
@@ -38,6 +50,23 @@ struct ToolbarView: View {
                     ToolbarToolButton(icon: "lasso", isSelected: canvasState.currentTool == .lasso) {
                         canvasState.currentTool = .lasso
                     }
+
+                    Rectangle()
+                        .fill(.white.opacity(0.22))
+                        .frame(width: 0.5, height: 16)
+                        .padding(.horizontal, 1)
+
+                    ToolbarPassiveButton(icon: "hand.draw")
+                    ToolbarPassiveButton(icon: "chevron.right")
+                }
+                .padding(.horizontal, 10)
+                .padding(.top, 7)
+                .padding(.bottom, 6)
+                .overlay(alignment: .bottom) {
+                    Rectangle()
+                        .fill(.white.opacity(0.16))
+                        .frame(height: 0.5)
+                        .padding(.horizontal, 2)
                 }
 
                 HStack(spacing: 6) {
@@ -50,16 +79,24 @@ struct ToolbarView: View {
                         }
                     }
                 }
+                .padding(.horizontal, 10)
+                .padding(.top, 6)
+                .padding(.bottom, 7)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(Color(white: 0.15))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .background(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(Color(red: 0.02, green: 0.03, blue: 0.08).opacity(0.92))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .strokeBorder(.white.opacity(0.2), lineWidth: 0.75)
+                    )
+            )
+            .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
 
             Spacer().allowsHitTesting(false)
 
-            if let onAITap {
-                AIButton(isRecording: isRecording, action: onAITap)
+            if let tap = onAITap ?? onSpeak {
+                AIButton(isRecording: isRecording, action: tap)
                     .padding(.trailing, 16)
             }
         }
@@ -77,12 +114,30 @@ struct ToolbarToolButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 17, weight: .medium))
-                .foregroundColor(.white)
-                .frame(width: 36, height: 30)
-                .background(isSelected ? Color.white.opacity(0.2) : Color.clear)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(isSelected ? .white : .white.opacity(0.78))
+                .frame(width: 23, height: 21)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.17) : Color.clear)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .strokeBorder(.white.opacity(isSelected ? 0.25 : 0), lineWidth: 0.75)
+                        )
+                )
         }
+        .buttonStyle(.plain)
+    }
+}
+
+struct ToolbarPassiveButton: View {
+    let icon: String
+
+    var body: some View {
+        Image(systemName: icon)
+            .font(.system(size: 14, weight: .medium))
+            .foregroundColor(.white.opacity(0.72))
+            .frame(width: 20, height: 21)
     }
 }
 
@@ -93,15 +148,24 @@ struct ToolbarColorCircle: View {
 
     var body: some View {
         Button(action: action) {
-            Circle()
-                .fill(Color(uiColor: color))
-                .frame(width: 20, height: 20)
-                .overlay(
+            ZStack {
+                Circle()
+                    .fill(Color(uiColor: color))
+                    .frame(width: 17, height: 17)
+
+                Circle()
+                    .stroke(Color.black.opacity(0.35), lineWidth: 0.75)
+                    .frame(width: 17, height: 17)
+
+                if isSelected {
                     Circle()
-                        .stroke(Color.accentColor, lineWidth: isSelected ? 2.5 : 0)
-                        .frame(width: 26, height: 26)
-                )
+                        .stroke(Color.accentColor, lineWidth: 2)
+                        .frame(width: 24, height: 24)
+                }
+            }
+            .frame(width: 24, height: 24)
         }
+        .buttonStyle(.plain)
     }
 }
 
@@ -116,16 +180,16 @@ struct AIButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: "waveform")
-                .font(.system(size: 20, weight: .medium))
-                .foregroundColor(.white)
-                .frame(width: 48, height: 48)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.white.opacity(0.9))
+                .frame(width: 36, height: 30)
                 .background(
-                    Circle()
-                        .fill(Color(white: 0.12).opacity(0.85))
-                        .background(
-                            Circle().fill(.ultraThinMaterial)
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color(red: 0.03, green: 0.04, blue: 0.09).opacity(0.95))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(.white.opacity(0.15), lineWidth: 0.75)
                         )
-                        .clipShape(Circle())
                 )
                 .scaleEffect(pulseScale)
         }

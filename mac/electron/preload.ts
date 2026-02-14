@@ -30,21 +30,12 @@ interface ElectronAPI {
   moveWindowRight: () => Promise<void>
   moveWindowUp: () => Promise<void>
   moveWindowDown: () => Promise<void>
+  moveWindowBy: (dx: number, dy: number) => Promise<void>
+  toggleWindow: () => Promise<void>
   analyzeAudioFromBase64: (data: string, mimeType: string) => Promise<{ text: string; timestamp: number }>
   analyzeAudioFile: (path: string) => Promise<{ text: string; timestamp: number }>
   analyzeImageFile: (path: string) => Promise<void>
   quitApp: () => Promise<void>
-  
-  // LLM Model Management
-  getCurrentLlmConfig: () => Promise<{ provider: "ollama" | "claude"; model: string; isOllama: boolean }>
-  getAvailableOllamaModels: () => Promise<string[]>
-  switchToOllama: (model?: string, url?: string) => Promise<{ success: boolean; error?: string }>
-  switchToClaude: (apiKey?: string) => Promise<{ success: boolean; error?: string }>
-  testLlmConnection: () => Promise<{ success: boolean; error?: string }>
-  startClaudeChatStream: (requestId: string, message: string) => Promise<{ success: boolean; error?: string }>
-  onClaudeChatStreamChunk: (callback: (data: { requestId: string; chunk: string }) => void) => () => void
-  onClaudeChatStreamDone: (callback: (data: { requestId: string; text: string }) => void) => () => void
-  onClaudeChatStreamError: (callback: (data: { requestId: string; error: string }) => void) => () => void
   onAgentReply: (callback: (data: { text: string }) => void) => () => void
   setNotificationsEnabled: (enabled: boolean) => Promise<{ success: boolean }>
   openWidget: (spec: {
@@ -63,6 +54,14 @@ interface ElectronAPI {
     }
   }) => Promise<{ success: boolean; id: string; error?: string }>
   
+  // Session Management
+  getSessions: () => Promise<{ items: any[]; count: number }>
+  getCurrentSession: () => Promise<{ id: string; model: string; name: string } | null>
+  setCurrentSession: (session: { id: string; model: string; name: string } | null) => Promise<{ success: boolean }>
+  createSession: (params: { id: string; name: string; model: string }) => Promise<any>
+  getSessionMessages: (sessionId: string, since?: string) => Promise<{ items: any[]; count: number }>
+  onSessionMessagesUpdate: (callback: (data: { sessionId: string; messages: any[] }) => void) => () => void
+
   // Iris Device Discovery
   getIrisDevices: () => Promise<any[]>
   getIrisDevice: (id: string) => Promise<any | null>
@@ -205,33 +204,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   moveWindowRight: () => ipcRenderer.invoke("move-window-right"),
   moveWindowUp: () => ipcRenderer.invoke("move-window-up"),
   moveWindowDown: () => ipcRenderer.invoke("move-window-down"),
+  moveWindowBy: (dx: number, dy: number) => ipcRenderer.invoke("move-window-by", dx, dy),
+  toggleWindow: () => ipcRenderer.invoke("toggle-window"),
   analyzeAudioFromBase64: (data: string, mimeType: string) => ipcRenderer.invoke("analyze-audio-base64", data, mimeType),
   analyzeAudioFile: (path: string) => ipcRenderer.invoke("analyze-audio-file", path),
   analyzeImageFile: (path: string) => ipcRenderer.invoke("analyze-image-file", path),
   quitApp: () => ipcRenderer.invoke("quit-app"),
-  
-  // LLM Model Management
-  getCurrentLlmConfig: () => ipcRenderer.invoke("get-current-llm-config"),
-  getAvailableOllamaModels: () => ipcRenderer.invoke("get-available-ollama-models"),
-  switchToOllama: (model?: string, url?: string) => ipcRenderer.invoke("switch-to-ollama", model, url),
-  switchToClaude: (apiKey?: string) => ipcRenderer.invoke("switch-to-claude", apiKey),
-  testLlmConnection: () => ipcRenderer.invoke("test-llm-connection"),
-  startClaudeChatStream: (requestId: string, message: string) => ipcRenderer.invoke("claude-chat-stream", requestId, message),
-  onClaudeChatStreamChunk: (callback: (data: { requestId: string; chunk: string }) => void) => {
-    const subscription = (_: any, data: { requestId: string; chunk: string }) => callback(data)
-    ipcRenderer.on("claude-chat-stream-chunk", subscription)
-    return () => ipcRenderer.removeListener("claude-chat-stream-chunk", subscription)
-  },
-  onClaudeChatStreamDone: (callback: (data: { requestId: string; text: string }) => void) => {
-    const subscription = (_: any, data: { requestId: string; text: string }) => callback(data)
-    ipcRenderer.on("claude-chat-stream-done", subscription)
-    return () => ipcRenderer.removeListener("claude-chat-stream-done", subscription)
-  },
-  onClaudeChatStreamError: (callback: (data: { requestId: string; error: string }) => void) => {
-    const subscription = (_: any, data: { requestId: string; error: string }) => callback(data)
-    ipcRenderer.on("claude-chat-stream-error", subscription)
-    return () => ipcRenderer.removeListener("claude-chat-stream-error", subscription)
-  },
   onAgentReply: (callback: (data: { text: string }) => void) => {
     const subscription = (_: any, data: { text: string }) => callback(data)
     ipcRenderer.on("agent-reply", subscription)
@@ -254,6 +232,23 @@ contextBridge.exposeInMainWorld("electronAPI", {
     }
   }) => ipcRenderer.invoke("open-widget", spec),
   
+  // ─── Session Management ──────────────────────────────
+  getSessions: () => ipcRenderer.invoke("get-sessions"),
+  getCurrentSession: () => ipcRenderer.invoke("get-current-session"),
+  setCurrentSession: (session: { id: string; model: string; name: string } | null) =>
+    ipcRenderer.invoke("set-current-session", session),
+  createSession: (params: { id: string; name: string; model: string }) =>
+    ipcRenderer.invoke("create-session", params),
+  getSessionMessages: (sessionId: string, since?: string) =>
+    ipcRenderer.invoke("get-session-messages", sessionId, since),
+  deleteSession: (sessionId: string) =>
+    ipcRenderer.invoke("delete-session", sessionId),
+  onSessionMessagesUpdate: (callback: (data: { sessionId: string; messages: any[] }) => void) => {
+    const subscription = (_: any, data: { sessionId: string; messages: any[] }) => callback(data)
+    ipcRenderer.on("session-messages-update", subscription)
+    return () => ipcRenderer.removeListener("session-messages-update", subscription)
+  },
+
   // ─── Network Info & Device Connection ──────────────
   getNetworkInfo: () => ipcRenderer.invoke("get-network-info"),
   connectIpad: (host: string, port?: number) => ipcRenderer.invoke("connect-ipad", host, port),

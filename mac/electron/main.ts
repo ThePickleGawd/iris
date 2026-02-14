@@ -1,3 +1,4 @@
+import "./env"
 import { app, BrowserWindow, Tray, Menu, nativeImage } from "electron"
 import { initializeIpcHandlers } from "./ipcHandlers"
 import { WindowHelper } from "./WindowHelper"
@@ -201,6 +202,9 @@ export class AppState {
   }
   public moveWindowUp(): void {
     this.windowHelper.moveWindowUp()
+  }
+  public moveWindowBy(dx: number, dy: number): void {
+    this.windowHelper.moveWindowBy(dx, dy)
   }
 
   public centerAndShowWindow(): void {

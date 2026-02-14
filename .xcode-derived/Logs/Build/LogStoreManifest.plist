@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>logFormatVersion</key>
+	<integer>12</integer>
+	<key>logs</key>
+	<dict>
+		<key>62759716-F946-49F2-A2F9-CD75B702E168</key>
+		<dict>
+			<key>className</key>
+			<string>IDECommandLineBuildLog</string>
+			<key>documentTypeString</key>
+			<string>&lt;nil&gt;</string>
+			<key>domainType</key>
+			<string>Xcode.IDEActivityLogDomainType.BuildLog</string>
+			<key>fileName</key>
+			<string>62759716-F946-49F2-A2F9-CD75B702E168.xcactivitylog</string>
+			<key>hasPrimaryLog</key>
+			<true/>
+			<key>primaryObservable</key>
+			<dict>
+				<key>highLevelStatus</key>
+				<string>E</string>
+				<key>totalNumberOfAnalyzerIssues</key>
+				<integer>0</integer>
+				<key>totalNumberOfErrors</key>
+				<integer>2</integer>
+				<key>totalNumberOfTestFailures</key>
+				<integer>0</integer>
+				<key>totalNumberOfWarnings</key>
+				<integer>0</integer>
+			</dict>
+			<key>schemeIdentifier-containerName</key>
+			<string>iris-app project</string>
+			<key>schemeIdentifier-schemeName</key>
+			<string>iris-app</string>
+			<key>schemeIdentifier-sharedScheme</key>
+			<integer>1</integer>
+			<key>signature</key>
+			<string>Building project iris-app with scheme iris-app and configuration Debug</string>
+			<key>timeStartedRecording</key>
+			<real>792758722.05464697</real>
+			<key>timeStoppedRecording</key>
+			<real>792758723.49912</real>
+			<key>title</key>
+			<string>Building project iris-app with scheme iris-app and configuration Debug</string>
+			<key>uniqueIdentifier</key>
+			<string>62759716-F946-49F2-A2F9-CD75B702E168</string>
+		</dict>
+	</dict>
+</dict>
+</plist>

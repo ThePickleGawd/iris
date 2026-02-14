@@ -1,16 +1,13 @@
 import {
   AgentMessage,
   AgentRequestEnvelope,
-  AgentStreamEvent,
   AgentTransportSettings,
   buildAgentRequestEnvelope,
-  normalizeIncomingEvent,
-  splitPotentialJsonFrames
+  normalizeIncomingEvent
 } from "./agentProtocol"
 import type { WidgetSpec } from "./widgetProtocol"
 
 export interface AgentStreamCallbacks {
-  onDelta: (chunk: string) => void
   onFinal: (text: string) => void
   onStatus?: (state: string, detail?: string) => void
   onToolCall?: (name: string, input?: unknown) => void
@@ -19,70 +16,17 @@ export interface AgentStreamCallbacks {
   onError: (message: string) => void
 }
 
-export async function streamAgentResponse(params: {
+export async function requestAgentResponse(params: {
   settings: AgentTransportSettings
   requestId: string
   message: string
   history: AgentMessage[]
   callbacks: AgentStreamCallbacks
 }): Promise<void> {
-  const { settings } = params
-  if (settings.mode === "backend") {
-    return streamViaBackend(params)
-  }
-  return streamViaDirect(params)
+  return requestViaBackend(params)
 }
 
-async function streamViaDirect(params: {
-  requestId: string
-  message: string
-  callbacks: AgentStreamCallbacks
-}): Promise<void> {
-  const { requestId, message, callbacks } = params
-
-  await new Promise<void>(async (resolve) => {
-    let full = ""
-
-    let cleanupChunk = () => {}
-    let cleanupDone = () => {}
-    let cleanupError = () => {}
-
-    cleanupChunk = window.electronAPI.onClaudeChatStreamChunk((data) => {
-      if (data.requestId !== requestId) return
-      full += data.chunk
-      callbacks.onDelta(data.chunk)
-    })
-
-    cleanupDone = window.electronAPI.onClaudeChatStreamDone((data) => {
-      if (data.requestId !== requestId) return
-      cleanupChunk()
-      cleanupDone()
-      cleanupError()
-      callbacks.onFinal(data.text || full)
-      resolve()
-    })
-
-    cleanupError = window.electronAPI.onClaudeChatStreamError((data) => {
-      if (data.requestId !== requestId) return
-      cleanupChunk()
-      cleanupDone()
-      cleanupError()
-      callbacks.onError(data.error || "Unknown stream error")
-      resolve()
-    })
-
-    const start = await window.electronAPI.startClaudeChatStream(requestId, message)
-    if (!start.success) {
-      cleanupChunk()
-      cleanupDone()
-      cleanupError()
-      callbacks.onError(start.error || "Failed to start local stream")
-      resolve()
-    }
-  })
-}
-
-async function streamViaBackend(params: {
+async function requestViaBackend(params: {
   settings: AgentTransportSettings
   requestId: string
   message: string
@@ -99,14 +43,14 @@ async function streamViaBackend(params: {
   })
 
   const base = settings.backendBaseUrl.replace(/\/$/, "")
-  const path = settings.backendStreamPath.startsWith("/")
-    ? settings.backendStreamPath
-    : `/${settings.backendStreamPath}`
+  const path = settings.backendPath.startsWith("/")
+    ? settings.backendPath
+    : `/${settings.backendPath}`
   const url = `${base}${path}`
 
   const headers: Record<string, string> = {
     "content-type": "application/json",
-    accept: "text/event-stream, application/x-ndjson, application/json"
+    accept: "application/json"
   }
 
   if (settings.authToken) {
@@ -125,107 +69,49 @@ async function streamViaBackend(params: {
     return
   }
 
-  if (!response.body) {
-    callbacks.onError("Backend stream body is empty")
+  let payload: unknown
+  try {
+    payload = await response.json()
+  } catch {
+    callbacks.onError("Backend returned invalid JSON")
     return
   }
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ""
-  let finalText = ""
+  const root = payload as Record<string, unknown>
+  const events = Array.isArray(root.events) ? root.events : []
+  let finalText = typeof root.text === "string" ? root.text : ""
   let emittedFinal = false
 
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-
-    buffer += decoder.decode(value, { stream: true })
-
-    const lines = buffer.split("\n")
-    buffer = lines.pop() || ""
-
-    for (const rawLine of lines) {
-      const frames = splitPotentialJsonFrames(rawLine)
-      for (const frame of frames) {
-        let parsed: unknown = null
-        try {
-          parsed = JSON.parse(frame)
-        } catch {
-          continue
-        }
-
-        const event = normalizeIncomingEvent(parsed)
-        if (!event) continue
-
-        handleAgentEvent(event, callbacks, {
-          appendFinalText: (delta) => {
-            finalText += delta
-          },
-          setFinalText: (text) => {
-            finalText = text
-            emittedFinal = true
-          }
-        })
-      }
+  for (const rawEvent of events) {
+    const event = normalizeIncomingEvent(rawEvent)
+    if (!event) continue
+    switch (event.kind) {
+      case "status":
+        callbacks.onStatus?.(event.state, event.detail)
+        break
+      case "tool.call":
+        callbacks.onToolCall?.(event.name, event.input)
+        break
+      case "tool.result":
+        callbacks.onToolResult?.(event.name, event.output)
+        break
+      case "widget.open":
+        callbacks.onWidgetOpen?.(event.widget)
+        break
+      case "message.final":
+        finalText = event.text
+        emittedFinal = true
+        break
+      case "error":
+        callbacks.onError(event.message)
+        return
     }
   }
 
-  if (buffer.trim()) {
-    const frames = splitPotentialJsonFrames(buffer)
-    for (const frame of frames) {
-      try {
-        const parsed = JSON.parse(frame)
-        const event = normalizeIncomingEvent(parsed)
-        if (!event) continue
-        handleAgentEvent(event, callbacks, {
-          appendFinalText: (delta) => {
-            finalText += delta
-          },
-          setFinalText: (text) => {
-            finalText = text
-            emittedFinal = true
-          }
-        })
-      } catch {
-        // ignore trailing non-JSON frame
-      }
-    }
-  }
-
-  if (!emittedFinal && finalText) {
+  if (emittedFinal || finalText) {
     callbacks.onFinal(finalText)
+    return
   }
-}
 
-function handleAgentEvent(
-  event: AgentStreamEvent,
-  callbacks: AgentStreamCallbacks,
-  acc: { appendFinalText: (delta: string) => void; setFinalText: (text: string) => void }
-) {
-  switch (event.kind) {
-    case "status":
-      callbacks.onStatus?.(event.state, event.detail)
-      break
-    case "message.delta":
-      acc.appendFinalText(event.delta)
-      callbacks.onDelta(event.delta)
-      break
-    case "message.final":
-      acc.setFinalText(event.text)
-      callbacks.onFinal(event.text)
-      break
-    case "tool.call":
-      callbacks.onToolCall?.(event.name, event.input)
-      break
-    case "tool.result":
-      callbacks.onToolResult?.(event.name, event.output)
-      break
-    case "widget.open":
-      callbacks.onWidgetOpen?.(event.widget)
-      break
-    case "error":
-      callbacks.onError(event.message)
-      break
-  }
+  callbacks.onError("Backend returned no final response text")
 }

@@ -1,0 +1,23 @@
+{
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Models/CanvasObject.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObject.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObject.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObject.dia",
+    "object" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObject.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObject.swiftdeps"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Services/AgentHTTPServer.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentHTTPServer.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentHTTPServer.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentHTTPServer.dia",
+    "object" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentHTTPServer.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentHTTPServer.swiftdeps"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Services/AudioCaptureService.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AudioCaptureService.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AudioCaptureService.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AudioCaptureService.dia",
+    "object" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AudioCaptureService.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AudioCaptureService.swiftdeps"
+  }
+}

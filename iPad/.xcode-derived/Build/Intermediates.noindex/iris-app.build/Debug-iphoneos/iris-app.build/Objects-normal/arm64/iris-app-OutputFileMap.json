@@ -1,0 +1,189 @@
+{
+  "" : {
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/iris-app-primary.dia",
+    "emit-module-dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/iris-app-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/iris-app-primary-emit-module.dia",
+    "pch" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/iris-app-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/iris-app-primary.swiftdeps"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/ContentView.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/ContentView.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/ContentView.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/ContentView.dia",
+    "index-unit-output-path" : "/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/ContentView.o",
+    "llvm-bc" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/ContentView.bc",
+    "object" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/ContentView.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/ContentView.swiftdeps",
+    "swiftmodule" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/ContentView~partial.swiftmodule"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Extensions/UIColor+Compare.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/UIColor+Compare.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/UIColor+Compare.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/UIColor+Compare.dia",
+    "index-unit-output-path" : "/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/UIColor+Compare.o",
+    "llvm-bc" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/UIColor+Compare.bc",
+    "object" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/UIColor+Compare.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/UIColor+Compare.swiftdeps",
+    "swiftmodule" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/UIColor+Compare~partial.swiftmodule"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/IrisApp.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/IrisApp.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/IrisApp.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/IrisApp.dia",
+    "index-unit-output-path" : "/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/IrisApp.o",
+    "llvm-bc" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/IrisApp.bc",
+    "object" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/IrisApp.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/IrisApp.swiftdeps",
+    "swiftmodule" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/IrisApp~partial.swiftmodule"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Models/CanvasObject.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObject.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObject.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObject.dia",
+    "index-unit-output-path" : "/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObject.o",
+    "llvm-bc" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObject.bc",
+    "object" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObject.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObject.swiftdeps",
+    "swiftmodule" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObject~partial.swiftmodule"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Models/CanvasState.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasState.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasState.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasState.dia",
+    "index-unit-output-path" : "/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasState.o",
+    "llvm-bc" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasState.bc",
+    "object" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasState.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasState.swiftdeps",
+    "swiftmodule" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasState~partial.swiftmodule"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Models/Document.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/Document.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/Document.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/Document.dia",
+    "index-unit-output-path" : "/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/Document.o",
+    "llvm-bc" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/Document.bc",
+    "object" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/Document.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/Document.swiftdeps",
+    "swiftmodule" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/Document~partial.swiftmodule"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Services/AgentClient.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentClient.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentClient.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentClient.dia",
+    "index-unit-output-path" : "/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentClient.o",
+    "llvm-bc" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentClient.bc",
+    "object" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentClient.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentClient.swiftdeps",
+    "swiftmodule" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentClient~partial.swiftmodule"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Services/AgentCursorController.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorController.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorController.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorController.dia",
+    "index-unit-output-path" : "/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorController.o",
+    "llvm-bc" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorController.bc",
+    "object" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorController.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorController.swiftdeps",
+    "swiftmodule" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorController~partial.swiftmodule"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Services/AgentHTTPServer.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentHTTPServer.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentHTTPServer.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentHTTPServer.dia",
+    "index-unit-output-path" : "/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentHTTPServer.o",
+    "llvm-bc" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentHTTPServer.bc",
+    "object" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentHTTPServer.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentHTTPServer.swiftdeps",
+    "swiftmodule" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentHTTPServer~partial.swiftmodule"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Services/AudioCaptureService.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AudioCaptureService.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AudioCaptureService.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AudioCaptureService.dia",
+    "index-unit-output-path" : "/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AudioCaptureService.o",
+    "llvm-bc" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AudioCaptureService.bc",
+    "object" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AudioCaptureService.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AudioCaptureService.swiftdeps",
+    "swiftmodule" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AudioCaptureService~partial.swiftmodule"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Services/CanvasObjectManager.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObjectManager.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObjectManager.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObjectManager.dia",
+    "index-unit-output-path" : "/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObjectManager.o",
+    "llvm-bc" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObjectManager.bc",
+    "object" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObjectManager.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObjectManager.swiftdeps",
+    "swiftmodule" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObjectManager~partial.swiftmodule"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Services/SpeechTranscriber.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/SpeechTranscriber.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/SpeechTranscriber.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/SpeechTranscriber.dia",
+    "index-unit-output-path" : "/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/SpeechTranscriber.o",
+    "llvm-bc" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/SpeechTranscriber.bc",
+    "object" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/SpeechTranscriber.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/SpeechTranscriber.swiftdeps",
+    "swiftmodule" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/SpeechTranscriber~partial.swiftmodule"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Views/AgentCursorView.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorView.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorView.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorView.dia",
+    "index-unit-output-path" : "/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorView.o",
+    "llvm-bc" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorView.bc",
+    "object" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorView.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorView.swiftdeps",
+    "swiftmodule" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/AgentCursorView~partial.swiftmodule"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Views/CanvasObjectWebView.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObjectWebView.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObjectWebView.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObjectWebView.dia",
+    "index-unit-output-path" : "/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObjectWebView.o",
+    "llvm-bc" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObjectWebView.bc",
+    "object" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObjectWebView.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObjectWebView.swiftdeps",
+    "swiftmodule" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasObjectWebView~partial.swiftmodule"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Views/CanvasView.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasView.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasView.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasView.dia",
+    "index-unit-output-path" : "/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasView.o",
+    "llvm-bc" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasView.bc",
+    "object" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasView.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasView.swiftdeps",
+    "swiftmodule" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/CanvasView~partial.swiftmodule"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Views/HomeView.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/HomeView.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/HomeView.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/HomeView.dia",
+    "index-unit-output-path" : "/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/HomeView.o",
+    "llvm-bc" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/HomeView.bc",
+    "object" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/HomeView.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/HomeView.swiftdeps",
+    "swiftmodule" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/HomeView~partial.swiftmodule"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Views/SiriGlowView.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/SiriGlowView.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/SiriGlowView.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/SiriGlowView.dia",
+    "index-unit-output-path" : "/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/SiriGlowView.o",
+    "llvm-bc" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/SiriGlowView.bc",
+    "object" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/SiriGlowView.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/SiriGlowView.swiftdeps",
+    "swiftmodule" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/SiriGlowView~partial.swiftmodule"
+  },
+  "/Users/rohanshankar/Downloads/iris/iPad/iris-app/Views/ToolbarView.swift" : {
+    "const-values" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/ToolbarView.swiftconstvalues",
+    "dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/ToolbarView.d",
+    "diagnostics" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/ToolbarView.dia",
+    "index-unit-output-path" : "/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/ToolbarView.o",
+    "llvm-bc" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/ToolbarView.bc",
+    "object" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/ToolbarView.o",
+    "swift-dependencies" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/ToolbarView.swiftdeps",
+    "swiftmodule" : "/Users/rohanshankar/Downloads/iris/iPad/.xcode-derived/Build/Intermediates.noindex/iris-app.build/Debug-iphoneos/iris-app.build/Objects-normal/arm64/ToolbarView~partial.swiftmodule"
+  }
+}
