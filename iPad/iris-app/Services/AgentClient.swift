@@ -163,7 +163,7 @@ enum AgentClient {
             for event in events {
                 guard let kind = event["kind"] as? String, kind == "widget.open" else { continue }
                 if let widgetDict = event["widget"] as? [String: Any] {
-                    let target = widgetDict["target"] as? String ?? "mac"
+                    let target = (widgetDict["target"] as? String ?? "mac").lowercased()
                     guard target == "ipad" else { continue }
                     if let widget = parseWidgetFromEvent(widgetDict) {
                         widgets.append(widget)

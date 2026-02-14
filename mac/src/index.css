@@ -391,6 +391,42 @@ body {
   border-bottom-left-radius: 3px;
 }
 
+/* ─── Tool Call Chips ─── */
+
+.iris-tool-calls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.iris-tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--edge-accent);
+  background: var(--accent-ghost);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+}
+
+.iris-tool-chip-name {
+  color: #c4b5fd;
+  font-family: "SF Mono", "Menlo", ui-monospace, monospace;
+  font-size: 9.5px;
+}
+
+.iris-tool-chip-target {
+  color: var(--text-dim);
+  font-size: 9px;
+  padding: 0 4px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.06);
+}
+
 /* ─── Markdown ─── */
 
 .iris-markdown {
