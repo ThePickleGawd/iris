@@ -63,6 +63,14 @@ interface ElectronAPI {
     }
   }) => Promise<{ success: boolean; id: string; error?: string }>
   
+  // Session Management
+  getSessions: () => Promise<{ items: any[]; count: number }>
+  getCurrentSession: () => Promise<{ id: string; agent: string; name: string } | null>
+  setCurrentSession: (session: { id: string; agent: string; name: string } | null) => Promise<{ success: boolean }>
+  createSession: (params: { id: string; name: string; agent: string }) => Promise<any>
+  getSessionMessages: (sessionId: string, since?: string) => Promise<{ items: any[]; count: number }>
+  onSessionMessagesUpdate: (callback: (data: { sessionId: string; messages: any[] }) => void) => () => void
+
   // Iris Device Discovery
   getIrisDevices: () => Promise<any[]>
   getIrisDevice: (id: string) => Promise<any | null>
@@ -254,6 +262,21 @@ contextBridge.exposeInMainWorld("electronAPI", {
     }
   }) => ipcRenderer.invoke("open-widget", spec),
   
+  // ─── Session Management ──────────────────────────────
+  getSessions: () => ipcRenderer.invoke("get-sessions"),
+  getCurrentSession: () => ipcRenderer.invoke("get-current-session"),
+  setCurrentSession: (session: { id: string; agent: string; name: string } | null) =>
+    ipcRenderer.invoke("set-current-session", session),
+  createSession: (params: { id: string; name: string; agent: string }) =>
+    ipcRenderer.invoke("create-session", params),
+  getSessionMessages: (sessionId: string, since?: string) =>
+    ipcRenderer.invoke("get-session-messages", sessionId, since),
+  onSessionMessagesUpdate: (callback: (data: { sessionId: string; messages: any[] }) => void) => {
+    const subscription = (_: any, data: { sessionId: string; messages: any[] }) => callback(data)
+    ipcRenderer.on("session-messages-update", subscription)
+    return () => ipcRenderer.removeListener("session-messages-update", subscription)
+  },
+
   // ─── Network Info & Device Connection ──────────────
   getNetworkInfo: () => ipcRenderer.invoke("get-network-info"),
   connectIpad: (host: string, port?: number) => ipcRenderer.invoke("connect-ipad", host, port),

@@ -8,8 +8,17 @@ import { uploadScreenshotToBackend } from "./backendUploader"
 
 const AGENT_SERVER_URL = process.env.IRIS_AGENT_URL || "http://localhost:8000"
 
+interface SessionInfo {
+  id: string
+  agent: string
+  name: string
+}
+
 export function initializeIpcHandlers(appState: AppState): void {
   let notificationsEnabled = true
+  let currentSession: SessionInfo | null = null
+  let messagePollerInterval: ReturnType<typeof setInterval> | null = null
+  let lastMessageTimestamp: string | null = null
   const widgetManager = new WidgetWindowManager()
   const getLatestScreenshotPathFromQueues = (): string | undefined => {
     const queue = appState.getScreenshotQueue()
@@ -240,6 +249,141 @@ export function initializeIpcHandlers(appState: AppState): void {
     return widgetManager.openWidget(spec)
   })
 
+  // ─── Session Management ─────────────────────────────────
+
+  function agentServerGet(path: string): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const parsed = new URL(`${AGENT_SERVER_URL}${path}`)
+      const req = http.request(
+        {
+          hostname: parsed.hostname,
+          port: parsed.port,
+          path: parsed.pathname + parsed.search,
+          method: "GET",
+          timeout: 10_000,
+        },
+        (res) => {
+          let data = ""
+          res.on("data", (chunk) => (data += chunk))
+          res.on("end", () => {
+            if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+              try { resolve(JSON.parse(data)) } catch { resolve(data) }
+            } else {
+              reject(new Error(`Agent server error ${res.statusCode}: ${data.slice(0, 300)}`))
+            }
+          })
+        }
+      )
+      req.on("error", reject)
+      req.on("timeout", () => { req.destroy(); reject(new Error("Agent server timeout")) })
+      req.end()
+    })
+  }
+
+  function agentServerPost(path: string, body: unknown): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const bodyStr = JSON.stringify(body)
+      const parsed = new URL(`${AGENT_SERVER_URL}${path}`)
+      const req = http.request(
+        {
+          hostname: parsed.hostname,
+          port: parsed.port,
+          path: parsed.pathname,
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(bodyStr) },
+          timeout: 10_000,
+        },
+        (res) => {
+          let data = ""
+          res.on("data", (chunk) => (data += chunk))
+          res.on("end", () => {
+            if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+              try { resolve(JSON.parse(data)) } catch { resolve(data) }
+            } else {
+              reject(new Error(`Agent server error ${res.statusCode}: ${data.slice(0, 300)}`))
+            }
+          })
+        }
+      )
+      req.on("error", reject)
+      req.on("timeout", () => { req.destroy(); reject(new Error("Agent server timeout")) })
+      req.write(bodyStr)
+      req.end()
+    })
+  }
+
+  ipcMain.handle("get-sessions", async () => {
+    try {
+      return await agentServerGet("/sessions?limit=50")
+    } catch (error: any) {
+      console.error("Failed to fetch sessions:", error)
+      return { items: [], count: 0 }
+    }
+  })
+
+  ipcMain.handle("get-current-session", async () => {
+    return currentSession
+  })
+
+  ipcMain.handle("set-current-session", async (_, session: SessionInfo | null) => {
+    currentSession = session
+    lastMessageTimestamp = null
+    startMessagePoller()
+    return { success: true }
+  })
+
+  ipcMain.handle("create-session", async (_, params: { id: string; name: string; agent: string }) => {
+    try {
+      const result = await agentServerPost("/sessions", params)
+      currentSession = { id: params.id, name: params.name, agent: params.agent }
+      lastMessageTimestamp = null
+      startMessagePoller()
+      return result
+    } catch (error: any) {
+      console.error("Failed to create session:", error)
+      return { error: error.message }
+    }
+  })
+
+  ipcMain.handle("get-session-messages", async (_, sessionId: string, since?: string) => {
+    try {
+      const qs = since ? `?since=${encodeURIComponent(since)}&limit=200` : "?limit=200"
+      return await agentServerGet(`/sessions/${sessionId}/messages${qs}`)
+    } catch (error: any) {
+      console.error("Failed to fetch session messages:", error)
+      return { items: [], count: 0 }
+    }
+  })
+
+  function startMessagePoller() {
+    if (messagePollerInterval) {
+      clearInterval(messagePollerInterval)
+      messagePollerInterval = null
+    }
+    if (!currentSession) return
+
+    messagePollerInterval = setInterval(async () => {
+      if (!currentSession) return
+      try {
+        const qs = lastMessageTimestamp
+          ? `?since=${encodeURIComponent(lastMessageTimestamp)}&limit=200`
+          : "?limit=200"
+        const data = await agentServerGet(`/sessions/${currentSession.id}/messages${qs}`)
+        const items = data?.items || []
+        if (items.length > 0) {
+          lastMessageTimestamp = items[items.length - 1].created_at
+          const mainWindow = appState.getMainWindow()
+          mainWindow?.webContents.send("session-messages-update", {
+            sessionId: currentSession.id,
+            messages: items,
+          })
+        }
+      } catch {
+        // Polling failure is non-fatal
+      }
+    }, 3000)
+  }
+
   // Window movement handlers
   ipcMain.handle("move-window-left", async () => {
     appState.moveWindowLeft()
@@ -324,8 +468,9 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   function agentChatNonStreaming(message: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      const chatId = `mac-${appState.deviceDiscovery.getDeviceId()}`
-      const body = JSON.stringify({ agent: "iris", chat_id: chatId, message })
+      const chatId = currentSession?.id || `mac-${appState.deviceDiscovery.getDeviceId()}`
+      const agent = currentSession?.agent || "iris"
+      const body = JSON.stringify({ agent, chat_id: chatId, message })
       const parsed = new URL(`${AGENT_SERVER_URL}/chat`)
 
       const req = http.request(
@@ -362,8 +507,9 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   function agentChatStream(message: string, onChunk: (chunk: string) => void): Promise<string> {
     return new Promise((resolve, reject) => {
-      const chatId = `mac-${appState.deviceDiscovery.getDeviceId()}`
-      const body = JSON.stringify({ agent: "iris", chat_id: chatId, message })
+      const chatId = currentSession?.id || `mac-${appState.deviceDiscovery.getDeviceId()}`
+      const agent = currentSession?.agent || "iris"
+      const body = JSON.stringify({ agent, chat_id: chatId, message })
       const parsed = new URL(`${AGENT_SERVER_URL}/chat/stream`)
 
       const req = http.request(

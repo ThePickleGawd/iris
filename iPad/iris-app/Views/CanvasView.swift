@@ -4,70 +4,50 @@ import UIKit
 
 struct CanvasView: UIViewRepresentable {
     @EnvironmentObject var canvasState: CanvasState
-    let document: Document
+    let document: Document?
     let objectManager: CanvasObjectManager
     let cursor: AgentCursorController
 
     func makeUIView(context: Context) -> NoteCanvasView {
-        let canvasView = NoteCanvasView()
-        canvasView.delegate = context.coordinator
-        canvasView.backgroundColor = InfiniteCanvasBackgroundView.baseColor
-        canvasView.isOpaque = true
-        canvasView.drawingPolicy = .pencilOnly
-        canvasView.overrideUserInterfaceStyle = .light
-        canvasView.minimumZoomScale = 0.25
-        canvasView.maximumZoomScale = 4.0
-        canvasView.alwaysBounceVertical = true
-        canvasView.alwaysBounceHorizontal = true
-        canvasView.showsHorizontalScrollIndicator = false
-        canvasView.showsVerticalScrollIndicator = false
-        canvasView.contentInsetAdjustmentBehavior = .never
-        canvasView.undoManager?.levelsOfUndo = 50
+        let view = NoteCanvasView()
+        view.delegate = context.coordinator
+        view.objectManager = objectManager
 
-        canvasView.drawing = document.loadDrawing()
-        canvasState.drawing = canvasView.drawing
+        view.backgroundColor = UIColor(red: 0.96, green: 0.97, blue: 0.99, alpha: 1)
+        view.isOpaque = true
+        view.drawingPolicy = .anyInput
+        view.overrideUserInterfaceStyle = .light
 
-        canvasView.configureForInfiniteCanvas()
-        canvasView.objectManager = objectManager
+        view.minimumZoomScale = 0.5
+        view.maximumZoomScale = 3.0
+        view.bouncesZoom = false
+        view.alwaysBounceVertical = true
+        view.alwaysBounceHorizontal = true
+        view.showsVerticalScrollIndicator = false
+        view.showsHorizontalScrollIndicator = false
 
-        applyTool(to: canvasView)
+        view.configureForInfiniteCanvas()
 
-        let pencilInteraction = UIPencilInteraction()
-        pencilInteraction.delegate = context.coordinator
-        canvasView.addInteraction(pencilInteraction)
-
-        // Two-finger tap -> undo
-        let twoFingerTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTwoFingerTap(_:)))
-        twoFingerTap.numberOfTouchesRequired = 2
-        twoFingerTap.requiresExclusiveTouchType = false
-        canvasView.addGestureRecognizer(twoFingerTap)
-
-        // Three-finger tap -> redo
-        let threeFingerTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleThreeFingerTap(_:)))
-        threeFingerTap.numberOfTouchesRequired = 3
-        threeFingerTap.requiresExclusiveTouchType = false
-        canvasView.addGestureRecognizer(threeFingerTap)
-
-        twoFingerTap.require(toFail: threeFingerTap)
-
-        objectManager.attach(to: canvasView, cursor: cursor)
-
-        // Center viewport after layout
-        DispatchQueue.main.async {
-            canvasView.centerViewport()
+        if let document {
+            view.drawing = document.loadDrawing()
+            canvasState.drawing = view.drawing
         }
 
-        return canvasView
+        applyTool(to: view)
+        objectManager.attach(to: view, cursor: cursor)
+
+        DispatchQueue.main.async {
+            view.centerViewport()
+            view.setZoomScale(1.0, animated: false)
+            self.canvasState.currentZoomScale = 1.0
+        }
+
+        return view
     }
 
-    func updateUIView(_ canvasView: NoteCanvasView, context: Context) {
+    func updateUIView(_ view: NoteCanvasView, context: Context) {
         context.coordinator.parent = self
-        applyTool(to: canvasView)
-
-        if canvasState.needsDrawingReset {
-            canvasState.needsDrawingReset = false
-            canvasView.drawing = canvasState.drawing
-        }
+        applyTool(to: view)
     }
 
     private func applyTool(to canvasView: PKCanvasView) {
@@ -75,134 +55,54 @@ struct CanvasView: UIViewRepresentable {
         case .pen:
             canvasView.tool = PKInkingTool(.pen, color: canvasState.currentColor, width: canvasState.strokeWidth)
         case .highlighter:
-            canvasView.tool = PKInkingTool(.marker, color: canvasState.currentColor.withAlphaComponent(0.3), width: canvasState.strokeWidth * 5)
+            canvasView.tool = PKInkingTool(.marker, color: canvasState.currentColor.withAlphaComponent(0.35), width: canvasState.strokeWidth * 3)
         case .eraser:
             canvasView.tool = PKEraserTool(.vector)
-        case .lasso:
-            canvasView.tool = PKLassoTool()
         }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    // MARK: - Coordinator
-
-    class Coordinator: NSObject, PKCanvasViewDelegate, UIPencilInteractionDelegate {
+    final class Coordinator: NSObject, PKCanvasViewDelegate {
         var parent: CanvasView
-        private var previousTool: DrawingTool = .pen
-        private var squeezePreviousTool: DrawingTool?
         private var saveTimer: Timer?
 
         init(_ parent: CanvasView) {
             self.parent = parent
         }
 
-        // MARK: - Multi-finger tap gestures
-
-        @objc func handleTwoFingerTap(_ gesture: UITapGestureRecognizer) {
-            parent.canvasState.undo()
-        }
-
-        @objc func handleThreeFingerTap(_ gesture: UITapGestureRecognizer) {
-            parent.canvasState.redo()
-        }
-
-        // MARK: - Scroll
-
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
-            parent.objectManager.updateZoomScale(scrollView.zoomScale)
+            guard let canvas = scrollView as? NoteCanvasView else { return }
+            canvas.updateWidgetOverlayTransform()
+            parent.objectManager.updateZoomScale(canvas.zoomScale)
+            DispatchQueue.main.async {
+                self.parent.canvasState.currentZoomScale = canvas.zoomScale
+            }
         }
 
-        // MARK: - PKCanvasViewDelegate
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            (scrollView as? NoteCanvasView)?.updateWidgetOverlayTransform()
+        }
 
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
             parent.canvasState.drawing = canvasView.drawing
-
-            saveTimer?.invalidate()
-            saveTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { [weak self] _ in
-                guard let self else { return }
-                self.parent.document.saveDrawing(canvasView.drawing)
-            }
-        }
-
-        func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
+            parent.canvasState.undoManager = canvasView.undoManager
             parent.canvasState.canUndo = canvasView.undoManager?.canUndo ?? false
             parent.canvasState.canRedo = canvasView.undoManager?.canRedo ?? false
-            parent.canvasState.undoManager = canvasView.undoManager
-        }
 
-        // MARK: - UIPencilInteractionDelegate
-
-        func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
-            switch UIPencilInteraction.preferredTapAction {
-            case .ignore:
-                break
-            case .switchEraser:
-                DispatchQueue.main.async {
-                    if self.parent.canvasState.currentTool == .eraser {
-                        self.parent.canvasState.currentTool = self.previousTool
-                    } else {
-                        self.previousTool = self.parent.canvasState.currentTool
-                        self.parent.canvasState.currentTool = .eraser
-                    }
-                }
-            case .switchPrevious:
-                DispatchQueue.main.async {
-                    let current = self.parent.canvasState.currentTool
-                    self.parent.canvasState.currentTool = self.previousTool
-                    self.previousTool = current
-                }
-            case .showColorPalette:
-                DispatchQueue.main.async {
-                    self.cycleToNextColor()
-                }
-            case .showInkAttributes:
-                break
-            @unknown default:
-                break
-            }
-        }
-
-        // MARK: - Apple Pencil Pro Squeeze
-
-        @available(iOS 17.5, *)
-        func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
-            DispatchQueue.main.async {
-                switch squeeze.phase {
-                case .began, .changed:
-                    if self.squeezePreviousTool == nil {
-                        self.squeezePreviousTool = self.parent.canvasState.currentTool
-                        self.parent.canvasState.currentTool = .eraser
-                    }
-                case .ended, .cancelled:
-                    if let tool = self.squeezePreviousTool {
-                        self.parent.canvasState.currentTool = tool
-                        self.squeezePreviousTool = nil
-                    }
-                @unknown default:
-                    break
-                }
-            }
-        }
-
-        private func cycleToNextColor() {
-            let colors = CanvasState.availableColors
-            if let currentIndex = colors.firstIndex(where: {
-                $0.isApproximatelyEqual(to: parent.canvasState.currentColor)
-            }) {
-                let nextIndex = (currentIndex + 1) % colors.count
-                parent.canvasState.currentColor = colors[nextIndex]
-            } else {
-                parent.canvasState.currentColor = colors[0]
+            saveTimer?.invalidate()
+            guard let doc = parent.document else { return }
+            saveTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: false) { _ in
+                doc.saveDrawing(canvasView.drawing)
             }
         }
     }
 }
 
-// MARK: - NoteCanvasView
+final class NoteCanvasView: PKCanvasView {
+    private let gridView = InfiniteCanvasBackgroundView()
+    private let widgetOverlay = WidgetOverlayView()
 
-class NoteCanvasView: PKCanvasView {
-    private let infiniteBackground = InfiniteCanvasBackgroundView()
     weak var objectManager: CanvasObjectManager?
 
     override init(frame: CGRect) {
@@ -216,117 +116,100 @@ class NoteCanvasView: PKCanvasView {
     }
 
     private func setup() {
-        infiniteBackground.isUserInteractionEnabled = false
-        infiniteBackground.backgroundColor = .clear
-        infiniteBackground.layer.zPosition = -2
-        insertSubview(infiniteBackground, at: 0)
+        gridView.isUserInteractionEnabled = false
+        gridView.layer.zPosition = -2
+        insertSubview(gridView, at: 0)
+
+        widgetOverlay.isUserInteractionEnabled = true
+        widgetOverlay.backgroundColor = .clear
+        widgetOverlay.layer.zPosition = 10
+        widgetOverlay.layer.anchorPoint = .zero
+        widgetOverlay.layer.position = .zero
+        addSubview(widgetOverlay)
     }
 
     func configureForInfiniteCanvas() {
         let size = CanvasState.canvasSize
         contentSize = CGSize(width: size, height: size)
-        infiniteBackground.frame = CGRect(x: 0, y: 0, width: size, height: size)
+        gridView.frame = CGRect(x: 0, y: 0, width: size, height: size)
+        widgetOverlay.frame = CGRect(origin: .zero, size: bounds.size)
+        updateWidgetOverlayTransform()
     }
 
     func centerViewport() {
         let center = CanvasState.canvasCenter
-        let offsetX = center.x - bounds.width / 2
-        let offsetY = center.y - bounds.height / 2
-        setContentOffset(CGPoint(x: offsetX, y: offsetY), animated: false)
+        let ox = center.x - bounds.width / 2
+        let oy = center.y - bounds.height / 2
+        setContentOffset(CGPoint(x: ox, y: oy), animated: false)
+        updateWidgetOverlayTransform()
+    }
+
+    func widgetContainerView() -> UIView { widgetOverlay }
+
+    func screenPoint(forCanvasPoint point: CGPoint) -> CGPoint {
+        point.applying(widgetOverlay.transform)
+    }
+
+    func updateWidgetOverlayTransform() {
+        let z = zoomScale
+        let ox = contentOffset.x
+        let oy = contentOffset.y
+        widgetOverlay.transform = CGAffineTransform(a: z, b: 0, c: 0, d: z, tx: -ox * z, ty: -oy * z)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        widgetOverlay.frame = CGRect(origin: .zero, size: bounds.size)
+        updateWidgetOverlayTransform()
     }
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        // Pencil always goes to PencilKit for drawing
-        if let event = event, let touch = event.allTouches?.first, touch.type == .pencil {
+        if let event, let touch = event.allTouches?.first, touch.type == .pencil {
             return super.hitTest(point, with: event)
         }
-
-        // For finger touches, check if a widget is under the point — return it
-        // so its pan gesture recognizer handles the drag instead of canvas scroll
-        if let manager = objectManager {
-            for (_, widgetView) in manager.objectViews {
-                let localPoint = widgetView.convert(point, from: self)
-                if widgetView.bounds.contains(localPoint) {
-                    return widgetView
-                }
-            }
+        if let event, (event.allTouches?.count ?? 0) >= 2 {
+            return super.hitTest(point, with: event)
         }
-
-        // Fallback to default (scroll/zoom)
+        let local = widgetOverlay.convert(point, from: self)
+        if let target = widgetOverlay.hitTest(local, with: event) {
+            return target
+        }
         return super.hitTest(point, with: event)
-    }
-
-    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        for touch in touches where touch.type == .pencil {
-            setContentOffset(contentOffset, animated: false)
-            break
-        }
-        super.touchesBegan(touches, with: event)
-    }
-
-    // MARK: - Duplicate menu item
-
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        if window != nil {
-            DispatchQueue.main.async { [weak self] in
-                _ = self?.becomeFirstResponder()
-            }
-        }
-        UIMenuController.shared.menuItems = [
-            UIMenuItem(title: "Duplicate", action: #selector(duplicateSelection(_:)))
-        ]
-    }
-
-    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-        if action == #selector(duplicateSelection(_:)) {
-            return super.canPerformAction(#selector(copy(_:)), withSender: sender)
-        }
-        return super.canPerformAction(action, withSender: sender)
-    }
-
-    @objc func duplicateSelection(_ sender: Any?) {
-        copy(sender)
-        paste(sender)
     }
 }
 
-// MARK: - Infinite Canvas Background (pattern-based dot grid)
+final class WidgetOverlayView: UIView {
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        for subview in subviews where !subview.isHidden && subview.alpha > 0.01 {
+            let p = convert(point, to: subview)
+            if subview.point(inside: p, with: event) { return true }
+        }
+        return false
+    }
+}
 
-class InfiniteCanvasBackgroundView: UIView {
-    static let baseColor = UIColor(red: 0.96, green: 0.96, blue: 0.97, alpha: 1)
-
+final class InfiniteCanvasBackgroundView: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = Self.makeDotPatternColor()
+        backgroundColor = Self.makeGrid()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
-        backgroundColor = Self.makeDotPatternColor()
+        backgroundColor = Self.makeGrid()
     }
 
-    private static func makeDotPatternColor() -> UIColor {
+    private static func makeGrid() -> UIColor {
         let spacing: CGFloat = 24
-        let dotRadius: CGFloat = 1.0
-        let tileSize = CGSize(width: spacing, height: spacing)
-
-        let renderer = UIGraphicsImageRenderer(size: tileSize)
+        let size = CGSize(width: spacing, height: spacing)
+        let renderer = UIGraphicsImageRenderer(size: size)
         let image = renderer.image { ctx in
-            // Fill tile with base color
-            baseColor.setFill()
-            ctx.fill(CGRect(origin: .zero, size: tileSize))
+            UIColor(red: 0.96, green: 0.97, blue: 0.99, alpha: 1).setFill()
+            ctx.fill(CGRect(origin: .zero, size: size))
 
-            // Draw dot at center of tile
-            UIColor(white: 0.78, alpha: 1).setFill()
-            ctx.cgContext.fillEllipse(in: CGRect(
-                x: spacing / 2 - dotRadius,
-                y: spacing / 2 - dotRadius,
-                width: dotRadius * 2,
-                height: dotRadius * 2
-            ))
+            UIColor(white: 0.80, alpha: 1).setFill()
+            ctx.cgContext.fillEllipse(in: CGRect(x: spacing/2 - 1, y: spacing/2 - 1, width: 2, height: 2))
         }
-
         return UIColor(patternImage: image)
     }
 }

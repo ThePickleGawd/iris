@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, HTTPException
+import httpx
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -15,6 +17,8 @@ except ImportError:
     import iris_agent
     import claude_code
     import codex_agent
+
+BACKEND_URL = os.environ.get("IRIS_BACKEND_URL", "http://localhost:5001")
 
 app = FastAPI(title="Iris Agent Server")
 app.add_middleware(
@@ -150,6 +154,42 @@ async def chat_stream(req: StreamChatRequest):
 def _sse(data: dict) -> str:
     """Format a dict as an SSE data line."""
     return f"data: {json.dumps(data)}\n\n"
+
+
+# ─── Session Proxy (to Backend) ───────────────────────────────────────────────
+
+@app.post("/sessions")
+async def proxy_create_session(req: Request):
+    body = await req.json()
+    async with httpx.AsyncClient(base_url=BACKEND_URL, timeout=5.0) as client:
+        resp = await client.post("/api/sessions", json=body)
+    return resp.json()
+
+
+@app.get("/sessions")
+async def proxy_list_sessions(limit: int = Query(50)):
+    async with httpx.AsyncClient(base_url=BACKEND_URL, timeout=5.0) as client:
+        resp = await client.get("/api/sessions", params={"limit": limit})
+    return resp.json()
+
+
+@app.get("/sessions/{session_id}")
+async def proxy_get_session(session_id: str):
+    async with httpx.AsyncClient(base_url=BACKEND_URL, timeout=5.0) as client:
+        resp = await client.get(f"/api/sessions/{session_id}")
+    if resp.status_code == 404:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return resp.json()
+
+
+@app.get("/sessions/{session_id}/messages")
+async def proxy_list_messages(session_id: str, since: str | None = Query(None), limit: int = Query(200)):
+    params: dict = {"limit": limit}
+    if since:
+        params["since"] = since
+    async with httpx.AsyncClient(base_url=BACKEND_URL, timeout=5.0) as client:
+        resp = await client.get(f"/api/sessions/{session_id}/messages", params=params)
+    return resp.json()
 
 
 # ─── Health ────────────────────────────────────────────────────────────────────

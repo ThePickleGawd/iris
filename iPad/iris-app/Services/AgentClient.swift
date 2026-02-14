@@ -47,6 +47,31 @@ enum AgentClient {
 
         return text
     }
+
+    /// Register a session with the agents server so it appears on the Mac.
+    /// Fire-and-forget — errors are silently ignored.
+    static func registerSession(
+        id: String,
+        name: String,
+        agent: String,
+        serverURL: URL
+    ) async {
+        let url = serverURL.appendingPathComponent("sessions")
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 5
+
+        let payload: [String: Any] = [
+            "id": id,
+            "name": name,
+            "agent": agent
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+
+        _ = try? await session.data(for: request)
+    }
 }
 
 enum AgentClientError: LocalizedError {

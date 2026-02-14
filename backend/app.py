@@ -47,6 +47,7 @@ SESSION_STATUS_ARCHIVED = "archived"
 SESSION_STATUSES = {SESSION_STATUS_ACTIVE, SESSION_STATUS_ARCHIVED}
 STORE_ENTITIES = (
     "sessions",
+    "messages",
     "transcripts",
     "screenshots",
     "device_commands",
@@ -269,8 +270,11 @@ def session_to_dict(row: dict[str, Any]) -> dict[str, Any]:
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
         "name": row.get("name"),
+        "agent": row.get("agent", "iris"),
         "status": row.get("status"),
+        "device_id": row.get("device_id"),
         "source_device_id": row.get("source_device_id"),
+        "last_message_at": row.get("last_message_at"),
         "metadata": metadata,
     }
 
@@ -340,6 +344,17 @@ def agent_status_to_dict(row: dict[str, Any] | None) -> dict[str, Any] | None:
         "detail": row.get("detail"),
         "source_device_id": row.get("source_device_id"),
         "metadata": metadata,
+    }
+
+
+def message_to_dict(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "session_id": row.get("session_id"),
+        "created_at": row.get("created_at"),
+        "role": row.get("role"),
+        "content": row.get("content"),
+        "device_id": row.get("device_id"),
     }
 
 
@@ -450,7 +465,9 @@ def create_app() -> Flask:
         payload = request.get_json(silent=True) or {}
         name = payload.get("name")
         source_device_id = payload.get("source_device_id")
+        device_id = payload.get("device_id")
         metadata = payload.get("metadata", {})
+        agent = payload.get("agent")
 
         session_name = "Untitled Session"
         if isinstance(name, str) and name.strip():
@@ -459,15 +476,36 @@ def create_app() -> Flask:
         if not isinstance(metadata, (dict, list)):
             metadata = {}
 
-        session_id = str(uuid.uuid4())
+        # Accept optional caller-provided id (for iPad registration)
+        session_id = payload.get("id")
+        if isinstance(session_id, str) and session_id.strip():
+            session_id = session_id.strip()
+            # Idempotent: if session already exists, update and return it
+            existing = get_record("sessions", session_id)
+            if existing:
+                existing["updated_at"] = now_iso()
+                if isinstance(name, str) and name.strip():
+                    existing["name"] = name.strip()
+                if isinstance(agent, str) and agent.strip():
+                    existing["agent"] = agent.strip()
+                if isinstance(device_id, str):
+                    existing["device_id"] = device_id.strip()
+                save_record("sessions", existing)
+                return jsonify(session_to_dict(existing)), 201
+        else:
+            session_id = str(uuid.uuid4())
+
         ts = now_iso()
         row = {
             "id": session_id,
             "created_at": ts,
             "updated_at": ts,
             "name": session_name,
+            "agent": agent.strip() if isinstance(agent, str) and agent.strip() else "iris",
             "status": SESSION_STATUS_ACTIVE,
+            "device_id": device_id.strip() if isinstance(device_id, str) else None,
             "source_device_id": source_device_id.strip() if isinstance(source_device_id, str) else None,
+            "last_message_at": None,
             "metadata": metadata,
         }
         save_record("sessions", row)
@@ -848,6 +886,108 @@ def create_app() -> Flask:
         save_record("device_commands", row)
         touch_session(row.get("session_id"))
         return jsonify(command_to_dict(row))
+
+    # ─── Messages ─────────────────────────────────────────────────────────
+
+    @app.post("/api/sessions/<session_id>/messages")
+    def create_message(session_id: str) -> Any:
+        payload = request.get_json(silent=True) or {}
+        role = payload.get("role")
+        content = payload.get("content")
+
+        if role not in ("user", "assistant"):
+            return jsonify({"error": "role must be 'user' or 'assistant'"}), 400
+        if not isinstance(content, str) or not content.strip():
+            return jsonify({"error": "content is required"}), 400
+
+        message_id = payload.get("id") or str(uuid.uuid4())
+        ts = now_iso()
+        device_id = payload.get("device_id")
+
+        # Idempotent — skip if message already exists
+        existing = get_record("messages", message_id)
+        if existing:
+            return jsonify(message_to_dict(existing)), 201
+
+        # Auto-create session if it doesn't exist
+        if not ensure_session_exists(session_id):
+            session_ts = ts
+            session_row = {
+                "id": session_id,
+                "created_at": session_ts,
+                "updated_at": session_ts,
+                "name": "Untitled",
+                "agent": "iris",
+                "status": SESSION_STATUS_ACTIVE,
+                "device_id": None,
+                "source_device_id": None,
+                "last_message_at": None,
+                "metadata": {},
+            }
+            save_record("sessions", session_row)
+
+        row = {
+            "id": message_id,
+            "session_id": session_id,
+            "created_at": ts,
+            "role": role,
+            "content": content.strip(),
+            "device_id": device_id,
+        }
+        save_record("messages", row)
+
+        # Update session's last_message_at
+        session_row = get_record("sessions", session_id)
+        if session_row:
+            session_row["last_message_at"] = ts
+            session_row["updated_at"] = ts
+            save_record("sessions", session_row)
+
+        return jsonify(message_to_dict(row)), 201
+
+    @app.get("/api/sessions/<session_id>/messages")
+    def list_messages(session_id: str) -> Any:
+        try:
+            limit = parse_list_limit(request.args.get("limit"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        since = None
+        raw_since = request.args.get("since")
+        if raw_since:
+            try:
+                since = parse_iso8601_to_utc(raw_since)
+            except ValueError:
+                return jsonify({"error": "since must be a valid ISO-8601 timestamp"}), 400
+
+        all_messages = list_records("messages")
+        filtered = [row for row in all_messages if row.get("session_id") == session_id]
+
+        if since:
+            filtered = [row for row in filtered if row.get("created_at", "") > since]
+
+        filtered.sort(key=lambda row: (to_dt(row.get("created_at")), str(row.get("id", ""))))
+        filtered = filtered[:limit]
+
+        items = [message_to_dict(row) for row in filtered]
+        return jsonify({
+            "items": items,
+            "count": len(items),
+        })
+
+    @app.delete("/api/sessions/<session_id>")
+    def delete_session(session_id: str) -> Any:
+        if not get_record("sessions", session_id):
+            return jsonify({"error": "session not found"}), 404
+
+        # Delete associated messages
+        all_messages = list_records("messages")
+        for msg in all_messages:
+            if msg.get("session_id") == session_id:
+                delete_record("messages", str(msg.get("id")))
+
+        delete_record("sessions", session_id)
+        return jsonify({"id": session_id, "deleted": True})
 
     @app.post("/api/agent-status")
     def upsert_agent_status() -> Any:

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react"
 import { useQuery } from "react-query"
-import { MessageSquare, Settings, X, Mic, SendHorizontal, ListTodo, ImagePlus, Wifi, Monitor, Tablet } from "lucide-react"
+import { MessageSquare, Settings, X, Mic, SendHorizontal, ListTodo, ImagePlus, Wifi, Monitor, Tablet, Plus, ChevronDown } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"
@@ -93,10 +93,6 @@ function playReplyPing() {
   }
 }
 
-interface QueueProps {
-  setView: React.Dispatch<React.SetStateAction<"queue" | "solutions" | "debug">>
-}
-
 type Panel = "chat" | "config"
 
 interface PendingImage {
@@ -106,7 +102,7 @@ interface PendingImage {
   dataUrl: string
 }
 
-const Queue: React.FC<QueueProps> = ({ setView }) => {
+const Queue: React.FC = () => {
   const [toastOpen, setToastOpen] = useState(false)
   const [toastMessage, setToastMessage] = useState<ToastMessage>({
     title: "",
@@ -139,6 +135,9 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
   const [connectedDevices, setConnectedDevices] = useState<any[]>([])
   const [ipadConnecting, setIpadConnecting] = useState(false)
   const [ipadConnectError, setIpadConnectError] = useState("")
+  const [sessions, setSessions] = useState<any[]>([])
+  const [currentSession, setCurrentSession] = useState<{ id: string; agent: string; name: string } | null>(null)
+  const [sessionDropdownOpen, setSessionDropdownOpen] = useState(false)
 
   const contentRef = useRef<HTMLDivElement>(null)
   const chatInputRef = useRef<HTMLInputElement>(null)
@@ -229,6 +228,11 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
     const trimmed = message.trim()
     if (!trimmed && !image) return
 
+    // Auto-create a session if none is selected
+    if (!currentSession) {
+      await handleNewChat()
+    }
+
     const requestId = createRequestId()
     activeStreamRequestRef.current = requestId
     const userText = image ? `[Image] ${image.name}${trimmed ? `\n${trimmed}` : ""}` : trimmed
@@ -259,8 +263,8 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
       mode: transportMode,
       backendBaseUrl: backendBaseUrl.trim(),
       backendStreamPath: backendStreamPath.trim() || "/v1/agent/stream",
-      workspaceId: workspaceId.trim(),
-      sessionId: sessionId.trim(),
+      workspaceId: currentSession?.id || workspaceId.trim(),
+      sessionId: currentSession?.id || sessionId.trim(),
       authToken: backendAuthToken.trim()
     }
 
@@ -379,8 +383,8 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
       mode: transportMode,
       backendBaseUrl: backendBaseUrl.trim(),
       backendStreamPath: backendStreamPath.trim() || "/v1/agent/stream",
-      workspaceId: workspaceId.trim(),
-      sessionId: sessionId.trim(),
+      workspaceId: currentSession?.id || workspaceId.trim(),
+      sessionId: currentSession?.id || sessionId.trim(),
       authToken: backendAuthToken.trim()
     }
 
@@ -600,6 +604,79 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
     return () => cleanups.forEach(c => c())
   }, [])
 
+  // Load sessions and set up message sync
+  const refreshSessions = useCallback(async () => {
+    try {
+      const data = await window.electronAPI.getSessions()
+      setSessions(data?.items || [])
+    } catch {
+      // Session fetch failure is non-fatal
+    }
+  }, [])
+
+  useEffect(() => {
+    refreshSessions()
+    const interval = setInterval(refreshSessions, 10_000)
+    return () => clearInterval(interval)
+  }, [refreshSessions])
+
+  // Listen for polled session message updates from main process
+  useEffect(() => {
+    const cleanup = window.electronAPI.onSessionMessagesUpdate((data: { sessionId: string; messages: any[] }) => {
+      if (!currentSession || data.sessionId !== currentSession.id) return
+      const newMsgs = (data.messages || []).map((m: any) => ({
+        role: m.role as "user" | "assistant",
+        text: m.content,
+        _id: m.id,
+      }))
+      if (newMsgs.length > 0) {
+        setChatMessages((prev) => {
+          const existingIds = new Set(prev.map((m: any) => m._id).filter(Boolean))
+          const toAdd = newMsgs.filter((m: any) => !existingIds.has(m._id))
+          return toAdd.length > 0 ? [...prev, ...toAdd] : prev
+        })
+      }
+    })
+    return cleanup
+  }, [currentSession])
+
+  const handleSelectSession = useCallback(async (session: any) => {
+    const info = { id: session.id, agent: session.agent, name: session.name }
+    setCurrentSession(info)
+    setSessionDropdownOpen(false)
+    setChatMessages([])
+    setChatLoading(true)
+    try {
+      await window.electronAPI.setCurrentSession(info)
+      const data = await window.electronAPI.getSessionMessages(session.id)
+      const msgs = (data?.items || []).map((m: any) => ({
+        role: m.role as "user" | "assistant",
+        text: m.content,
+        _id: m.id,
+      }))
+      setChatMessages(msgs)
+    } catch {
+      // Non-fatal
+    } finally {
+      setChatLoading(false)
+    }
+  }, [])
+
+  const handleNewChat = useCallback(async () => {
+    const id = `mac-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    const name = `Chat ${new Date().toLocaleTimeString()}`
+    const agent = "iris"
+    try {
+      await window.electronAPI.createSession({ id, name, agent })
+      setCurrentSession({ id, agent, name })
+      setChatMessages([])
+      setSessionDropdownOpen(false)
+      await refreshSessions()
+    } catch {
+      // Non-fatal
+    }
+  }, [refreshSessions])
+
   // Restore saved iPad IP
   useEffect(() => {
     try {
@@ -728,11 +805,6 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
         }
       }),
       window.electronAPI.onResetView(() => refetch()),
-      window.electronAPI.onSolutionError((error: string) => {
-        showToast("Processing Failed", "There was an error processing your screenshots.", "error")
-        setView("queue")
-        console.error("Processing error:", error)
-      }),
       window.electronAPI.onProcessingNoScreenshots(() => {
         showToast("No Screenshots", "There are no screenshots to process.", "neutral")
       }),
@@ -747,7 +819,7 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
       resizeObserver.disconnect()
       cleanupFunctions.forEach((cleanup) => cleanup())
     }
-  }, [refetch, setView, soundPingEnabled])
+  }, [refetch, soundPingEnabled])
 
   useEffect(() => {
     return () => {
@@ -814,8 +886,47 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
         <main className="panel main-pane p-4">
           {activePanel === "chat" ? (
             <div className="space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-xs text-slate-500">{chatHint}</div>
+              {/* Session selector bar */}
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <button
+                    type="button"
+                    className="w-full flex items-center justify-between px-2 py-1.5 text-xs rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                    onClick={() => setSessionDropdownOpen((v) => !v)}
+                  >
+                    <span className="truncate">
+                      {currentSession ? `${currentSession.name} (${currentSession.agent})` : "No session selected"}
+                    </span>
+                    <ChevronDown size={12} className="ml-1 flex-shrink-0" />
+                  </button>
+                  {sessionDropdownOpen && (
+                    <div className="absolute z-50 top-full left-0 right-0 mt-1 max-h-48 overflow-y-auto bg-white border border-slate-200 rounded shadow-lg">
+                      {sessions.map((s) => (
+                        <button
+                          key={s.id}
+                          type="button"
+                          className={`w-full text-left px-3 py-1.5 text-xs hover:bg-slate-50 ${currentSession?.id === s.id ? "bg-teal-50 text-teal-800" : "text-slate-700"}`}
+                          onClick={() => handleSelectSession(s)}
+                        >
+                          <span className="font-medium">{s.name}</span>
+                          <span className="ml-1 text-slate-400">({s.agent})</span>
+                        </button>
+                      ))}
+                      {sessions.length === 0 && (
+                        <div className="px-3 py-2 text-xs text-slate-400">No sessions yet</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="px-2 py-1.5 text-[11px] rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 flex items-center gap-1"
+                  onClick={handleNewChat}
+                  title="New chat session"
+                >
+                  <Plus size={12} />
+                  <span>New</span>
+                </button>
                 <button
                   type="button"
                   className="px-2 py-1 text-[11px] rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 flex items-center gap-1"
@@ -824,9 +935,10 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
                   title="Generate TODO popup from conversation"
                 >
                   <ListTodo size={12} />
-                  <span>TODO Popup</span>
+                  <span>TODO</span>
                 </button>
               </div>
+              <div className="text-xs text-slate-500">{chatHint}</div>
 
               {screenshots.length > 0 && (
                 <ScreenshotQueue
