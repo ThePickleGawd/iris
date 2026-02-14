@@ -93,7 +93,10 @@ export class WindowHelper {
       movable: true,
       x: 100, // Start at a visible position
       y: 100,
-      // No titleBarStyle — frame:false on Mac gives a fully frameless window (no traffic lights)
+      // titleBarStyle: "hidden" is required on macOS for proper CSS rendering
+      // on transparent windows. Without it, child element backgrounds don't composite.
+      // Traffic lights are hidden programmatically via setWindowButtonVisibility(false).
+      ...(isMac ? { titleBarStyle: "hidden" as const } : {})
     }
 
     this.mainWindow = new BrowserWindow(windowSettings)
@@ -102,6 +105,7 @@ export class WindowHelper {
     this.mainWindow.setContentProtection(false)
 
     if (process.platform === "darwin") {
+      this.mainWindow.setWindowButtonVisibility(false)
       this.mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
     }
     if (process.platform === "linux") {
