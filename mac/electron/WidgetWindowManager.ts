@@ -26,14 +26,18 @@ export class WidgetWindowManager {
     try {
       const id = spec.id || `widget-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       const existing = this.windows.get(id)
+      const width = clampDimension(spec.width, 520, 280, 1600)
+      const height = clampDimension(spec.height, 420, 200, 1200)
+      const html = this.renderWidgetHtml(spec)
+      const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
 
       if (existing && !existing.isDestroyed()) {
+        existing.setSize(width, height)
+        void existing.loadURL(dataUrl)
+        existing.show()
         existing.focus()
         return { success: true, id }
       }
-
-      const width = spec.width ?? 520
-      const height = spec.height ?? 420
 
       // Position to the right side of the screen, staggered
       const display = screen.getPrimaryDisplay()
@@ -63,9 +67,7 @@ export class WidgetWindowManager {
         }
       })
 
-      const html = this.renderWidgetHtml(spec)
-      const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
-      win.loadURL(dataUrl)
+      void win.loadURL(dataUrl)
 
       win.on("closed", () => {
         this.windows.delete(id)
@@ -126,6 +128,13 @@ export class WidgetWindowManager {
       }
       .wrap { padding: 0 14px 14px; }
       .content { -webkit-app-region: no-drag; }
+      .widget-iframe {
+        width: 100%;
+        min-height: 280px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #0a0a0e;
+      }
       .content img { max-width: 100%; height: auto; border-radius: 8px; }
       .content pre {
         background: rgba(0,0,0,0.4);
@@ -164,9 +173,31 @@ export class WidgetWindowManager {
     <script>
       const spec = JSON.parse(atob(${JSON.stringify(encoded)}));
       const content = document.getElementById('content');
+      const looksLikeDocument = (value) => /<!doctype|<html[\\s>]|<head[\\s>]|<body[\\s>]/i.test(value || '');
+      const runInlineScripts = (root) => {
+        const scripts = root.querySelectorAll('script');
+        scripts.forEach((node) => {
+          const replacement = document.createElement('script');
+          for (const attr of node.attributes) {
+            replacement.setAttribute(attr.name, attr.value);
+          }
+          replacement.text = node.textContent || '';
+          node.parentNode?.replaceChild(replacement, node);
+        });
+      };
 
       if (spec.kind === 'html') {
-        content.innerHTML = spec.payload?.html || '';
+        const rawHtml = spec.payload?.html || '';
+        if (looksLikeDocument(rawHtml)) {
+          const iframe = document.createElement('iframe');
+          iframe.className = 'widget-iframe';
+          iframe.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups');
+          iframe.srcdoc = rawHtml;
+          content.appendChild(iframe);
+        } else {
+          content.innerHTML = rawHtml;
+          runInlineScripts(content);
+        }
       } else if (spec.kind === 'markdown') {
         content.innerHTML = marked.parse(spec.payload?.markdown || '');
       } else if (spec.kind === 'text') {
@@ -203,4 +234,14 @@ function escapeHtml(input: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;")
+}
+
+function clampDimension(
+  value: number | undefined,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  const parsed = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : fallback
+  return Math.max(min, Math.min(max, parsed))
 }

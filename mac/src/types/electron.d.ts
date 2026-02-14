@@ -22,6 +22,7 @@ export interface ElectronAPI {
   moveWindowRight: () => Promise<void>
   moveWindowUp: () => Promise<void>
   moveWindowDown: () => Promise<void>
+  toggleWindow: () => Promise<void>
   analyzeAudioFromBase64: (data: string, mimeType: string) => Promise<{ text: string; timestamp: number }>
   analyzeAudioFile: (path: string) => Promise<{ text: string; timestamp: number }>
   analyzeImageFile: (path: string) => Promise<void>
@@ -44,9 +45,9 @@ export interface ElectronAPI {
     }
   }) => Promise<{ success: boolean; id: string; error?: string }>
   getSessions: () => Promise<{ items: any[]; count: number }>
-  getCurrentSession: () => Promise<{ id: string; agent: string; name: string } | null>
-  setCurrentSession: (session: { id: string; agent: string; name: string } | null) => Promise<{ success: boolean }>
-  createSession: (params: { id: string; name: string; agent: string }) => Promise<any>
+  getCurrentSession: () => Promise<{ id: string; model: string; name: string } | null>
+  setCurrentSession: (session: { id: string; model: string; name: string } | null) => Promise<{ success: boolean }>
+  createSession: (params: { id: string; name: string; model: string }) => Promise<any>
   getSessionMessages: (sessionId: string, since?: string) => Promise<{ items: any[]; count: number }>
   onSessionMessagesUpdate: (callback: (data: { sessionId: string; messages: any[] }) => void) => () => void
   getNetworkInfo: () => Promise<{ macIp: string; allIps: string[]; hostname: string; connectedDevices: any[] }>

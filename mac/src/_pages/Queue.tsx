@@ -14,7 +14,7 @@ import {
 } from "../components/ui/toast"
 import { createRequestId } from "../lib/agentProtocol"
 import type { AgentTransportSettings } from "../lib/agentProtocol"
-import { streamAgentResponse } from "../lib/agentTransport"
+import { requestAgentResponse } from "../lib/agentTransport"
 import { extractWidgetBlocks, normalizeWidgetSpec } from "../lib/widgetProtocol"
 
 interface ChatMessage {
@@ -25,14 +25,14 @@ interface ChatMessage {
 
 interface SessionInfo {
   id: string
-  agent: string
+  model: string
   name: string
 }
 
-const agentChoices = [
-  { id: "iris", name: "Iris", subtitle: "Widget + screenshot workflows" },
-  { id: "codex", name: "Codex", subtitle: "Coding-focused model" },
-  { id: "claude_code", name: "Claude Code", subtitle: "Claude coding agent" },
+const modelChoices = [
+  { id: "gpt-5.2", name: "GPT-5.2", subtitle: "OpenAI general-purpose model" },
+  { id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5", subtitle: "Best for screenshot and widget workflows" },
+  { id: "claude", name: "Claude (Alias)", subtitle: "Routes to default Claude model" },
 ] as const
 
 const Queue: React.FC = () => {
@@ -46,10 +46,10 @@ const Queue: React.FC = () => {
   const [chatInput, setChatInput] = useState("")
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatLoading, setChatLoading] = useState(false)
-  const [showAgentPicker, setShowAgentPicker] = useState(false)
+  const [showModelPicker, setShowModelPicker] = useState(false)
 
   const [backendBaseUrl] = useState("http://localhost:8000")
-  const [backendStreamPath] = useState("/v1/agent/stream")
+  const [backendPath] = useState("/v1/agent")
   const [workspaceId] = useState("default-workspace")
   const [sessionId] = useState("default-session")
   const [backendAuthToken] = useState("")
@@ -107,7 +107,7 @@ const Queue: React.FC = () => {
   }, [])
 
   const handleSelectSession = useCallback(async (session: SessionInfo) => {
-    const info = { id: session.id, agent: session.agent, name: session.name }
+    const info = { id: session.id, model: session.model, name: session.name }
     setCurrentSession(info)
     setChatMessages([])
     setChatLoading(true)
@@ -128,13 +128,13 @@ const Queue: React.FC = () => {
     }
   }, [])
 
-  const handleNewChat = useCallback(async (agent = "iris") => {
+  const handleNewChat = useCallback(async (model = "gpt-5.2") => {
     const id = `mac-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     const name = `Chat ${new Date().toLocaleTimeString()}`
 
     try {
-      await window.electronAPI.createSession({ id, name, agent })
-      const info = { id, name, agent }
+      await window.electronAPI.createSession({ id, name, model })
+      const info = { id, name, model }
       setCurrentSession(info)
       setChatMessages([])
       await refreshSessions()
@@ -144,9 +144,9 @@ const Queue: React.FC = () => {
     }
   }, [refreshSessions])
 
-  const handleAgentPick = useCallback(async (agentId: string) => {
-    setShowAgentPicker(false)
-    await handleNewChat(agentId)
+  const handleModelPick = useCallback(async (modelId: string) => {
+    setShowModelPicker(false)
+    await handleNewChat(modelId)
   }, [handleNewChat])
 
   const sendChatMessage = async (message: string) => {
@@ -167,16 +167,6 @@ const Queue: React.FC = () => {
     setChatMessages((msgs) => [...msgs, { role: "user", text: trimmed }, { role: "assistant", text: "" }])
     setChatLoading(true)
 
-    const appendChunk = (chunk: string) => {
-      setChatMessages((msgs) => {
-        if (msgs.length === 0) return msgs
-        const updated = [...msgs]
-        const idx = updated.length - 1
-        updated[idx] = { ...updated[idx], text: (updated[idx].text || "") + chunk }
-        return updated
-      })
-    }
-
     const setAssistantText = (text: string) => {
       setChatMessages((msgs) => {
         if (msgs.length === 0) return msgs
@@ -190,7 +180,8 @@ const Queue: React.FC = () => {
     const settings: AgentTransportSettings = {
       mode: "backend",
       backendBaseUrl: backendBaseUrl.trim(),
-      backendStreamPath: backendStreamPath.trim() || "/v1/agent/stream",
+      backendPath: backendPath.trim() || "/v1/agent",
+      model: selectedSession?.model || "gpt-5.2",
       workspaceId: selectedSession?.id || workspaceId,
       sessionId: selectedSession?.id || sessionId,
       authToken: backendAuthToken
@@ -201,16 +192,12 @@ const Queue: React.FC = () => {
         throw new Error("Backend URL is required")
       }
 
-      await streamAgentResponse({
+      await requestAgentResponse({
         settings,
         requestId,
         message: trimmed,
         history: chatMessages,
         callbacks: {
-          onDelta: (chunk) => {
-            if (activeStreamRequestRef.current !== requestId) return
-            appendChunk(chunk)
-          },
           onFinal: (text) => {
             if (activeStreamRequestRef.current !== requestId) return
             if (text) {
@@ -305,16 +292,16 @@ const Queue: React.FC = () => {
         <ToastDescription>{toastMessage.description}</ToastDescription>
       </Toast>
 
-      {showAgentPicker && (
-        <div className="iris-agent-picker-backdrop interactive" onClick={() => setShowAgentPicker(false)}>
+      {showModelPicker && (
+        <div className="iris-agent-picker-backdrop interactive" onClick={() => setShowModelPicker(false)}>
           <div className="iris-agent-picker" onClick={(e) => e.stopPropagation()}>
             <div className="iris-agent-picker-title">New Chat</div>
-            {agentChoices.map((choice) => (
+            {modelChoices.map((choice) => (
               <button
                 key={choice.id}
                 type="button"
                 className="iris-agent-picker-option interactive"
-                onClick={() => handleAgentPick(choice.id)}
+                onClick={() => handleModelPick(choice.id)}
               >
                 <span className="iris-agent-picker-name">{choice.name}</span>
                 <span className="iris-agent-picker-sub">{choice.subtitle}</span>
@@ -354,7 +341,7 @@ const Queue: React.FC = () => {
             <button
               type="button"
               className="iris-tab iris-tab-new interactive"
-              onClick={() => setShowAgentPicker(true)}
+              onClick={() => setShowModelPicker(true)}
               title="New chat"
             >
               <Plus size={11} />

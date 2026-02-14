@@ -5,8 +5,8 @@ import path from "node:path"
 import { uploadScreenshotToBackend } from "./backendUploader"
 
 const AGENT_SERVER_URL = process.env.IRIS_AGENT_URL || "http://localhost:8000"
-const DEFAULT_AGENT = process.env.IRIS_AGENT_NAME || "iris"
-const AGENT_STREAM_PATH = "/v1/agent/stream"
+const DEFAULT_MODEL = process.env.IRIS_MODEL || "gpt-5.2"
+const AGENT_CHAT_PATH = "/v1/agent"
 
 interface ChatEnvelope {
   protocol_version: "1.0"
@@ -22,19 +22,21 @@ interface ChatEnvelope {
   context: {
     recent_messages: Array<{ role: "user" | "assistant"; text: string }>
   }
+  model: string
   metadata: {
+    model: string
     agent: string
   }
 }
 
 export class LLMHelper {
   private readonly agentServerUrl: string
-  private readonly agentName: string
+  private readonly modelName: string
   private readonly namespace: string
 
   constructor() {
     this.agentServerUrl = AGENT_SERVER_URL
-    this.agentName = DEFAULT_AGENT
+    this.modelName = DEFAULT_MODEL
     this.namespace = `mac-helper-${process.pid}`
     console.log(`[LLMHelper] Backend-only mode enabled (${this.agentServerUrl})`)
   }
@@ -103,86 +105,6 @@ export class LLMHelper {
     })
   }
 
-  private streamAgent(envelope: ChatEnvelope): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const serialized = JSON.stringify(envelope)
-      const parsed = new URL(`${this.agentServerUrl}${AGENT_STREAM_PATH}`)
-      const req = http.request(
-        {
-          hostname: parsed.hostname,
-          port: parsed.port,
-          path: parsed.pathname,
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength(serialized),
-            "Accept": "text/event-stream, application/x-ndjson, application/json"
-          },
-          timeout: 120_000
-        },
-        (res) => {
-          if (res.statusCode && res.statusCode >= 400) {
-            let errData = ""
-            res.on("data", (chunk) => (errData += chunk))
-            res.on("end", () => reject(new Error(`Agent server error ${res.statusCode}: ${errData.slice(0, 500)}`)))
-            return
-          }
-
-          let buffer = ""
-          let fullText = ""
-          let streamError: string | null = null
-
-          res.on("data", (chunk: Buffer) => {
-            buffer += chunk.toString()
-            const lines = buffer.split("\n")
-            buffer = lines.pop() || ""
-
-            for (const rawLine of lines) {
-              const line = rawLine.trim()
-              if (!line) continue
-              const payload = line.startsWith("data:") ? line.slice(5).trim() : line
-              if (!payload || payload === "[DONE]") continue
-              try {
-                const event = JSON.parse(payload)
-                if (event.kind === "message.delta" && typeof event.delta === "string") {
-                  fullText += event.delta
-                } else if (event.kind === "message.final" && typeof event.text === "string") {
-                  fullText = event.text
-                } else if (event.kind === "error" && typeof event.message === "string") {
-                  streamError = event.message
-                } else if (typeof event.chunk === "string") {
-                  fullText += event.chunk
-                } else if (typeof event.text === "string") {
-                  fullText = event.text
-                } else if (typeof event.error === "string") {
-                  streamError = event.error
-                }
-              } catch {
-                // ignore malformed lines
-              }
-            }
-          })
-
-          res.on("end", () => {
-            if (streamError) {
-              reject(new Error(streamError))
-              return
-            }
-            resolve(fullText)
-          })
-          res.on("error", reject)
-        }
-      )
-      req.on("error", reject)
-      req.on("timeout", () => {
-        req.destroy()
-        reject(new Error("Agent server timeout"))
-      })
-      req.write(serialized)
-      req.end()
-    })
-  }
-
   private async agentChat(message: string, chatId: string): Promise<string> {
     const payload: ChatEnvelope = {
       protocol_version: "1.0",
@@ -198,11 +120,18 @@ export class LLMHelper {
       context: {
         recent_messages: []
       },
+      model: this.modelName,
       metadata: {
-        agent: this.agentName
+        model: this.modelName,
+        agent: this.modelName
       }
     }
-    return this.streamAgent(payload)
+    const response = await this.postJson(AGENT_CHAT_PATH, payload, 120_000)
+    const text = typeof response?.text === "string" ? response.text : ""
+    if (!text) {
+      throw new Error("Agent server returned no text")
+    }
+    return text
   }
 
   private async uploadScreenshotIfPresent(imagePath: string, chatId: string, source: string) {

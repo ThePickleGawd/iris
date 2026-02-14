@@ -10,11 +10,15 @@ import { WidgetWindowManager, WidgetSpec } from "./WidgetWindowManager"
 import { uploadScreenshotToBackend } from "./backendUploader"
 
 const AGENT_SERVER_URL = process.env.IRIS_AGENT_URL || "http://localhost:8000"
-const AGENT_STREAM_PATH = "/v1/agent/stream"
+const AGENT_CHAT_PATH = "/v1/agent"
+const AGENT_GET_TIMEOUT_MS = Number(process.env.IRIS_AGENT_GET_TIMEOUT_MS || 6000)
+const AGENT_POST_TIMEOUT_MS = Number(process.env.IRIS_AGENT_POST_TIMEOUT_MS || 10000)
+const AGENT_CHAT_TIMEOUT_MS = Number(process.env.IRIS_AGENT_CHAT_TIMEOUT_MS || 120000)
+const AGENT_GET_RETRIES = Number(process.env.IRIS_AGENT_GET_RETRIES || 1)
 
 interface SessionInfo {
   id: string
-  agent: string
+  model: string
   name: string
 }
 
@@ -23,6 +27,9 @@ export function initializeIpcHandlers(appState: AppState): void {
   let currentSession: SessionInfo | null = null
   let messagePollerInterval: ReturnType<typeof setInterval> | null = null
   let lastMessageTimestamp: string | null = null
+  let isPollingMessages = false
+  let pollFailures = 0
+  let sessionsCache: { items: any[]; count: number } = { items: [], count: 0 }
   const widgetManager = new WidgetWindowManager()
   const getLatestScreenshotPathFromQueues = (): string | undefined => {
     const queue = appState.getScreenshotQueue()
@@ -50,7 +57,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   const resolveChatContext = () => ({
     chatId: currentSession?.id || `mac-${appState.deviceDiscovery.getDeviceId()}`,
-    agent: currentSession?.agent || "iris"
+    model: currentSession?.model || "gpt-5.2"
   })
 
   const uploadScreenshotForAgentContext = async (
@@ -223,18 +230,15 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  // Legacy IPC name retained for compatibility, but handled as non-streaming HTTP.
   ipcMain.handle("claude-chat-stream", async (event, requestId: string, message: string) => {
     try {
-      // Upload latest screenshot to backend before sending chat
       const latestScreenshotPath = getLatestScreenshotPathFromQueues()
       if (latestScreenshotPath) {
         await uploadScreenshotForAgentContext(latestScreenshotPath, "chat-context")
       }
 
-      // Route through Agents Server SSE endpoint
-      const full = await agentChatStream(message, (chunk) => {
-        event.sender.send("claude-chat-stream-chunk", { requestId, chunk })
-      })
+      const full = await agentChatNonStreaming(message)
       notifyAgentReply(full)
       event.sender.send("agent-reply", { text: full })
       event.sender.send("claude-chat-stream-done", { requestId, text: full })
@@ -263,23 +267,60 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   // ─── Session Management ─────────────────────────────────
 
-  function agentServerGet(path: string): Promise<any> {
+  async function agentServerGet(path: string): Promise<any> {
+    const attempts = Math.max(0, AGENT_GET_RETRIES) + 1
+    let lastError: unknown
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        return await requestAgentServer("GET", path, undefined, AGENT_GET_TIMEOUT_MS)
+      } catch (error) {
+        lastError = error
+        if (!isRetryableNetworkError(error) || attempt === attempts - 1) {
+          break
+        }
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError))
+  }
+
+  function agentServerPost(path: string, body: unknown): Promise<any> {
+    return requestAgentServer("POST", path, body, AGENT_POST_TIMEOUT_MS)
+  }
+
+  function requestAgentServer(
+    method: "GET" | "POST",
+    path: string,
+    body?: unknown,
+    timeoutMs: number = AGENT_GET_TIMEOUT_MS
+  ): Promise<any> {
     return new Promise((resolve, reject) => {
       const parsed = new URL(`${AGENT_SERVER_URL}${path}`)
+      const bodyStr = body === undefined ? "" : JSON.stringify(body)
       const req = http.request(
         {
           hostname: parsed.hostname,
           port: parsed.port,
           path: parsed.pathname + parsed.search,
-          method: "GET",
-          timeout: 10_000,
+          method,
+          headers:
+            method === "POST"
+              ? {
+                  "Content-Type": "application/json",
+                  "Content-Length": Buffer.byteLength(bodyStr),
+                }
+              : undefined,
+          timeout: timeoutMs,
         },
         (res) => {
           let data = ""
           res.on("data", (chunk) => (data += chunk))
           res.on("end", () => {
             if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-              try { resolve(JSON.parse(data)) } catch { resolve(data) }
+              try {
+                resolve(JSON.parse(data))
+              } catch {
+                resolve(data)
+              }
             } else {
               reject(new Error(`Agent server error ${res.statusCode}: ${data.slice(0, 300)}`))
             }
@@ -287,49 +328,32 @@ export function initializeIpcHandlers(appState: AppState): void {
         }
       )
       req.on("error", reject)
-      req.on("timeout", () => { req.destroy(); reject(new Error("Agent server timeout")) })
-      req.end()
-    })
-  }
-
-  function agentServerPost(path: string, body: unknown): Promise<any> {
-    return new Promise((resolve, reject) => {
-      const bodyStr = JSON.stringify(body)
-      const parsed = new URL(`${AGENT_SERVER_URL}${path}`)
-      const req = http.request(
-        {
-          hostname: parsed.hostname,
-          port: parsed.port,
-          path: parsed.pathname,
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(bodyStr) },
-          timeout: 10_000,
-        },
-        (res) => {
-          let data = ""
-          res.on("data", (chunk) => (data += chunk))
-          res.on("end", () => {
-            if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-              try { resolve(JSON.parse(data)) } catch { resolve(data) }
-            } else {
-              reject(new Error(`Agent server error ${res.statusCode}: ${data.slice(0, 300)}`))
-            }
-          })
-        }
-      )
-      req.on("error", reject)
-      req.on("timeout", () => { req.destroy(); reject(new Error("Agent server timeout")) })
-      req.write(bodyStr)
+      req.on("timeout", () => {
+        req.destroy(new Error(`Agent server timeout (${timeoutMs}ms)`))
+      })
+      if (method === "POST") req.write(bodyStr)
       req.end()
     })
   }
 
   ipcMain.handle("get-sessions", async () => {
     try {
-      return await agentServerGet("/sessions?limit=50")
+      const data = await agentServerGet("/sessions?limit=50")
+      if (data && Array.isArray(data.items)) {
+        const normalizedItems = data.items.map((item: any) => {
+          const model = item?.model || item?.agent || "gpt-5.2"
+          return { ...item, model, agent: model }
+        })
+        sessionsCache = {
+          items: normalizedItems,
+          count: typeof data.count === "number" ? data.count : normalizedItems.length,
+        }
+      }
+      return sessionsCache
     } catch (error: any) {
-      console.error("Failed to fetch sessions:", error)
-      return { items: [], count: 0 }
+      console.warn("Failed to fetch sessions:", error?.message || String(error))
+      // Keep UI stable while backend is transiently unavailable.
+      return sessionsCache
     }
   })
 
@@ -338,16 +362,26 @@ export function initializeIpcHandlers(appState: AppState): void {
   })
 
   ipcMain.handle("set-current-session", async (_, session: SessionInfo | null) => {
-    currentSession = session
+    if (session) {
+      const normalizedModel = (session.model || (session as any).agent || "gpt-5.2").trim()
+      currentSession = {
+        ...session,
+        model: normalizedModel || "gpt-5.2",
+      }
+    } else {
+      currentSession = null
+    }
     lastMessageTimestamp = null
     startMessagePoller()
     return { success: true }
   })
 
-  ipcMain.handle("create-session", async (_, params: { id: string; name: string; agent: string }) => {
+  ipcMain.handle("create-session", async (_, params: { id: string; name: string; model: string }) => {
     try {
-      const result = await agentServerPost("/sessions", params)
-      currentSession = { id: params.id, name: params.name, agent: params.agent }
+      const model = (params.model || (params as any).agent || "gpt-5.2").trim() || "gpt-5.2"
+      const body = { id: params.id, name: params.name, model, agent: model }
+      const result = await agentServerPost("/sessions", body)
+      currentSession = { id: params.id, name: params.name, model }
       lastMessageTimestamp = null
       startMessagePoller()
       return result
@@ -375,12 +409,14 @@ export function initializeIpcHandlers(appState: AppState): void {
     if (!currentSession) return
 
     messagePollerInterval = setInterval(async () => {
-      if (!currentSession) return
+      if (!currentSession || isPollingMessages) return
+      isPollingMessages = true
       try {
         const qs = lastMessageTimestamp
           ? `?since=${encodeURIComponent(lastMessageTimestamp)}&limit=200`
           : "?limit=200"
         const data = await agentServerGet(`/sessions/${currentSession.id}/messages${qs}`)
+        pollFailures = 0
         const items = data?.items || []
         if (items.length > 0) {
           lastMessageTimestamp = items[items.length - 1].created_at
@@ -390,8 +426,13 @@ export function initializeIpcHandlers(appState: AppState): void {
             messages: items,
           })
         }
-      } catch {
-        // Polling failure is non-fatal
+      } catch (error: any) {
+        pollFailures += 1
+        if (pollFailures === 1 || pollFailures % 10 === 0) {
+          console.warn("Session poll failed:", error?.message || String(error))
+        }
+      } finally {
+        isPollingMessages = false
       }
     }, 3000)
   }
@@ -419,7 +460,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   // ─── Agent Server Helpers ─────────────────────────────────
 
-  function buildAgentRequestEnvelope(message: string, chatId: string, agent: string) {
+  function buildAgentRequestEnvelope(message: string, chatId: string, model: string) {
     const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
     return {
       protocol_version: "1.0",
@@ -441,97 +482,23 @@ export function initializeIpcHandlers(appState: AppState): void {
       context: {
         recent_messages: [] as Array<{ role: "user" | "assistant"; text: string }>
       },
+      model,
       metadata: {
-        agent
+        model,
+        agent: model
       }
     }
   }
 
-  function agentChatNonStreaming(message: string): Promise<string> {
-    return agentChatStream(message, () => {})
-  }
-
-  function agentChatStream(message: string, onChunk: (chunk: string) => void): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const { chatId, agent } = resolveChatContext()
-      const envelope = buildAgentRequestEnvelope(message, chatId, agent)
-      const body = JSON.stringify(envelope)
-      const parsed = new URL(`${AGENT_SERVER_URL}${AGENT_STREAM_PATH}`)
-
-      const req = http.request(
-        {
-          hostname: parsed.hostname,
-          port: parsed.port,
-          path: parsed.pathname,
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength(body),
-            "Accept": "text/event-stream, application/x-ndjson, application/json",
-          },
-          timeout: 120_000,
-        },
-        (res) => {
-          if (res.statusCode && res.statusCode >= 400) {
-            let errData = ""
-            res.on("data", (chunk) => (errData += chunk))
-            res.on("end", () => reject(new Error(`Agent server error ${res.statusCode}: ${errData.slice(0, 300)}`)))
-            return
-          }
-
-          let buffer = ""
-          let fullText = ""
-          let streamError: string | null = null
-
-          res.on("data", (chunk: Buffer) => {
-            buffer += chunk.toString()
-            const lines = buffer.split("\n")
-            buffer = lines.pop() || ""
-
-            for (const line of lines) {
-              const trimmed = line.trim()
-              if (!trimmed) continue
-              const payload = trimmed.startsWith("data:") ? trimmed.slice(5).trim() : trimmed
-              if (!payload || payload === "[DONE]") continue
-
-              try {
-                const event = JSON.parse(payload)
-                if (event.kind === "message.delta" && event.delta) {
-                  fullText += event.delta
-                  onChunk(event.delta)
-                } else if (event.kind === "message.final" && event.text) {
-                  fullText = event.text
-                } else if (event.kind === "error" && event.message) {
-                  streamError = String(event.message)
-                } else if (typeof event.chunk === "string") {
-                  fullText += event.chunk
-                  onChunk(event.chunk)
-                } else if (typeof event.text === "string") {
-                  fullText = event.text
-                } else if (typeof event.error === "string") {
-                  streamError = event.error
-                }
-              } catch {
-                // ignore malformed SSE lines
-              }
-            }
-          })
-
-          res.on("end", () => {
-            if (streamError) {
-              reject(new Error(streamError))
-              return
-            }
-            resolve(fullText)
-          })
-          res.on("error", reject)
-        }
-      )
-      req.on("error", reject)
-      req.on("timeout", () => { req.destroy(); reject(new Error("Agent server stream timeout")) })
-      req.write(body)
-      req.end()
-    })
+  async function agentChatNonStreaming(message: string): Promise<string> {
+    const { chatId, model } = resolveChatContext()
+    const envelope = buildAgentRequestEnvelope(message, chatId, model)
+    const result = await requestAgentServer("POST", AGENT_CHAT_PATH, envelope, AGENT_CHAT_TIMEOUT_MS)
+    const text = typeof result?.text === "string" ? result.text : ""
+    if (!text) {
+      throw new Error("Agent server returned no text")
+    }
+    return text
   }
 
   // ─── Network Info & Direct Connection ─────────────────────
@@ -596,4 +563,15 @@ export function initializeIpcHandlers(appState: AppState): void {
     const mainWindow = appState.getMainWindow()
     mainWindow?.webContents.send("iris-device-updated", device)
   })
+}
+
+function isRetryableNetworkError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const msg = error.message.toLowerCase()
+  return (
+    msg.includes("timeout") ||
+    msg.includes("econnreset") ||
+    msg.includes("econnrefused") ||
+    msg.includes("socket hang up")
+  )
 }

@@ -113,7 +113,7 @@ struct ContentView: View {
                     }
                 }
 
-                if document.agent == "iris", let screenshotID {
+                if document.usesScreenshotWorkflow, let screenshotID {
                     if !screenshotID.isEmpty {
                         message = """
                         User voice command:
@@ -129,13 +129,13 @@ struct ContentView: View {
                 await AgentClient.registerSession(
                     id: document.id.uuidString,
                     name: document.name,
-                    agent: document.agent,
+                    model: document.resolvedModel,
                     serverURL: serverURL
                 )
 
                 let response = try await AgentClient.sendMessage(
                     message,
-                    agent: document.agent,
+                    model: document.resolvedModel,
                     chatID: document.id.uuidString,
                     serverURL: serverURL
                 )

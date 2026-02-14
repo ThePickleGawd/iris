@@ -30,6 +30,7 @@ interface ElectronAPI {
   moveWindowRight: () => Promise<void>
   moveWindowUp: () => Promise<void>
   moveWindowDown: () => Promise<void>
+  toggleWindow: () => Promise<void>
   analyzeAudioFromBase64: (data: string, mimeType: string) => Promise<{ text: string; timestamp: number }>
   analyzeAudioFile: (path: string) => Promise<{ text: string; timestamp: number }>
   analyzeImageFile: (path: string) => Promise<void>
@@ -54,9 +55,9 @@ interface ElectronAPI {
   
   // Session Management
   getSessions: () => Promise<{ items: any[]; count: number }>
-  getCurrentSession: () => Promise<{ id: string; agent: string; name: string } | null>
-  setCurrentSession: (session: { id: string; agent: string; name: string } | null) => Promise<{ success: boolean }>
-  createSession: (params: { id: string; name: string; agent: string }) => Promise<any>
+  getCurrentSession: () => Promise<{ id: string; model: string; name: string } | null>
+  setCurrentSession: (session: { id: string; model: string; name: string } | null) => Promise<{ success: boolean }>
+  createSession: (params: { id: string; name: string; model: string }) => Promise<any>
   getSessionMessages: (sessionId: string, since?: string) => Promise<{ items: any[]; count: number }>
   onSessionMessagesUpdate: (callback: (data: { sessionId: string; messages: any[] }) => void) => () => void
 
@@ -202,6 +203,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   moveWindowRight: () => ipcRenderer.invoke("move-window-right"),
   moveWindowUp: () => ipcRenderer.invoke("move-window-up"),
   moveWindowDown: () => ipcRenderer.invoke("move-window-down"),
+  toggleWindow: () => ipcRenderer.invoke("toggle-window"),
   analyzeAudioFromBase64: (data: string, mimeType: string) => ipcRenderer.invoke("analyze-audio-base64", data, mimeType),
   analyzeAudioFile: (path: string) => ipcRenderer.invoke("analyze-audio-file", path),
   analyzeImageFile: (path: string) => ipcRenderer.invoke("analyze-image-file", path),
@@ -231,9 +233,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // ─── Session Management ──────────────────────────────
   getSessions: () => ipcRenderer.invoke("get-sessions"),
   getCurrentSession: () => ipcRenderer.invoke("get-current-session"),
-  setCurrentSession: (session: { id: string; agent: string; name: string } | null) =>
+  setCurrentSession: (session: { id: string; model: string; name: string } | null) =>
     ipcRenderer.invoke("set-current-session", session),
-  createSession: (params: { id: string; name: string; agent: string }) =>
+  createSession: (params: { id: string; name: string; model: string }) =>
     ipcRenderer.invoke("create-session", params),
   getSessionMessages: (sessionId: string, since?: string) =>
     ipcRenderer.invoke("get-session-messages", sessionId, since),

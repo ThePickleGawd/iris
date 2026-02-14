@@ -1,9 +1,11 @@
 [project]
 name = "iris-backend"
-version = "0.1.0"
-description = "Flask backend for multimodal ingestion in Iris"
-requires-python = ">=3.10"
+version = "0.2.0"
+description = "Iris server — sessions, agent, widgets"
+requires-python = ">=3.12"
 dependencies = [
     "flask==3.1.0",
+    "openai",
+    "httpx",
 ]
 

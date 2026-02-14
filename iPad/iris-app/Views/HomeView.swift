@@ -112,7 +112,7 @@ struct DocumentCard: View {
                 .foregroundColor(.white)
                 .lineLimit(1)
 
-            Text(document.agentDisplayName)
+            Text(document.modelDisplayName)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(.white.opacity(0.6))
         }
@@ -124,16 +124,16 @@ struct DocumentCard: View {
     }
 }
 
-private struct AgentChoice: Identifiable {
+private struct ModelChoice: Identifiable {
     let id: String
     let name: String
     let subtitle: String
 }
 
-private let choices: [AgentChoice] = [
-    AgentChoice(id: "iris", name: "Iris", subtitle: "Best for widget + screenshot workflows"),
-    AgentChoice(id: "codex", name: "Codex", subtitle: "Coding-focused model"),
-    AgentChoice(id: "claude_code", name: "Claude Code", subtitle: "Claude coding agent"),
+private let choices: [ModelChoice] = [
+    ModelChoice(id: "gpt-5.2", name: "GPT-5.2", subtitle: "OpenAI general-purpose model"),
+    ModelChoice(id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5", subtitle: "Best for screenshot + widget workflows"),
+    ModelChoice(id: "claude", name: "Claude (Alias)", subtitle: "Routes to default Claude model"),
 ]
 
 private struct AgentPickerOverlay: View {
@@ -161,7 +161,7 @@ private struct AgentPickerOverlay: View {
                     .background(Color.white.opacity(0.1))
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
 
-                Text("Choose Agent")
+                Text("Choose Model")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(.white.opacity(0.8))
                     .padding(.top, 4)
@@ -170,7 +170,7 @@ private struct AgentPickerOverlay: View {
                     Button {
                         let doc = documentStore.addDocument(
                             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
-                            agent: choice.id
+                            model: choice.id
                         )
                         isPresented = false
                         onCreated(doc)

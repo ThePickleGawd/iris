@@ -19,25 +19,25 @@ export interface WidgetSpec {
 export function normalizeWidgetSpec(raw: unknown): WidgetSpec | null {
   if (!raw || typeof raw !== "object") return null
   const obj = raw as Record<string, unknown>
-  const kind = String(obj.kind || "") as WidgetKind
-  if (!kind || !["html", "markdown", "text", "image", "chart"].includes(kind)) return null
 
-  const payload = (obj.payload || {}) as Record<string, unknown>
+  const payloadSource =
+    obj.payload && typeof obj.payload === "object"
+      ? (obj.payload as Record<string, unknown>)
+      : obj
+  const kind = inferKind(obj, payloadSource)
+  if (!kind) return null
+
+  const payload = buildPayload(kind, payloadSource)
+  if (!payload) return null
 
   const spec: WidgetSpec = {
-    id: obj.id ? String(obj.id) : undefined,
-    title: obj.title ? String(obj.title) : undefined,
+    id: coerceString(obj.id ?? obj.widget_id),
+    title: coerceString(obj.title ?? obj.name ?? obj.widget_id),
     kind,
-    width: typeof obj.width === "number" ? obj.width : undefined,
-    height: typeof obj.height === "number" ? obj.height : undefined,
+    width: coerceDimension(obj.width),
+    height: coerceDimension(obj.height),
     css: obj.css ? String(obj.css) : undefined,
-    payload: {
-      html: payload.html ? String(payload.html) : undefined,
-      markdown: payload.markdown ? String(payload.markdown) : undefined,
-      text: payload.text ? String(payload.text) : undefined,
-      imageUrl: payload.imageUrl ? String(payload.imageUrl) : undefined,
-      chartConfig: payload.chartConfig
-    }
+    payload
   }
 
   return spec
@@ -59,4 +59,66 @@ export function extractWidgetBlocks(text: string): { cleanText: string; widgets:
   }).trim()
 
   return { cleanText, widgets }
+}
+
+function inferKind(
+  obj: Record<string, unknown>,
+  payload: Record<string, unknown>
+): WidgetKind | null {
+  const rawKind = String(obj.kind || "").toLowerCase()
+  if (rawKind === "html" || rawKind === "markdown" || rawKind === "text" || rawKind === "image" || rawKind === "chart") {
+    return rawKind
+  }
+  if (typeof payload.html === "string") return "html"
+  if (typeof payload.markdown === "string") return "markdown"
+  if (typeof payload.text === "string") return "text"
+  if (typeof payload.imageUrl === "string" || typeof payload.image_url === "string") return "image"
+  if (payload.chartConfig !== undefined || payload.chart_config !== undefined) return "chart"
+  return null
+}
+
+function buildPayload(
+  kind: WidgetKind,
+  payload: Record<string, unknown>
+): WidgetSpec["payload"] | null {
+  if (kind === "html") {
+    const html = coerceString(payload.html)
+    if (!html) return null
+    return { html }
+  }
+  if (kind === "markdown") {
+    const markdown = coerceString(payload.markdown)
+    if (!markdown) return null
+    return { markdown }
+  }
+  if (kind === "text") {
+    const text = coerceString(payload.text)
+    if (!text) return null
+    return { text }
+  }
+  if (kind === "image") {
+    const imageUrl = coerceString(payload.imageUrl ?? payload.image_url)
+    if (!imageUrl) return null
+    return { imageUrl }
+  }
+
+  const chartConfig = payload.chartConfig ?? payload.chart_config
+  if (chartConfig === undefined) return null
+  return { chartConfig }
+}
+
+function coerceString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
+function coerceDimension(value: unknown): number | undefined {
+  if (typeof value !== "number" && typeof value !== "string") return undefined
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return undefined
+  const rounded = Math.round(parsed)
+  if (rounded < 100) return 100
+  if (rounded > 1600) return 1600
+  return rounded
 }

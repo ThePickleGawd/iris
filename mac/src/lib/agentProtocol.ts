@@ -5,7 +5,8 @@ export type AgentTransportMode = "backend"
 export interface AgentTransportSettings {
   mode: AgentTransportMode
   backendBaseUrl: string
-  backendStreamPath: string
+  backendPath: string
+  model: string
   workspaceId: string
   sessionId: string
   authToken: string
@@ -36,11 +37,14 @@ export interface AgentRequestEnvelope {
   context: {
     recent_messages: Array<{ role: "user" | "assistant"; text: string }>
   }
+  model: string
+  metadata: {
+    model: string
+  }
 }
 
 export type AgentStreamEvent =
   | { kind: "status"; state: string; detail?: string }
-  | { kind: "message.delta"; delta: string }
   | { kind: "message.final"; text: string }
   | { kind: "tool.call"; name: string; input?: unknown }
   | { kind: "tool.result"; name: string; output?: unknown }
@@ -77,6 +81,10 @@ export function buildAgentRequestEnvelope(params: {
     },
     context: {
       recent_messages: history.slice(-20).map((m) => ({ role: m.role, text: m.text }))
+    },
+    model: settings.model || "gpt-5.2",
+    metadata: {
+      model: settings.model || "gpt-5.2"
     }
   }
 }
@@ -106,11 +114,6 @@ export function normalizeIncomingEvent(raw: unknown): AgentStreamEvent | null {
       state: String(obj.state || "unknown"),
       detail: obj.detail ? String(obj.detail) : undefined
     }
-  }
-
-  if (kind === "message.delta") {
-    const delta = String(obj.delta ?? obj.text ?? "")
-    return { kind: "message.delta", delta }
   }
 
   if (kind === "message.final") {
@@ -150,10 +153,6 @@ export function normalizeIncomingEvent(raw: unknown): AgentStreamEvent | null {
     }
   }
 
-  // Backward-compat shortcuts for minimal backend payloads
-  if (typeof obj.chunk === "string") {
-    return { kind: "message.delta", delta: obj.chunk }
-  }
   if (typeof obj.text === "string") {
     return { kind: "message.final", text: obj.text }
   }
@@ -162,13 +161,4 @@ export function normalizeIncomingEvent(raw: unknown): AgentStreamEvent | null {
   }
 
   return null
-}
-
-export function splitPotentialJsonFrames(input: string): string[] {
-  return input
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => (line.startsWith("data:") ? line.slice(5).trim() : line))
-    .filter((line) => line && line !== "[DONE]")
 }

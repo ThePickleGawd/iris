@@ -4,13 +4,21 @@ import PencilKit
 struct Document: Identifiable, Codable, Hashable {
     let id: UUID
     var name: String
-    var agent: String
+    var model: String
     var lastOpened: Date
 
-    init(id: UUID = UUID(), name: String, agent: String = "iris", lastOpened: Date = Date()) {
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case model
+        case agent
+        case lastOpened
+    }
+
+    init(id: UUID = UUID(), name: String, model: String = "gpt-5.2", lastOpened: Date = Date()) {
         self.id = id
         self.name = name
-        self.agent = agent
+        self.model = model
         self.lastOpened = lastOpened
     }
 
@@ -18,17 +26,44 @@ struct Document: Identifiable, Codable, Hashable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
-        agent = try container.decodeIfPresent(String.self, forKey: .agent) ?? "iris"
+        model = try container.decodeIfPresent(String.self, forKey: .model)
+            ?? (try container.decodeIfPresent(String.self, forKey: .agent))
+            ?? "gpt-5.2"
         lastOpened = try container.decode(Date.self, forKey: .lastOpened)
     }
 
-    /// Human-readable agent display name
-    var agentDisplayName: String {
-        switch agent {
-        case "codex": return "Codex"
-        case "claude_code": return "Claude Code"
-        default: return "Iris"
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(model, forKey: .model)
+        // Keep legacy key populated for older readers.
+        try container.encode(model, forKey: .agent)
+        try container.encode(lastOpened, forKey: .lastOpened)
+    }
+
+    /// Human-readable model display name
+    var modelDisplayName: String {
+        let lowered = model.lowercased()
+        if lowered == "gpt-5.2" { return "GPT-5.2" }
+        if lowered.hasPrefix("claude") { return "Claude" }
+        if lowered == "codex" { return "Codex" }
+        return model
+    }
+
+    var usesScreenshotWorkflow: Bool {
+        model.lowercased().hasPrefix("claude")
+    }
+
+    var resolvedModel: String {
+        let lowered = model.lowercased()
+        if lowered == "iris" || lowered == "claude_code" || lowered == "claude" {
+            return "claude-sonnet-4-5-20250929"
         }
+        if lowered == "codex" {
+            return "gpt-5.2"
+        }
+        return model
     }
 
     // MARK: - Drawing Persistence
@@ -70,8 +105,8 @@ class DocumentStore: ObservableObject {
     }
 
     @discardableResult
-    func addDocument(name: String, agent: String = "iris") -> Document {
-        let doc = Document(name: name.isEmpty ? "Untitled" : name, agent: agent)
+    func addDocument(name: String, model: String = "gpt-5.2") -> Document {
+        let doc = Document(name: name.isEmpty ? "Untitled" : name, model: model)
         documents.insert(doc, at: 0)
         saveDocuments()
         return doc
@@ -120,8 +155,8 @@ class DocumentStore: ObservableObject {
                 if localIDs.contains(docID.uuidString.lowercased()) { return nil }
 
                 let name = (item["name"] as? String) ?? "Remote Chat"
-                let agent = (item["agent"] as? String) ?? "iris"
-                return Document(id: docID, name: name, agent: agent, lastOpened: Date.distantPast)
+                let model = (item["model"] as? String) ?? (item["agent"] as? String) ?? "gpt-5.2"
+                return Document(id: docID, name: name, model: model, lastOpened: Date.distantPast)
             }
 
             guard !remoteDocs.isEmpty else { return }
@@ -149,7 +184,7 @@ class DocumentStore: ObservableObject {
             documents = decoded
         } else if let oldData = UserDefaults.standard.data(forKey: "SavedDocuments_v2"),
                   let decoded = try? JSONDecoder().decode([Document].self, from: oldData) {
-            // Migrate from v2 — agent defaults to "iris" via Codable
+            // Migrate from v2/v3 — model decodes from either "model" or legacy "agent"
             documents = decoded
             saveDocuments()
         }

@@ -11,22 +11,21 @@ enum AgentClient {
         return URLSession(configuration: config)
     }()
 
-    /// Send a message to an agent and return the response text.
+    /// Send a message to the agents server and return the response text.
     static func sendMessage(
         _ message: String,
-        agent: String,
+        model: String,
         chatID: String,
         serverURL: URL
     ) async throws -> String {
         let url = serverURL
             .appendingPathComponent("v1")
             .appendingPathComponent("agent")
-            .appendingPathComponent("stream")
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("text/event-stream, application/x-ndjson, application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         let requestID = "\(Int(Date().timeIntervalSince1970 * 1000))-\(UUID().uuidString.prefix(8))"
         let payload: [String: Any] = [
@@ -49,8 +48,10 @@ enum AgentClient {
             "context": [
                 "recent_messages": []
             ],
+            "model": model,
             "metadata": [
-                "agent": agent
+                "model": model,
+                "agent": model
             ]
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
@@ -80,7 +81,7 @@ enum AgentClient {
     static func registerSession(
         id: String,
         name: String,
-        agent: String,
+        model: String,
         serverURL: URL
     ) async {
         let url = serverURL.appendingPathComponent("sessions")
@@ -93,7 +94,8 @@ enum AgentClient {
         let payload: [String: Any] = [
             "id": id,
             "name": name,
-            "agent": agent
+            "model": model,
+            "agent": model
         ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
 
