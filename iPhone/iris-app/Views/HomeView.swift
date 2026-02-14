@@ -106,42 +106,37 @@ private struct SessionRow: View {
     let session: SessionSummary
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(session.name)
                     .font(.title3.weight(.semibold))
                     .lineLimit(2)
-                Spacer()
-                Text(session.status.uppercased())
-                    .font(.caption2.bold())
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(session.status == "active" ? Color.green.opacity(0.15) : Color.gray.opacity(0.2))
-                    .foregroundStyle(session.status == "active" ? .green : .gray)
-                    .clipShape(Capsule())
-            }
 
-            HStack(spacing: 10) {
-                Label("\(session.transcriptCount)", systemImage: "text.bubble")
-                Label("\(session.pendingCommandCount)", systemImage: "clock.arrow.2.circlepath")
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-
-            if let headline = session.latestStatusHeadline, !headline.isEmpty {
-                Text(headline)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(relativeTime(from: session.updatedAt))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
                     .lineLimit(1)
             }
 
-            Text(session.updatedAt)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+            Spacer(minLength: 8)
+
+            Text(session.status.uppercased())
+                .font(.caption.weight(.semibold))
                 .lineLimit(1)
-                .textSelection(.enabled)
+                .frame(minWidth: 60, minHeight: 24)
+                .background(session.status == "active" ? Color.green.opacity(0.15) : Color.gray.opacity(0.2))
+                .foregroundStyle(session.status == "active" ? .green : .gray)
+                .clipShape(Capsule())
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
+    }
+
+    private func relativeTime(from raw: String) -> String {
+        let parser = ISO8601DateFormatter()
+        guard let date = parser.date(from: raw) else { return "Updated just now" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return "Updated \(formatter.localizedString(for: date, relativeTo: Date()))"
     }
 }
 
