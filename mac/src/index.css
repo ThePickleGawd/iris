@@ -172,6 +172,8 @@ body {
   cursor: pointer;
   padding: 0 4px;
   transition: color 130ms ease;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .iris-bar-title:hover {

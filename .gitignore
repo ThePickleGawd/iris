@@ -21,8 +21,10 @@ mac/.turbo/
 
 # agents server runtime data
 agents/data/
+agents/log/
 agents/__pycache__/
 agents/tools/__pycache__/
+agents/tests/__pycache__/
 
 # OS/editor noise
 .DS_Store

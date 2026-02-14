@@ -60,6 +60,21 @@ def handle_push_widget(
     width = arguments.get("width", 320)
     height = arguments.get("height", 220)
 
+    # Mac widgets are delivered via the SSE stream (widget.open event),
+    # not via HTTP POST — the Mac Electron app picks them up from the stream
+    # and opens them as BrowserWindow popups.
+    if target.lower() == "mac":
+        widget = {
+            "widget_id": widget_id,
+            "target": target,
+            "html": html,
+            "width": width,
+            "height": height,
+            "delivered": True,
+        }
+        context.setdefault("widgets", []).append(widget)
+        return f"Widget '{widget_id}' delivered to mac via stream.", widget
+
     # Find a device matching the target platform
     registry = _get_device_registry()
     device = None

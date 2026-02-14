@@ -1,4 +1,4 @@
-import { BrowserWindow } from "electron"
+import { BrowserWindow, screen } from "electron"
 
 type WidgetKind = "html" | "markdown" | "text" | "image" | "chart"
 
@@ -20,6 +20,7 @@ export interface WidgetSpec {
 
 export class WidgetWindowManager {
   private windows = new Map<string, BrowserWindow>()
+  private nextOffset = 0
 
   public openWidget(spec: WidgetSpec): { success: boolean; id: string; error?: string } {
     try {
@@ -31,14 +32,30 @@ export class WidgetWindowManager {
         return { success: true, id }
       }
 
+      const width = spec.width ?? 520
+      const height = spec.height ?? 420
+
+      // Position to the right side of the screen, staggered
+      const display = screen.getPrimaryDisplay()
+      const { width: screenW, height: screenH } = display.workAreaSize
+      const x = Math.max(0, screenW - width - 40)
+      const y = Math.min(60 + this.nextOffset * 40, screenH - height - 40)
+      this.nextOffset = (this.nextOffset + 1) % 8
+
       const win = new BrowserWindow({
-        width: spec.width ?? 520,
-        height: spec.height ?? 420,
+        width,
+        height,
+        x,
+        y,
         minWidth: 280,
         minHeight: 200,
         title: spec.title || "Iris Widget",
-        backgroundColor: "#ffffff",
+        titleBarStyle: "hiddenInset",
+        vibrancy: "under-window",
+        backgroundColor: "#0a0a0e",
+        hasShadow: true,
         autoHideMenuBar: true,
+        alwaysOnTop: true,
         webPreferences: {
           nodeIntegration: false,
           contextIsolation: true,
@@ -73,24 +90,76 @@ export class WidgetWindowManager {
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
-      :root { --text:#0f172a; --muted:#64748b; --bg:#f8fafc; --card:#ffffff; --border:#dbe4ea; }
-      html, body { margin:0; padding:0; background:var(--bg); color:var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
-      .wrap { padding: 12px; }
-      .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; box-shadow: 0 4px 18px rgba(2,6,23,0.06); }
-      .title { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+      :root {
+        --text: rgba(255,255,255,0.88);
+        --muted: rgba(255,255,255,0.48);
+        --bg: #0a0a0e;
+        --card: rgba(255,255,255,0.04);
+        --border: rgba(255,255,255,0.08);
+        --accent: #8b5cf6;
+      }
+      html, body {
+        margin: 0; padding: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+        font-size: 13px;
+        line-height: 1.55;
+        -webkit-font-smoothing: antialiased;
+      }
+      /* Draggable title bar area */
+      .titlebar {
+        -webkit-app-region: drag;
+        height: 38px;
+        display: flex;
+        align-items: center;
+        padding: 0 76px 0 12px;
+      }
+      .titlebar-text {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--muted);
+        letter-spacing: 0.04em;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .wrap { padding: 0 14px 14px; }
+      .content { -webkit-app-region: no-drag; }
       .content img { max-width: 100%; height: auto; border-radius: 8px; }
-      .content pre { background:#0f172a; color:#f8fafc; border-radius:8px; padding:10px; overflow:auto; }
-      .content code { background:#e2e8f0; padding:1px 4px; border-radius:4px; }
+      .content pre {
+        background: rgba(0,0,0,0.4);
+        color: #e2e8f0;
+        border-radius: 8px;
+        padding: 10px;
+        overflow: auto;
+        border: 1px solid var(--border);
+        font-family: 'SF Mono', Menlo, ui-monospace, monospace;
+        font-size: 12px;
+      }
+      .content code {
+        background: rgba(255,255,255,0.06);
+        padding: 1px 4px;
+        border-radius: 4px;
+        font-family: 'SF Mono', Menlo, ui-monospace, monospace;
+        font-size: 0.9em;
+      }
       .content pre code { background: transparent; padding: 0; }
+      .content h1, .content h2, .content h3 { color: var(--text); margin: 0.6em 0 0.3em; }
+      .content p { margin: 0 0 0.5em; }
+      .content a { color: var(--accent); }
+      .content table { border-collapse: collapse; width: 100%; margin: 0.5em 0; }
+      .content th, .content td { padding: 6px 10px; border: 1px solid var(--border); text-align: left; }
+      .content th { background: rgba(255,255,255,0.04); font-weight: 600; }
       ${spec.css || ""}
     </style>
   </head>
   <body>
+    <div class="titlebar">
+      <span class="titlebar-text">${escapeHtml(spec.title || "Iris")}</span>
+    </div>
     <div class="wrap">
-      <div class="card">
-        <div class="title">${escapeHtml(spec.title || "Widget")}</div>
-        <div id="content" class="content"></div>
-      </div>
+      <div id="content" class="content"></div>
     </div>
     <script>
       const spec = JSON.parse(atob(${JSON.stringify(encoded)}));
@@ -104,9 +173,6 @@ export class WidgetWindowManager {
         const pre = document.createElement('pre');
         pre.textContent = spec.payload?.text || '';
         pre.style.whiteSpace = 'pre-wrap';
-        pre.style.background = '#f8fafc';
-        pre.style.color = '#0f172a';
-        pre.style.border = '1px solid #dbe4ea';
         content.appendChild(pre);
       } else if (spec.kind === 'image') {
         const img = document.createElement('img');

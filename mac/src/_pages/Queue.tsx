@@ -351,27 +351,17 @@ const Queue: React.FC = () => {
         /* Expanded: shell with dark background, overflow:hidden is safe here */
         <div className="iris-shell draggable-area">
           <header className="iris-bar draggable-area">
-            <div className="iris-tabs">
-              {sessions.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  className={`iris-tab ${currentSession?.id === s.id ? "active" : ""}`}
-                  onClick={() => handleSelectSession(s)}
-                  title={s.name}
-                >
-                  {s.name}
-                </button>
-              ))}
-              <button
-                type="button"
-                className="iris-tab iris-tab-new"
-                onClick={() => setShowAgentPicker(true)}
-                title="New chat"
-              >
-                <Plus size={11} />
-              </button>
-            </div>
+            <button
+              type="button"
+              className="iris-tab iris-tab-new interactive"
+              onClick={() => setShowAgentPicker(true)}
+              title="New chat"
+            >
+              <Plus size={11} />
+            </button>
+            <span className="iris-bar-title">
+              {currentSession?.name || "Iris"}
+            </span>
             <button
               type="button"
               className="iris-toggle interactive"

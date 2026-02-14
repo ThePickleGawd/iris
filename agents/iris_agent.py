@@ -234,14 +234,16 @@ async def run_stream(chat_id: str, message: str) -> AsyncGenerator[dict, None]:
             # Emit widget events for any widgets that were delivered
             for widget in context["widgets"]:
                 if widget.get("delivered"):
-                    yield {
-                        "kind": "widget.open",
-                        "widget": {
-                            "kind": "html",
-                            "id": widget.get("widget_id"),
-                            "payload": {"html": widget.get("html", "")},
-                        },
+                    w_spec: dict = {
+                        "kind": "html",
+                        "id": widget.get("widget_id"),
+                        "payload": {"html": widget.get("html", "")},
                     }
+                    if widget.get("width"):
+                        w_spec["width"] = widget["width"]
+                    if widget.get("height"):
+                        w_spec["height"] = widget["height"]
+                    yield {"kind": "widget.open", "widget": w_spec}
             # Clear so we don't re-emit on next loop
             context["widgets"] = []
 
