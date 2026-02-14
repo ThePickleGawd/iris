@@ -111,7 +111,6 @@ body {
   display: flex;
   flex-direction: column;
   height: 480px;
-  max-height: 480px;
   background: var(--void);
   border: 1px solid var(--edge);
   animation: shell-in 260ms cubic-bezier(0.16, 1, 0.3, 1);
@@ -311,6 +310,7 @@ body {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   padding: 6px;
   gap: 6px;
   animation: content-in 200ms ease-out;
@@ -887,8 +887,7 @@ textarea:focus-visible {
     padding: 4px;
   }
 
-  .iris-shell {
-    height: 400px;
-    max-height: 400px;
+  .iris-shell.expanded {
+    min-height: 400px;
   }
 }
