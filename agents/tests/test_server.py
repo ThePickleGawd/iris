@@ -82,3 +82,73 @@ def test_chat_stream_emits_final_and_widget_events(monkeypatch) -> None:
     assert "status" in kinds
     assert "message.final" in kinds
     assert "widget.open" in kinds
+
+
+def test_v1_agent_stream_routes_with_metadata_agent(monkeypatch) -> None:
+    client = TestClient(server.app)
+
+    async def fake_codex_run(chat_id: str, message: str):
+        return {"response": f"codex:{chat_id}:{message}", "widgets": []}
+
+    monkeypatch.setattr(server.codex_agent, "run", fake_codex_run)
+    monkeypatch.setattr(server.sessions, "get_or_create", lambda *args, **kwargs: {"chat_id": "sess-1", "agent": "codex"})
+    monkeypatch.setattr(server.sessions, "get_session", lambda *_: None)
+    monkeypatch.setattr(server.sessions, "get_messages", lambda *_: [])
+
+    resp = client.post(
+        "/v1/agent/stream",
+        json={
+            "protocol_version": "1.0",
+            "kind": "agent.request",
+            "request_id": "req-1",
+            "timestamp": "2026-02-14T00:00:00Z",
+            "workspace_id": "sess-1",
+            "session_id": "sess-1",
+            "input": {"type": "text", "text": "hello"},
+            "context": {"recent_messages": []},
+            "metadata": {"agent": "codex"},
+        },
+    )
+
+    assert resp.status_code == 200
+    frames = []
+    for line in resp.text.splitlines():
+        if line.startswith("data: "):
+            frames.append(json.loads(line[len("data: ") :]))
+
+    assert any(frame.get("kind") == "status" for frame in frames)
+    assert any(frame.get("kind") == "message.final" and frame.get("text") == "codex:sess-1:hello" for frame in frames)
+
+
+def test_v1_agent_stream_uses_session_agent_when_not_provided(monkeypatch) -> None:
+    client = TestClient(server.app)
+
+    async def fake_codex_run(chat_id: str, message: str):
+        return {"response": f"stored:{chat_id}:{message}", "widgets": []}
+
+    monkeypatch.setattr(server.codex_agent, "run", fake_codex_run)
+    monkeypatch.setattr(server.sessions, "get_or_create", lambda *args, **kwargs: {"chat_id": "sess-2", "agent": "codex"})
+    monkeypatch.setattr(server.sessions, "get_session", lambda *_: {"id": "sess-2", "agent": "codex"})
+    monkeypatch.setattr(server.sessions, "get_messages", lambda *_: [])
+
+    resp = client.post(
+        "/v1/agent/stream",
+        json={
+            "protocol_version": "1.0",
+            "kind": "agent.request",
+            "request_id": "req-2",
+            "timestamp": "2026-02-14T00:00:00Z",
+            "workspace_id": "sess-2",
+            "session_id": "sess-2",
+            "input": {"type": "text", "text": "ping"},
+            "context": {"recent_messages": []},
+        },
+    )
+
+    assert resp.status_code == 200
+    frames = []
+    for line in resp.text.splitlines():
+        if line.startswith("data: "):
+            frames.append(json.loads(line[len("data: ") :]))
+
+    assert any(frame.get("kind") == "message.final" and frame.get("text") == "stored:sess-2:ping" for frame in frames)

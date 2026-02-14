@@ -171,7 +171,7 @@ function GenericCard({ call }: { call: ToolCall }) {
           {JSON.stringify(call.input, null, 2)}
         </pre>
       )}
-      {call.result && (
+      {call.result != null && (
         <pre className="terminal-output text-zinc-400 text-xs rounded-lg bg-zinc-900 p-3 border border-zinc-800">
           {typeof call.result === "string"
             ? call.result

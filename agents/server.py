@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 try:
     from . import sessions, iris_agent, claude_code, codex_agent
@@ -77,7 +77,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     chat_id: str
     response: str
-    widgets: list[dict] = []
+    widgets: list[dict] = Field(default_factory=list)
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -186,13 +186,20 @@ class AgentRequestInput(BaseModel):
     text: str
 
 
+class AgentRequestDevice(BaseModel):
+    id: str | None = None
+    name: str | None = None
+    platform: str | None = None
+    app_version: str | None = None
+
+
 class AgentContextMessage(BaseModel):
     role: str
     text: str
 
 
 class AgentRequestContext(BaseModel):
-    recent_messages: list[AgentContextMessage] = []
+    recent_messages: list[AgentContextMessage] = Field(default_factory=list)
 
 
 class AgentRequestEnvelope(BaseModel):
@@ -202,6 +209,7 @@ class AgentRequestEnvelope(BaseModel):
     timestamp: str | None = None
     workspace_id: str = "default-workspace"
     session_id: str
+    device: AgentRequestDevice | None = None
     input: AgentRequestInput
     context: AgentRequestContext | None = None
     agent: str | None = None
@@ -232,6 +240,7 @@ async def v1_agent_stream(req: AgentRequestEnvelope, request: Request):
     if req.context and req.context.recent_messages:
         existing = sessions.get_messages(session_id)
         if not existing:
+            device_id = req.device.id if req.device and req.device.id else None
             for msg in req.context.recent_messages[-20:]:
                 role = msg.role.strip()
                 text = msg.text.strip()
@@ -241,6 +250,7 @@ async def v1_agent_stream(req: AgentRequestEnvelope, request: Request):
                         role,
                         text,
                         message_id=f"{req.request_id}-{uuid.uuid4()}",
+                        device_id=device_id,
                     )
 
     async def generate() -> AsyncGenerator[str, None]:

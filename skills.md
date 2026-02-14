@@ -108,6 +108,31 @@ Behavior:
 - Avoid large external dependencies for critical flows.
 - Keep fallback text outside widget blocks minimal and useful.
 
+## 6.1) Visual Quality Bar (iPad Widgets)
+
+Default to a polished, premium UI direction similar to a modern glassy dashboard, not plain utility HTML.
+
+Required style expectations:
+- Use layered depth: gradient/atmospheric background + translucent cards (`backdrop-filter` when available) + soft inner/outer borders.
+- Use clear visual hierarchy: strong headline, secondary metadata, subtle tertiary labels.
+- Use purposeful spacing: 12/16/24 rhythm, generous padding, no cramped edges.
+- Use rounded geometry: 16-24px card radii, consistent corner language.
+- Use high-contrast typography with refined neutrals; avoid washed-out gray-on-gray text.
+- Prefer componentized card layouts (hero panel + supporting metric cards) over one dense block of text.
+- Include tasteful visual accents (status pills, progress bars, mini charts, avatars, icon chips) when relevant.
+- Keep interactions lightweight and reliable (hover/tap states optional, no heavy framework dependencies).
+
+Avoid:
+- Bare white cards with default browser typography.
+- Unstyled tables/lists as the primary presentation.
+- Random color usage or mismatched spacing/radii.
+- Generic "AI slop" layouts with no visual focal point.
+
+Recommended implementation pattern:
+- Define CSS tokens in `:root` (colors, radius, spacing, shadows).
+- Compose reusable classes like `.panel`, `.metric`, `.badge`, `.muted`, `.kpi`.
+- Start with semantic HTML, then layer visual treatment.
+
 ## 7) Copy/Paste Templates
 
 Template: `iris-widget` block (for Claude Code/Codex text output)

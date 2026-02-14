@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import AsyncGenerator
 
 import anthropic
@@ -8,9 +9,11 @@ import anthropic
 try:
     from . import sessions
     from .tools import TOOL_DEFINITIONS, TOOL_HANDLERS
+    from .trajectory_logger import TrajectoryLogger
 except ImportError:
     import sessions
     from tools import TOOL_DEFINITIONS, TOOL_HANDLERS
+    from trajectory_logger import TrajectoryLogger
 
 client = anthropic.Anthropic()
 
@@ -124,11 +127,18 @@ async def run_stream(chat_id: str, message: str) -> AsyncGenerator[dict, None]:
 
     context: dict = {"widgets": [], "session_id": chat_id}
 
+    # ── Trajectory logging ───────────────────────────────────────────
+    tlog = TrajectoryLogger(session_id=chat_id, agent="iris", model=MODEL)
+    tlog.log_metadata(task=message)
+    tlog.log_user_message(message)
+
     while True:
         # Use streaming API
         full_text = ""
         tool_use_blocks: list[dict] = []
         current_tool: dict | None = None
+
+        tlog.start_agent_turn()
 
         with client.messages.stream(
             model=MODEL,
@@ -149,6 +159,7 @@ async def run_stream(chat_id: str, message: str) -> AsyncGenerator[dict, None]:
                     delta = event.delta
                     if hasattr(delta, "text") and delta.text:
                         full_text += delta.text
+                        tlog.append_thought(delta.text)
                         yield {"kind": "message.delta", "delta": delta.text}
                     elif hasattr(delta, "partial_json") and delta.partial_json:
                         if current_tool is not None:
@@ -174,12 +185,34 @@ async def run_stream(chat_id: str, message: str) -> AsyncGenerator[dict, None]:
             tool_results = []
             for tool_block in tool_use_blocks:
                 handler = TOOL_HANDLERS.get(tool_block["name"])
+                tool_start = time.monotonic()
                 if handler:
                     result_content, _ = handler(tool_block["input"], context)
                 else:
                     result_content = f"Unknown tool: {tool_block['name']}"
+                tool_elapsed = int((time.monotonic() - tool_start) * 1000)
 
                 yield {"kind": "tool.result", "name": tool_block["name"], "output": str(result_content) if not isinstance(result_content, list) else "image data"}
+
+                # ── Log tool call to trajectory ──────────────────────
+                screenshot_b64 = None
+                widget_html = None
+                if tool_block["name"] == "read_screenshot" and isinstance(result_content, list):
+                    for block in result_content:
+                        if isinstance(block, dict) and block.get("type") == "image":
+                            screenshot_b64 = block.get("source", {}).get("data")
+                if tool_block["name"] == "push_widget":
+                    widget_html = tool_block["input"].get("html", "")
+
+                tlog.log_tool_call(
+                    tool_id=tool_block["id"],
+                    name=tool_block["name"],
+                    input_data=tool_block["input"],
+                    result=result_content,
+                    screenshot_base64=screenshot_b64,
+                    widget_html=widget_html,
+                    duration_ms=tool_elapsed,
+                )
 
                 if isinstance(result_content, list):
                     tool_results.append({
@@ -195,6 +228,8 @@ async def run_stream(chat_id: str, message: str) -> AsyncGenerator[dict, None]:
                     })
 
             messages.append({"role": "user", "content": tool_results})
+
+            tlog.end_agent_turn()
 
             # Emit widget events for any widgets that were delivered
             for widget in context["widgets"]:
@@ -214,6 +249,17 @@ async def run_stream(chat_id: str, message: str) -> AsyncGenerator[dict, None]:
             full_text = ""
             tool_use_blocks = []
         else:
+            # If we had a turn in progress with no tool calls, still end it
+            if tlog._turn_start is not None:
+                tlog.end_agent_turn()
+
             # Final text response
+            tlog.log_final_response(full_text)
+            try:
+                saved = tlog.save()
+                yield {"kind": "status", "state": "trajectory_saved", "detail": saved}
+            except Exception:
+                pass  # Don't fail the response if logging fails
+
             sessions.add_message(chat_id, "assistant", full_text)
             yield {"kind": "message.final", "text": full_text}

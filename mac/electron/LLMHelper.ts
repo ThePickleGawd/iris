@@ -6,11 +6,25 @@ import { uploadScreenshotToBackend } from "./backendUploader"
 
 const AGENT_SERVER_URL = process.env.IRIS_AGENT_URL || "http://localhost:8000"
 const DEFAULT_AGENT = process.env.IRIS_AGENT_NAME || "iris"
+const AGENT_STREAM_PATH = "/v1/agent/stream"
 
 interface ChatEnvelope {
-  agent: string
-  chat_id: string
-  message: string
+  protocol_version: "1.0"
+  kind: "agent.request"
+  request_id: string
+  timestamp: string
+  workspace_id: string
+  session_id: string
+  input: {
+    type: "text"
+    text: string
+  }
+  context: {
+    recent_messages: Array<{ role: "user" | "assistant"; text: string }>
+  }
+  metadata: {
+    agent: string
+  }
 }
 
 export class LLMHelper {
@@ -89,15 +103,106 @@ export class LLMHelper {
     })
   }
 
+  private streamAgent(envelope: ChatEnvelope): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const serialized = JSON.stringify(envelope)
+      const parsed = new URL(`${this.agentServerUrl}${AGENT_STREAM_PATH}`)
+      const req = http.request(
+        {
+          hostname: parsed.hostname,
+          port: parsed.port,
+          path: parsed.pathname,
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(serialized),
+            "Accept": "text/event-stream, application/x-ndjson, application/json"
+          },
+          timeout: 120_000
+        },
+        (res) => {
+          if (res.statusCode && res.statusCode >= 400) {
+            let errData = ""
+            res.on("data", (chunk) => (errData += chunk))
+            res.on("end", () => reject(new Error(`Agent server error ${res.statusCode}: ${errData.slice(0, 500)}`)))
+            return
+          }
+
+          let buffer = ""
+          let fullText = ""
+          let streamError: string | null = null
+
+          res.on("data", (chunk: Buffer) => {
+            buffer += chunk.toString()
+            const lines = buffer.split("\n")
+            buffer = lines.pop() || ""
+
+            for (const rawLine of lines) {
+              const line = rawLine.trim()
+              if (!line) continue
+              const payload = line.startsWith("data:") ? line.slice(5).trim() : line
+              if (!payload || payload === "[DONE]") continue
+              try {
+                const event = JSON.parse(payload)
+                if (event.kind === "message.delta" && typeof event.delta === "string") {
+                  fullText += event.delta
+                } else if (event.kind === "message.final" && typeof event.text === "string") {
+                  fullText = event.text
+                } else if (event.kind === "error" && typeof event.message === "string") {
+                  streamError = event.message
+                } else if (typeof event.chunk === "string") {
+                  fullText += event.chunk
+                } else if (typeof event.text === "string") {
+                  fullText = event.text
+                } else if (typeof event.error === "string") {
+                  streamError = event.error
+                }
+              } catch {
+                // ignore malformed lines
+              }
+            }
+          })
+
+          res.on("end", () => {
+            if (streamError) {
+              reject(new Error(streamError))
+              return
+            }
+            resolve(fullText)
+          })
+          res.on("error", reject)
+        }
+      )
+      req.on("error", reject)
+      req.on("timeout", () => {
+        req.destroy()
+        reject(new Error("Agent server timeout"))
+      })
+      req.write(serialized)
+      req.end()
+    })
+  }
+
   private async agentChat(message: string, chatId: string): Promise<string> {
     const payload: ChatEnvelope = {
-      agent: this.agentName,
-      chat_id: chatId,
-      message
+      protocol_version: "1.0",
+      kind: "agent.request",
+      request_id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      timestamp: new Date().toISOString(),
+      workspace_id: chatId,
+      session_id: chatId,
+      input: {
+        type: "text",
+        text: message
+      },
+      context: {
+        recent_messages: []
+      },
+      metadata: {
+        agent: this.agentName
+      }
     }
-    const response = await this.postJson("/chat", payload)
-    if (typeof response === "string") return response
-    return String(response?.response || "").trim()
+    return this.streamAgent(payload)
   }
 
   private async uploadScreenshotIfPresent(imagePath: string, chatId: string, source: string) {

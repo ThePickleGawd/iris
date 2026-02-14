@@ -10,6 +10,7 @@ import { WidgetWindowManager, WidgetSpec } from "./WidgetWindowManager"
 import { uploadScreenshotToBackend } from "./backendUploader"
 
 const AGENT_SERVER_URL = process.env.IRIS_AGENT_URL || "http://localhost:8000"
+const AGENT_STREAM_PATH = "/v1/agent/stream"
 
 interface SessionInfo {
   id: string
@@ -418,49 +419,44 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   // ─── Agent Server Helpers ─────────────────────────────────
 
-  function agentChatNonStreaming(message: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const { chatId, agent } = resolveChatContext()
-      const body = JSON.stringify({ agent, chat_id: chatId, message })
-      const parsed = new URL(`${AGENT_SERVER_URL}/chat`)
+  function buildAgentRequestEnvelope(message: string, chatId: string, agent: string) {
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    return {
+      protocol_version: "1.0",
+      kind: "agent.request",
+      request_id: requestId,
+      timestamp: new Date().toISOString(),
+      workspace_id: chatId,
+      session_id: chatId,
+      device: {
+        id: appState.deviceDiscovery.getDeviceId(),
+        name: os.hostname(),
+        platform: process.platform,
+        app_version: app.getVersion()
+      },
+      input: {
+        type: "text",
+        text: message
+      },
+      context: {
+        recent_messages: [] as Array<{ role: "user" | "assistant"; text: string }>
+      },
+      metadata: {
+        agent
+      }
+    }
+  }
 
-      const req = http.request(
-        {
-          hostname: parsed.hostname,
-          port: parsed.port,
-          path: parsed.pathname,
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
-          timeout: 120_000,
-        },
-        (res) => {
-          let data = ""
-          res.on("data", (chunk) => (data += chunk))
-          res.on("end", () => {
-            if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-              try {
-                resolve(JSON.parse(data).response || data)
-              } catch {
-                resolve(data)
-              }
-            } else {
-              reject(new Error(`Agent server error ${res.statusCode}: ${data.slice(0, 300)}`))
-            }
-          })
-        }
-      )
-      req.on("error", reject)
-      req.on("timeout", () => { req.destroy(); reject(new Error("Agent server timeout")) })
-      req.write(body)
-      req.end()
-    })
+  function agentChatNonStreaming(message: string): Promise<string> {
+    return agentChatStream(message, () => {})
   }
 
   function agentChatStream(message: string, onChunk: (chunk: string) => void): Promise<string> {
     return new Promise((resolve, reject) => {
       const { chatId, agent } = resolveChatContext()
-      const body = JSON.stringify({ agent, chat_id: chatId, message })
-      const parsed = new URL(`${AGENT_SERVER_URL}/chat/stream`)
+      const envelope = buildAgentRequestEnvelope(message, chatId, agent)
+      const body = JSON.stringify(envelope)
+      const parsed = new URL(`${AGENT_SERVER_URL}${AGENT_STREAM_PATH}`)
 
       const req = http.request(
         {
@@ -471,7 +467,7 @@ export function initializeIpcHandlers(appState: AppState): void {
           headers: {
             "Content-Type": "application/json",
             "Content-Length": Buffer.byteLength(body),
-            "Accept": "text/event-stream",
+            "Accept": "text/event-stream, application/x-ndjson, application/json",
           },
           timeout: 120_000,
         },
@@ -485,6 +481,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
           let buffer = ""
           let fullText = ""
+          let streamError: string | null = null
 
           res.on("data", (chunk: Buffer) => {
             buffer += chunk.toString()
@@ -493,8 +490,8 @@ export function initializeIpcHandlers(appState: AppState): void {
 
             for (const line of lines) {
               const trimmed = line.trim()
-              if (!trimmed.startsWith("data:")) continue
-              const payload = trimmed.slice(5).trim()
+              if (!trimmed) continue
+              const payload = trimmed.startsWith("data:") ? trimmed.slice(5).trim() : trimmed
               if (!payload || payload === "[DONE]") continue
 
               try {
@@ -504,6 +501,15 @@ export function initializeIpcHandlers(appState: AppState): void {
                   onChunk(event.delta)
                 } else if (event.kind === "message.final" && event.text) {
                   fullText = event.text
+                } else if (event.kind === "error" && event.message) {
+                  streamError = String(event.message)
+                } else if (typeof event.chunk === "string") {
+                  fullText += event.chunk
+                  onChunk(event.chunk)
+                } else if (typeof event.text === "string") {
+                  fullText = event.text
+                } else if (typeof event.error === "string") {
+                  streamError = event.error
                 }
               } catch {
                 // ignore malformed SSE lines
@@ -511,7 +517,13 @@ export function initializeIpcHandlers(appState: AppState): void {
             }
           })
 
-          res.on("end", () => resolve(fullText))
+          res.on("end", () => {
+            if (streamError) {
+              reject(new Error(streamError))
+              return
+            }
+            resolve(fullText)
+          })
           res.on("error", reject)
         }
       )

@@ -20,21 +20,50 @@ export function Dashboard() {
   const [selected, setSelected] = useState<TrajectoryFile | null>(null);
   const [demoFiles, setDemoFiles] = useState<TrajectoryFile[]>([]);
 
-  // Load demo trajectories from public/demo/
+  // Load trajectories from agents/log/ and public/demo/
   useEffect(() => {
-    async function loadDemos() {
+    async function loadLogs() {
+      const loaded: TrajectoryFile[] = [];
+
+      // Load from agents/log/ via API
       try {
-        const resp = await fetch("/demo/example-trajectory.jsonl");
-        if (resp.ok) {
-          const content = await resp.text();
-          const traj = parseTrajectoryFile("example-trajectory.jsonl", content);
-          setDemoFiles([traj]);
+        const listResp = await fetch("/api/logs");
+        if (listResp.ok) {
+          const { files } = await listResp.json();
+          for (const file of files as string[]) {
+            try {
+              const resp = await fetch(`/api/logs/${file}`);
+              if (resp.ok) {
+                const content = await resp.text();
+                loaded.push(parseTrajectoryFile(file, content));
+              }
+            } catch {
+              // skip unreadable files
+            }
+          }
         }
       } catch {
-        // No demo files available
+        // API not available
       }
+
+      // Fallback: load demo from public/
+      if (loaded.length === 0) {
+        try {
+          const resp = await fetch("/demo/example-trajectory.jsonl");
+          if (resp.ok) {
+            const content = await resp.text();
+            loaded.push(
+              parseTrajectoryFile("example-trajectory.jsonl", content)
+            );
+          }
+        } catch {
+          // No demo files
+        }
+      }
+
+      setDemoFiles(loaded);
     }
-    loadDemos();
+    loadLogs();
   }, []);
 
   const handleFileLoaded = useCallback((name: string, content: string) => {
