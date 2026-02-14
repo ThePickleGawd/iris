@@ -165,6 +165,7 @@ export class WindowHelper {
     })
 
     this.mainWindow.on("closed", () => {
+      this.appState.stopScreenMonitor()
       this.mainWindow = null
       this.isWindowVisible = false
       this.windowPosition = null

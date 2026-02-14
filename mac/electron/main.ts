@@ -4,6 +4,7 @@ import { WindowHelper } from "./WindowHelper"
 import { ScreenshotHelper } from "./ScreenshotHelper"
 import { ShortcutsHelper } from "./shortcuts"
 import { ProcessingHelper } from "./ProcessingHelper"
+import { ScreenMonitor } from "./ScreenMonitor"
 
 export class AppState {
   private static instance: AppState | null = null
@@ -12,6 +13,7 @@ export class AppState {
   private screenshotHelper: ScreenshotHelper
   public shortcutsHelper: ShortcutsHelper
   public processingHelper: ProcessingHelper
+  private screenMonitor: ScreenMonitor
   private tray: Tray | null = null
 
   // View management
@@ -57,6 +59,9 @@ export class AppState {
 
     // Initialize ShortcutsHelper
     this.shortcutsHelper = new ShortcutsHelper(this)
+
+    // Initialize ScreenMonitor
+    this.screenMonitor = new ScreenMonitor(this)
   }
 
   public static getInstance(): AppState {
@@ -161,6 +166,21 @@ export class AppState {
     path: string
   ): Promise<{ success: boolean; error?: string }> {
     return this.screenshotHelper.deleteScreenshot(path)
+  }
+
+  public async addExistingScreenshotToQueue(
+    sourcePath: string,
+    view: "queue" | "solutions" = "queue"
+  ): Promise<string> {
+    return this.screenshotHelper.addExistingScreenshotToQueue(sourcePath, view)
+  }
+
+  public startScreenMonitor(): void {
+    this.screenMonitor.start()
+  }
+
+  public stopScreenMonitor(): void {
+    this.screenMonitor.stop()
   }
 
   // New methods to move the window
@@ -280,6 +300,7 @@ async function initializeApp() {
     appState.createTray()
     // Register global shortcuts using ShortcutsHelper
     appState.shortcutsHelper.registerGlobalShortcuts()
+    appState.startScreenMonitor()
   })
 
   app.on("activate", () => {
@@ -294,6 +315,10 @@ async function initializeApp() {
     if (process.platform !== "darwin") {
       app.quit()
     }
+  })
+
+  app.on("before-quit", () => {
+    appState.stopScreenMonitor()
   })
 
   app.dock?.hide() // Hide dock icon (optional)
