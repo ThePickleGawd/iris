@@ -202,6 +202,8 @@ Every widget goes to exactly one device. Think about what the user is doing and 
 - For math/problem-solving contexts, include concrete intermediate reasoning structure (steps/formula/check), not only a paraphrase.
 - The widget must directly contain the answer the user needs.
 - Do not require additional interaction to reveal the core answer.
+- If the user asks a direct question (for example, "What is your name?"), answer it directly.
+- Do not create widgets that only suggest follow-up questions instead of answering.
 \
 """
 
