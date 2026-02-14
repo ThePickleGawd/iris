@@ -112,6 +112,26 @@ def init_db() -> None:
                 result_json TEXT,
                 error_text TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                name TEXT NOT NULL DEFAULT 'Untitled',
+                agent TEXT NOT NULL DEFAULT 'iris',
+                device_id TEXT,
+                last_message_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS messages (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                device_id TEXT,
+                FOREIGN KEY (session_id) REFERENCES sessions(id)
+            );
             """
         )
         ensure_column(conn, "screenshots", "captured_at", "TEXT")
@@ -240,6 +260,29 @@ def command_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "completed_at": row["completed_at"],
         "result": parse_json_field(row["result_json"], None),
         "error": row["error_text"],
+    }
+
+
+def session_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "name": row["name"],
+        "agent": row["agent"],
+        "device_id": row["device_id"],
+        "last_message_at": row["last_message_at"],
+    }
+
+
+def message_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "session_id": row["session_id"],
+        "created_at": row["created_at"],
+        "role": row["role"],
+        "content": row["content"],
+        "device_id": row["device_id"],
     }
 
 
@@ -676,6 +719,161 @@ def create_app() -> Flask:
             ).fetchone()
 
         return jsonify(command_to_dict(row))
+
+    # ─── Sessions ──────────────────────────────────────────────────────────
+
+    @app.post("/api/sessions")
+    def create_session() -> Any:
+        payload = request.get_json(silent=True) or {}
+        session_id = payload.get("id")
+        if not isinstance(session_id, str) or not session_id.strip():
+            return jsonify({"error": "id is required"}), 400
+
+        session_id = session_id.strip()
+        ts = now_iso()
+        name = payload.get("name", "Untitled") or "Untitled"
+        agent = payload.get("agent", "iris") or "iris"
+        device_id = payload.get("device_id")
+
+        with db_connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO sessions (id, created_at, updated_at, name, agent, device_id, last_message_at)
+                VALUES (?, ?, ?, ?, ?, ?, NULL)
+                ON CONFLICT(id) DO UPDATE SET
+                    updated_at = excluded.updated_at,
+                    name = COALESCE(excluded.name, sessions.name),
+                    agent = COALESCE(excluded.agent, sessions.agent),
+                    device_id = COALESCE(excluded.device_id, sessions.device_id)
+                """,
+                (session_id, ts, ts, name, agent, device_id),
+            )
+            row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        return jsonify(session_to_dict(row)), 201
+
+    @app.get("/api/sessions")
+    def list_sessions() -> Any:
+        try:
+            limit = parse_list_limit(request.args.get("limit"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        with db_connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM sessions
+                ORDER BY COALESCE(last_message_at, updated_at) DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        return jsonify({
+            "items": [session_to_dict(row) for row in rows],
+            "count": len(rows),
+        })
+
+    @app.get("/api/sessions/<session_id>")
+    def get_session(session_id: str) -> Any:
+        with db_connect() as conn:
+            row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        if not row:
+            return jsonify({"error": "session not found"}), 404
+        return jsonify(session_to_dict(row))
+
+    @app.delete("/api/sessions/<session_id>")
+    def delete_session(session_id: str) -> Any:
+        with db_connect() as conn:
+            row = conn.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if not row:
+                return jsonify({"error": "session not found"}), 404
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        return jsonify({"id": session_id, "deleted": True})
+
+    # ─── Messages ─────────────────────────────────────────────────────────
+
+    @app.post("/api/sessions/<session_id>/messages")
+    def create_message(session_id: str) -> Any:
+        payload = request.get_json(silent=True) or {}
+        role = payload.get("role")
+        content = payload.get("content")
+
+        if role not in ("user", "assistant"):
+            return jsonify({"error": "role must be 'user' or 'assistant'"}), 400
+        if not isinstance(content, str) or not content.strip():
+            return jsonify({"error": "content is required"}), 400
+
+        message_id = payload.get("id") or str(uuid.uuid4())
+        ts = now_iso()
+        device_id = payload.get("device_id")
+
+        with db_connect() as conn:
+            # Ensure session exists (auto-create if not)
+            existing = conn.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if not existing:
+                conn.execute(
+                    "INSERT INTO sessions (id, created_at, updated_at, name, agent) VALUES (?, ?, ?, 'Untitled', 'iris')",
+                    (session_id, ts, ts),
+                )
+
+            conn.execute(
+                """
+                INSERT INTO messages (id, session_id, created_at, role, content, device_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO NOTHING
+                """,
+                (message_id, session_id, ts, role, content.strip(), device_id),
+            )
+            conn.execute(
+                "UPDATE sessions SET last_message_at = ?, updated_at = ? WHERE id = ?",
+                (ts, ts, session_id),
+            )
+            row = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+        return jsonify(message_to_dict(row)), 201
+
+    @app.get("/api/sessions/<session_id>/messages")
+    def list_messages(session_id: str) -> Any:
+        try:
+            limit = parse_list_limit(request.args.get("limit"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        since = None
+        raw_since = request.args.get("since")
+        if raw_since:
+            try:
+                since = parse_iso8601_to_utc(raw_since)
+            except ValueError:
+                return jsonify({"error": "since must be a valid ISO-8601 timestamp"}), 400
+
+        with db_connect() as conn:
+            if since:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM messages
+                    WHERE session_id = ? AND created_at > ?
+                    ORDER BY created_at ASC
+                    LIMIT ?
+                    """,
+                    (session_id, since, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM messages
+                    WHERE session_id = ?
+                    ORDER BY created_at ASC
+                    LIMIT ?
+                    """,
+                    (session_id, limit),
+                ).fetchall()
+
+        items = [message_to_dict(row) for row in rows]
+        return jsonify({
+            "items": items,
+            "count": len(items),
+        })
 
     @app.get("/api/events")
     def list_events() -> Any:

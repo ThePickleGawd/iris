@@ -12,6 +12,7 @@ struct ContentView: View {
 
     @State private var isProcessing = false
     @State private var lastResponse: String?
+    @State private var sessionRegistered = false
 
     var body: some View {
         GeometryReader { geo in
@@ -58,6 +59,23 @@ struct ContentView: View {
         }
         .onAppear {
             SpeechTranscriber.requestAuthorization { _ in }
+            registerSessionIfNeeded()
+        }
+    }
+
+    // MARK: - Session Registration
+
+    private func registerSessionIfNeeded() {
+        guard !sessionRegistered else { return }
+        guard let serverURL = objectManager.httpServer.agentServerURL() else { return }
+        sessionRegistered = true
+        Task {
+            await AgentClient.registerSession(
+                id: document.id.uuidString,
+                name: document.name,
+                agent: document.agent,
+                serverURL: serverURL
+            )
         }
     }
 

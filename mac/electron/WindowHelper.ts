@@ -73,6 +73,8 @@ export class WindowHelper {
     if (process.platform === "darwin") {
       // Use standard desktop window behavior on macOS (not overlay-style).
       this.mainWindow.setAlwaysOnTop(false)
+      // Keep window visible when swiping between macOS Spaces
+      this.mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
     }
     if (process.platform === "linux") {
       // Linux-specific optimizations for better compatibility

@@ -52,6 +52,12 @@ export interface ElectronAPI {
       chartConfig?: unknown
     }
   }) => Promise<{ success: boolean; id: string; error?: string }>
+  getSessions: () => Promise<{ items: any[]; count: number }>
+  getCurrentSession: () => Promise<{ id: string; agent: string; name: string } | null>
+  setCurrentSession: (session: { id: string; agent: string; name: string } | null) => Promise<{ success: boolean }>
+  createSession: (params: { id: string; name: string; agent: string }) => Promise<any>
+  getSessionMessages: (sessionId: string, since?: string) => Promise<{ items: any[]; count: number }>
+  onSessionMessagesUpdate: (callback: (data: { sessionId: string; messages: any[] }) => void) => () => void
   getNetworkInfo: () => Promise<{ macIp: string; allIps: string[]; hostname: string; connectedDevices: any[] }>
   connectIpad: (host: string, port?: number) => Promise<{ success: boolean; error?: string }>
   getIrisDevices: () => Promise<any[]>
