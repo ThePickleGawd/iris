@@ -1,0 +1,23 @@
+# mac app - dependencies/build output
+mac/node_modules/
+mac/dist/
+mac/dist-electron/
+mac/release/
+
+# env and local overrides
+mac/.env
+mac/.env.local
+mac/.env.*.local
+
+# logs and caches
+mac/*.log
+mac/npm-debug.log*
+mac/yarn-debug.log*
+mac/yarn-error.log*
+mac/pnpm-debug.log*
+mac/.vite/
+mac/.turbo/
+
+# OS/editor noise
+.DS_Store
+*.swp
