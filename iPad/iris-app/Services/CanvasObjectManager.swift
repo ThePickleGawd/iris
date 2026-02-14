@@ -1,8 +1,20 @@
 import UIKit
 
+struct CanvasSuggestion: Identifiable {
+    let id: UUID
+    let title: String
+    let summary: String
+    let html: String
+    let position: CGPoint
+    let size: CGSize
+    let animateOnPlace: Bool
+    let createdAt: Date
+}
+
 @MainActor
 final class CanvasObjectManager: ObservableObject {
     @Published private(set) var objects: [UUID: CanvasObject] = [:]
+    @Published private(set) var suggestions: [UUID: CanvasSuggestion] = [:]
     private(set) var objectViews: [UUID: CanvasObjectWebView] = [:]
 
     let httpServer = AgentHTTPServer()
@@ -72,6 +84,43 @@ final class CanvasObjectManager: ObservableObject {
         return object
     }
 
+    @discardableResult
+    func addSuggestion(
+        title: String,
+        summary: String,
+        html: String,
+        at position: CGPoint,
+        size: CGSize,
+        animateOnPlace: Bool
+    ) -> CanvasSuggestion {
+        let suggestion = CanvasSuggestion(
+            id: UUID(),
+            title: title,
+            summary: summary,
+            html: html,
+            position: position,
+            size: size,
+            animateOnPlace: animateOnPlace,
+            createdAt: Date()
+        )
+        suggestions[suggestion.id] = suggestion
+        return suggestion
+    }
+
+    func approveSuggestion(id: UUID) async -> CanvasObject? {
+        guard let suggestion = suggestions.removeValue(forKey: id) else { return nil }
+        return await place(
+            html: suggestion.html,
+            at: suggestion.position,
+            size: suggestion.size,
+            animated: suggestion.animateOnPlace
+        )
+    }
+
+    func rejectSuggestion(id: UUID) -> Bool {
+        suggestions.removeValue(forKey: id) != nil
+    }
+
     func remove(id: UUID) {
         guard let view = objectViews[id] else { return }
         UIView.animate(withDuration: 0.18, animations: {
@@ -104,6 +153,11 @@ final class CanvasObjectManager: ObservableObject {
     func zoom(by delta: CGFloat, animated: Bool = true) {
         guard let canvasView else { return }
         setZoomScale(canvasView.zoomScale + delta, animated: animated)
+    }
+
+    /// Called by canvas scroll/zoom delegate hooks to keep widget layout in sync with viewport updates.
+    func notifyViewportChanged() {
+        syncLayout()
     }
 
     func syncLayout() {
