@@ -36,6 +36,27 @@ struct ContentView: View {
     private let proactiveForceSuggestAfterTicks = 4
     private let proactiveTriageModel = "gemini-2.0-flash"
     private let proactiveWidgetModel = "gemini-2.0-flash"
+    private var sessionID: String { document.resolvedSessionID }
+    private var linkedSessionMetadata: [String: Any] {
+        var metadata: [String: Any] = [:]
+        if let codexConversationID = document.codexConversationID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !codexConversationID.isEmpty {
+            metadata["codex_conversation_id"] = codexConversationID
+        }
+        if let codexCWD = document.codexCWD?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !codexCWD.isEmpty {
+            metadata["codex_cwd"] = codexCWD
+        }
+        if let claudeCodeConversationID = document.claudeCodeConversationID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !claudeCodeConversationID.isEmpty {
+            metadata["claude_code_conversation_id"] = claudeCodeConversationID
+        }
+        if let claudeCodeCWD = document.claudeCodeCWD?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !claudeCodeCWD.isEmpty {
+            metadata["claude_code_cwd"] = claudeCodeCWD
+        }
+        return metadata
+    }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -133,7 +154,7 @@ struct ContentView: View {
                     Task(priority: .utility) {
                         try? await BackendClient.ingestTranscript(
                             text: prompt,
-                            sessionID: document.id.uuidString,
+                            sessionID: sessionID,
                             deviceID: "ipad",
                             backendURL: backendURL
                         )
@@ -166,9 +187,10 @@ struct ContentView: View {
                 // Session registration is best-effort and should not delay first-token latency.
                 Task(priority: .utility) {
                     await AgentClient.registerSession(
-                        id: document.id.uuidString,
+                        id: sessionID,
                         name: document.name,
-                        model: document.resolvedModel,
+                        model: document.model,
+                        metadata: linkedSessionMetadata,
                         serverURL: serverURL
                     )
                 }
@@ -189,8 +211,12 @@ struct ContentView: View {
                 let agentResponse = try await AgentClient.sendMessage(
                     message,
                     model: document.resolvedModel,
-                    chatID: document.id.uuidString,
+                    chatID: sessionID,
                     coordinateSnapshot: coordinateSnapshot,
+                    codexConversationID: document.codexConversationID,
+                    codexCWD: document.codexCWD,
+                    claudeCodeConversationID: document.claudeCodeConversationID,
+                    claudeCodeCWD: document.claudeCodeCWD,
                     serverURL: serverURL
                 )
 
@@ -236,7 +262,7 @@ struct ContentView: View {
             pngData: pngData,
             deviceID: "ipad",
             backendURL: backendURL,
-            sessionID: document.id.uuidString,
+            sessionID: sessionID,
             notes: note,
             coordinateSnapshot: coordinateSnapshot
         )
@@ -301,16 +327,17 @@ struct ContentView: View {
                 pngData: pngData,
                 deviceID: "ipad",
                 backendURL: backendURL,
-                sessionID: document.id.uuidString,
+                sessionID: sessionID,
                 notes: "Proactive monitor capture",
                 coordinateSnapshot: coordinateSnapshot
             )
             proactiveCapturedIdleCycleID = proactiveIdleCycleID
 
             await AgentClient.registerSession(
-                id: document.id.uuidString,
+                id: sessionID,
                 name: document.name,
-                model: document.resolvedModel,
+                model: document.model,
+                metadata: linkedSessionMetadata,
                 serverURL: serverURL
             )
 
@@ -371,14 +398,14 @@ struct ContentView: View {
             async let triageResponseTask: AgentResponse? = try? await AgentClient.sendMessage(
                 triagePrompt,
                 model: proactiveTriageModel,
-                chatID: document.id.uuidString,
+                chatID: sessionID,
                 coordinateSnapshot: coordinateSnapshot,
                 serverURL: serverURL
             )
             async let widgetResponseTask: AgentResponse? = try? await AgentClient.sendMessage(
                 widgetPrompt,
                 model: proactiveWidgetModel,
-                chatID: document.id.uuidString,
+                chatID: sessionID,
                 ephemeral: true,
                 coordinateSnapshot: coordinateSnapshot,
                 serverURL: serverURL
@@ -493,7 +520,7 @@ struct ContentView: View {
         guard let serverURL = objectManager.httpServer.agentServerURL() else { return }
 
         let widgets = await AgentClient.fetchSessionWidgets(
-            sessionID: document.id.uuidString,
+            sessionID: sessionID,
             serverURL: serverURL
         )
 

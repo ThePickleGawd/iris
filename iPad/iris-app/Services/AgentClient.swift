@@ -42,6 +42,10 @@ enum AgentClient {
         chatID: String,
         ephemeral: Bool = false,
         coordinateSnapshot: [String: Any]? = nil,
+        codexConversationID: String? = nil,
+        codexCWD: String? = nil,
+        claudeCodeConversationID: String? = nil,
+        claudeCodeCWD: String? = nil,
         serverURL: URL
     ) async throws -> AgentResponse {
         let url = serverURL
@@ -54,6 +58,37 @@ enum AgentClient {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         let requestID = "\(Int(Date().timeIntervalSince1970 * 1000))-\(UUID().uuidString.prefix(8))"
+        var metadata: [String: Any] = [
+            "model": model,
+            "agent": model,
+            "ephemeral": ephemeral,
+            "coordinate_snapshot": coordinateSnapshot ?? [:]
+        ]
+        if let codexConversationID {
+            let value = codexConversationID.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty {
+                metadata["codex_conversation_id"] = value
+            }
+        }
+        if let codexCWD {
+            let value = codexCWD.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty {
+                metadata["codex_cwd"] = value
+            }
+        }
+        if let claudeCodeConversationID {
+            let value = claudeCodeConversationID.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty {
+                metadata["claude_code_conversation_id"] = value
+            }
+        }
+        if let claudeCodeCWD {
+            let value = claudeCodeCWD.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty {
+                metadata["claude_code_cwd"] = value
+            }
+        }
+
         let payload: [String: Any] = [
             "protocol_version": "1.0",
             "kind": "agent.request",
@@ -75,12 +110,7 @@ enum AgentClient {
                 "recent_messages": []
             ],
             "model": model,
-            "metadata": [
-                "model": model,
-                "agent": model,
-                "ephemeral": ephemeral,
-                "coordinate_snapshot": coordinateSnapshot ?? [:]
-            ]
+            "metadata": metadata
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
@@ -103,6 +133,7 @@ enum AgentClient {
         id: String,
         name: String,
         model: String,
+        metadata: [String: Any]? = nil,
         serverURL: URL
     ) async {
         let url = serverURL.appendingPathComponent("sessions")
@@ -112,12 +143,15 @@ enum AgentClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 5
 
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "id": id,
             "name": name,
             "model": model,
             "agent": model
         ]
+        if let metadata, !metadata.isEmpty {
+            payload["metadata"] = metadata
+        }
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
 
         _ = try? await session.data(for: request)

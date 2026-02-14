@@ -57,6 +57,9 @@ PROACTIVE_DESCRIPTIONS_DIR = DATA_DIR / "proactive_descriptions"
 CODEX_SESSIONS_ROOT = Path(
     os.environ.get("CODEX_SESSIONS_ROOT", str(Path.home() / ".codex" / "sessions"))
 )
+CODEX_HISTORY_PATH = Path(
+    os.environ.get("CODEX_HISTORY_PATH", str(Path.home() / ".codex" / "history.jsonl"))
+)
 CODEX_CLI_BIN = os.environ.get("CODEX_CLI_BIN", "codex")
 CLAUDE_CODE_SESSIONS_ROOT = Path(
     os.environ.get("CLAUDE_CODE_SESSIONS_ROOT", str(Path.home() / ".claude" / "projects"))
@@ -293,6 +296,213 @@ def _resolve_codex_rollout_path(conversation_id: str) -> Path | None:
         except (OSError, json.JSONDecodeError):
             continue
     return None
+
+
+def _discover_codex_sessions(limit: int = 200) -> list[dict[str, Any]]:
+    """Discover Codex conversations and map them to Iris session IDs when available."""
+    by_conversation: dict[str, dict[str, Any]] = {}
+
+    for item in _scan_codex_rollout_sessions(limit=max(limit * 3, 200)):
+        conversation_id = str(item.get("conversation_id") or "").strip()
+        if not conversation_id:
+            continue
+        by_conversation[conversation_id] = item
+
+    for item in _scan_codex_history_sessions(limit=max(limit * 5, 300)):
+        conversation_id = str(item.get("conversation_id") or "").strip()
+        if not conversation_id:
+            continue
+        existing = by_conversation.get(conversation_id)
+        if existing is None:
+            by_conversation[conversation_id] = item
+            continue
+        if str(existing.get("updated_at") or "") < str(item.get("updated_at") or ""):
+            existing["updated_at"] = item.get("updated_at")
+        if not str(existing.get("preview") or "").strip() and str(item.get("preview") or "").strip():
+            existing["preview"] = item.get("preview")
+        if not str(existing.get("title") or "").strip() and str(item.get("title") or "").strip():
+            existing["title"] = item.get("title")
+
+    linked_by_conversation: dict[str, dict[str, Any]] = {}
+    for session in _list_sessions():
+        metadata = session.get("metadata") if isinstance(session.get("metadata"), dict) else {}
+        conversation_id = str(metadata.get("codex_conversation_id") or "").strip()
+        if not conversation_id:
+            continue
+        candidate = {
+            "session_id": str(session.get("id") or "").strip(),
+            "session_name": str(session.get("name") or "").strip() or "Untitled",
+            "updated_at": str(session.get("updated_at") or ""),
+            "preview": str(_session_summary(session).get("last_message_preview") or "").strip(),
+            "cwd": str(metadata.get("codex_cwd") or "").strip() or None,
+        }
+        current = linked_by_conversation.get(conversation_id)
+        if current is None or str(candidate.get("updated_at") or "") > str(current.get("updated_at") or ""):
+            linked_by_conversation[conversation_id] = candidate
+
+    items: list[dict[str, Any]] = []
+    for conversation_id, discovered in by_conversation.items():
+        linked = linked_by_conversation.get(conversation_id)
+        if linked:
+            session_id = str(linked.get("session_id") or "").strip()
+            name = str(linked.get("session_name") or "").strip() or str(discovered.get("title") or "").strip()
+            updated_at = str(linked.get("updated_at") or "").strip() or str(discovered.get("updated_at") or "")
+            preview = str(linked.get("preview") or "").strip() or str(discovered.get("preview") or "")
+            cwd = str(linked.get("cwd") or "").strip() or str(discovered.get("cwd") or "")
+        else:
+            session_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"iris:codex:{conversation_id}"))
+            name = str(discovered.get("title") or "").strip()
+            updated_at = str(discovered.get("updated_at") or "")
+            preview = str(discovered.get("preview") or "").strip()
+            cwd = str(discovered.get("cwd") or "").strip()
+
+        if not name:
+            name = f"Codex {conversation_id[:8]}"
+        items.append(
+            {
+                "id": conversation_id,
+                "conversation_id": conversation_id,
+                "session_id": session_id,
+                "title": name,
+                "name": name,
+                "model": "codex",
+                "cwd": cwd or None,
+                "updated_at": updated_at,
+                "timestamp": updated_at,
+                "last_message_preview": preview,
+                "preview": preview,
+            }
+        )
+
+    # Include linked backend Codex sessions even if they are not discoverable in rollout/history files.
+    for conversation_id, linked in linked_by_conversation.items():
+        if any(str(item.get("conversation_id") or "") == conversation_id for item in items):
+            continue
+        session_id = str(linked.get("session_id") or "").strip()
+        name = str(linked.get("session_name") or "").strip() or f"Codex {conversation_id[:8]}"
+        updated_at = str(linked.get("updated_at") or "")
+        preview = str(linked.get("preview") or "").strip()
+        items.append(
+            {
+                "id": conversation_id,
+                "conversation_id": conversation_id,
+                "session_id": session_id,
+                "title": name,
+                "name": name,
+                "model": "codex",
+                "cwd": linked.get("cwd"),
+                "updated_at": updated_at,
+                "timestamp": updated_at,
+                "last_message_preview": preview,
+                "preview": preview,
+            }
+        )
+
+    items.sort(key=lambda row: str(row.get("updated_at") or ""), reverse=True)
+    return items[:limit]
+
+
+def _scan_codex_rollout_sessions(limit: int = 200) -> list[dict[str, Any]]:
+    if not CODEX_SESSIONS_ROOT.exists():
+        return []
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0
+
+    candidates = sorted(CODEX_SESSIONS_ROOT.rglob("*.jsonl"), key=_mtime, reverse=True)
+    for path in candidates:
+        if len(items) >= limit:
+            break
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                first_line = fh.readline().strip()
+            if not first_line:
+                continue
+            parsed = json.loads(first_line)
+            payload = parsed.get("payload") if isinstance(parsed, dict) else {}
+            if not isinstance(payload, dict):
+                continue
+            conversation_id = str(payload.get("id") or "").strip()
+            if not conversation_id or conversation_id in seen:
+                continue
+            seen.add(conversation_id)
+            timestamp = _normalize_iso_timestamp(payload.get("timestamp"))
+            cwd = str(payload.get("cwd") or "").strip()
+            title = Path(cwd).name if cwd else f"Codex {conversation_id[:8]}"
+            items.append(
+                {
+                    "conversation_id": conversation_id,
+                    "title": title,
+                    "updated_at": timestamp,
+                    "cwd": cwd or None,
+                    "preview": "",
+                }
+            )
+        except (OSError, json.JSONDecodeError):
+            continue
+    return items
+
+
+def _scan_codex_history_sessions(limit: int = 300) -> list[dict[str, Any]]:
+    if not CODEX_HISTORY_PATH.exists():
+        return []
+    latest: dict[str, dict[str, Any]] = {}
+    try:
+        with CODEX_HISTORY_PATH.open("r", encoding="utf-8") as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    row = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                conversation_id = str(row.get("session_id") or "").strip()
+                if not conversation_id:
+                    continue
+                ts = row.get("ts")
+                updated_at = _history_ts_to_iso(ts)
+                preview = str(row.get("text") or "").strip()
+                existing = latest.get(conversation_id)
+                if existing is None or str(existing.get("updated_at") or "") <= updated_at:
+                    latest[conversation_id] = {
+                        "conversation_id": conversation_id,
+                        "updated_at": updated_at,
+                        "preview": preview[:120],
+                        "title": f"Codex {conversation_id[:8]}",
+                        "cwd": None,
+                    }
+    except OSError:
+        return []
+
+    items = sorted(latest.values(), key=lambda row: str(row.get("updated_at") or ""), reverse=True)
+    return items[:limit]
+
+
+def _history_ts_to_iso(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+        except (OSError, OverflowError, ValueError):
+            return _now()
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if not trimmed:
+            return _now()
+        if trimmed.isdigit():
+            try:
+                return datetime.fromtimestamp(float(trimmed), tz=timezone.utc).isoformat()
+            except (OSError, OverflowError, ValueError):
+                pass
+        return _normalize_iso_timestamp(trimmed)
+    return _now()
 
 
 def _codex_event_external_id(
@@ -724,6 +934,188 @@ def _linked_provider_keys(provider: str) -> tuple[str, str]:
     raise ValueError(f"Unsupported provider: {provider}")
 
 
+def _linked_provider_name(provider: str) -> str:
+    if provider == "codex":
+        return "Codex"
+    if provider == "claude_code":
+        return "Claude Code"
+    return provider
+
+
+def _linked_provider_bootstrap_prompt(provider: str) -> str:
+    name = _linked_provider_name(provider)
+    return (
+        f"This is a bootstrap turn for a new Iris-linked {name} session. "
+        f"Reply with exactly: {name} session ready."
+    )
+
+
+def _run_codex_new_session(prompt: str, cwd: str | None = None) -> tuple[str, str]:
+    args = [
+        CODEX_CLI_BIN,
+        "exec",
+        "--json",
+        "--skip-git-repo-check",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-c",
+        f"base_instructions={json.dumps(_iris_system_prompt())}",
+    ]
+    if cwd:
+        args.extend(["--cd", cwd])
+    args.append(prompt)
+
+    try:
+        result = subprocess.run(
+            args,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        raise RuntimeError(f"Failed to launch Codex CLI: {exc}") from exc
+
+    conversation_id = ""
+    assistant_text = ""
+    for raw in result.stdout.splitlines():
+        stripped = raw.strip()
+        if not stripped or not stripped.startswith("{"):
+            continue
+        try:
+            row = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        row_type = str(row.get("type") or "").strip()
+        if row_type == "thread.started":
+            conversation_id = str(row.get("thread_id") or "").strip() or conversation_id
+            continue
+        if row_type != "item.completed":
+            continue
+        item = row.get("item")
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "") != "agent_message":
+            continue
+        text = item.get("text")
+        if isinstance(text, str) and text.strip():
+            assistant_text = text.strip()
+
+    if result.returncode != 0:
+        detail = _extract_codex_error(result.stderr) or _extract_codex_error(result.stdout)
+        raise RuntimeError(detail or f"Codex exited with status {result.returncode}")
+
+    if not conversation_id:
+        raise RuntimeError("Codex did not return a new session id")
+    return (conversation_id, assistant_text)
+
+
+def _run_claude_code_new_session(prompt: str, cwd: str | None = None) -> tuple[str, str]:
+    requested_session_id = str(uuid.uuid4())
+    args = [
+        CLAUDE_CODE_CLI_BIN,
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--system-prompt",
+        _iris_system_prompt(),
+        "--dangerously-skip-permissions",
+        "--permission-mode",
+        "bypassPermissions",
+        "--session-id",
+        requested_session_id,
+        prompt,
+    ]
+    if cwd:
+        args.extend(["--add-dir", cwd])
+
+    try:
+        result = subprocess.run(
+            args,
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=(cwd or None),
+        )
+    except OSError as exc:
+        raise RuntimeError(f"Failed to launch Claude Code CLI: {exc}") from exc
+
+    conversation_id = requested_session_id
+    assistant_text = ""
+    explicit_error: str | None = None
+    for raw in result.stdout.splitlines():
+        stripped = raw.strip()
+        if not stripped or not stripped.startswith("{"):
+            continue
+        try:
+            row = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        row_type = str(row.get("type") or "").strip()
+        if row_type == "system":
+            maybe_session_id = str(row.get("session_id") or "").strip()
+            if maybe_session_id:
+                conversation_id = maybe_session_id
+            continue
+        if row_type == "assistant":
+            text = _extract_claude_code_message_text(row)
+            if text:
+                assistant_text = text
+            continue
+        if row_type == "result" and bool(row.get("is_error")):
+            result_text = str(row.get("result") or "").strip()
+            explicit_error = result_text or explicit_error
+
+    if result.returncode != 0:
+        detail = (
+            explicit_error
+            or _extract_claude_code_error(result.stdout)
+            or _extract_claude_code_error(result.stderr)
+        )
+        raise RuntimeError(detail or f"Claude Code exited with status {result.returncode}")
+    if explicit_error:
+        raise RuntimeError(explicit_error)
+    if not conversation_id:
+        raise RuntimeError("Claude Code did not return a new session id")
+    return (conversation_id, assistant_text)
+
+
+def _start_linked_provider_session(
+    provider: str,
+    *,
+    name: str | None = None,
+    cwd: str | None = None,
+    prompt: str | None = None,
+) -> dict[str, Any]:
+    clean_cwd = (cwd or "").strip() or None
+    bootstrap_prompt = (prompt or "").strip() or _linked_provider_bootstrap_prompt(provider)
+
+    if provider == "codex":
+        conversation_id, _assistant_text = _run_codex_new_session(bootstrap_prompt, clean_cwd)
+    elif provider == "claude_code":
+        conversation_id, _assistant_text = _run_claude_code_new_session(bootstrap_prompt, clean_cwd)
+    else:
+        raise ValueError(f"Unsupported provider: {provider}")
+
+    session_id = str(uuid.uuid4())
+    session_name = (name or "").strip()
+    if not session_name:
+        session_name = f"{_linked_provider_name(provider)} {datetime.now().strftime('%I:%M:%S %p').lstrip('0')}"
+    metadata: dict[str, Any] = {}
+    conversation_key, cwd_key = _linked_provider_keys(provider)
+    metadata[conversation_key] = conversation_id
+    if clean_cwd:
+        metadata[cwd_key] = clean_cwd
+
+    session = _make_session(session_id, session_name, provider, metadata=metadata)
+    _save_session(session)
+
+    summary = _session_summary(session)
+    summary["conversation_id"] = conversation_id
+    summary["provider"] = provider
+    summary["cwd"] = clean_cwd
+    return summary
+
+
 def _run_linked_provider(provider: str, conversation_id: str, prompt: str, cwd: str | None) -> str:
     if provider == "codex":
         return _run_codex_resume(conversation_id, prompt, cwd)
@@ -1049,6 +1441,66 @@ def list_messages(session_id: str) -> Any:
 # Codex bridge
 # ---------------------------------------------------------------------------
 
+@app.get("/api/codex/sessions")
+@app.get("/codex/sessions")
+def list_codex_sessions() -> Any:
+    limit = min(int(request.args.get("limit", 50)), 200)
+    rows = _discover_codex_sessions(limit=limit)
+    return jsonify({"items": rows[:limit], "count": min(len(rows), limit)})
+
+
+@app.post("/api/linked-sessions/start")
+@app.post("/linked-sessions/start")
+def start_linked_session() -> Any:
+    body = request.get_json(silent=True) or {}
+    provider = str(body.get("provider") or "").strip().lower()
+    if provider not in {"codex", "claude_code"}:
+        return jsonify({"error": "provider must be 'codex' or 'claude_code'"}), 400
+
+    name = str(body.get("name") or "").strip() or None
+    cwd = str(body.get("cwd") or "").strip() or None
+    prompt = str(body.get("prompt") or "").strip() or None
+
+    try:
+        created = _start_linked_provider_session(
+            provider,
+            name=name,
+            cwd=cwd,
+            prompt=prompt,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 502
+
+    return jsonify(created), 201
+
+
+def _start_linked_session_for_provider(provider: str) -> Any:
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("name") or "").strip() or None
+    cwd = str(body.get("cwd") or "").strip() or None
+    prompt = str(body.get("prompt") or "").strip() or None
+    try:
+        created = _start_linked_provider_session(
+            provider,
+            name=name,
+            cwd=cwd,
+            prompt=prompt,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 502
+    return jsonify(created), 201
+
+
+@app.post("/api/codex/sessions/start")
+@app.post("/codex/sessions/start")
+def start_codex_session() -> Any:
+    return _start_linked_session_for_provider("codex")
+
+
 @app.post("/api/codex/respond")
 @app.post("/codex/respond")
 def codex_respond() -> Any:
@@ -1138,6 +1590,12 @@ def claude_code_respond() -> Any:
             "timestamp": _now(),
         }
     )
+
+
+@app.post("/api/claude-code/sessions/start")
+@app.post("/claude-code/sessions/start")
+def start_claude_code_session() -> Any:
+    return _start_linked_session_for_provider("claude_code")
 
 
 # ---------------------------------------------------------------------------
