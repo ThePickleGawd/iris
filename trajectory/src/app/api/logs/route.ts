@@ -1,18 +1,15 @@
 import { NextResponse } from "next/server";
-import { readdir } from "fs/promises";
-import { join } from "path";
-
-const LOG_DIR = join(process.cwd(), "..", "agents", "log");
+import { listTrajectoryLogs } from "./_log-sources";
 
 export async function GET() {
   try {
-    const files = await readdir(LOG_DIR);
-    const jsonlFiles = files
-      .filter((f) => f.endsWith(".jsonl"))
-      .sort()
-      .reverse(); // newest first
-    return NextResponse.json({ files: jsonlFiles });
+    const entries = await listTrajectoryLogs();
+    return NextResponse.json({
+      // `files` is kept for backwards compatibility.
+      files: entries.map((entry) => entry.fileName),
+      entries,
+    });
   } catch {
-    return NextResponse.json({ files: [] });
+    return NextResponse.json({ files: [], entries: [] });
   }
 }
