@@ -89,19 +89,42 @@ class AgentHTTPServer {
 
     private func accept(_ conn: NWConnection) {
         conn.start(queue: queue)
+        receiveRequest(conn, buffered: Data())
+    }
 
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 1_048_576) { [weak self] data, _, _, error in
-            guard let self, let data, error == nil else {
+    private func receiveRequest(_ conn: NWConnection, buffered: Data) {
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, isComplete, error in
+            guard let self else {
                 conn.cancel()
                 return
             }
 
-            guard let req = HTTPRequest.parse(data) else {
+            if error != nil {
+                conn.cancel()
+                return
+            }
+
+            var combined = buffered
+            if let data, !data.isEmpty {
+                combined.append(data)
+            }
+
+            if let req = HTTPRequest.parse(combined) {
+                self.route(req, conn)
+                return
+            }
+
+            if combined.count > 1_048_576 {
+                self.respondJSON(conn, status: 413, body: ["error": "Request too large"])
+                return
+            }
+
+            if isComplete {
                 self.respondJSON(conn, status: 400, body: ["error": "Malformed HTTP request"])
                 return
             }
 
-            self.route(req, conn)
+            self.receiveRequest(conn, buffered: combined)
         }
     }
 
@@ -457,6 +480,7 @@ class AgentHTTPServer {
         case 201: "Created"
         case 204: "No Content"
         case 400: "Bad Request"
+        case 413: "Payload Too Large"
         case 404: "Not Found"
         case 503: "Service Unavailable"
         default:  "Unknown"
@@ -489,11 +513,11 @@ private struct HTTPRequest {
     }
 
     static func parse(_ data: Data) -> HTTPRequest? {
-        guard let str = String(data: data, encoding: .utf8) else { return nil }
+        let separator = Data("\r\n\r\n".utf8)
+        guard let headerRange = data.range(of: separator) else { return nil }
 
-        let parts = str.components(separatedBy: "\r\n\r\n")
-        let headerSection = parts[0]
-        let bodyString = parts.count > 1 ? parts.dropFirst().joined(separator: "\r\n\r\n") : nil
+        let headerData = data.subdata(in: data.startIndex..<headerRange.lowerBound)
+        guard let headerSection = String(data: headerData, encoding: .utf8) else { return nil }
 
         let lines = headerSection.components(separatedBy: "\r\n")
         guard let requestLine = lines.first else { return nil }
@@ -510,7 +534,17 @@ private struct HTTPRequest {
             }
         }
 
-        let bodyData = bodyString.flatMap { $0.isEmpty ? nil : $0.data(using: .utf8) }
+        let contentLength = Int(headers["content-length"] ?? "") ?? 0
+        guard contentLength >= 0 else { return nil }
+        let bodyStart = headerRange.upperBound
+        guard data.count - bodyStart >= contentLength else { return nil }
+
+        let bodyData: Data?
+        if contentLength > 0 {
+            bodyData = data.subdata(in: bodyStart..<(bodyStart + contentLength))
+        } else {
+            bodyData = nil
+        }
 
         return HTTPRequest(method: tokens[0], path: tokens[1], headers: headers, body: bodyData)
     }

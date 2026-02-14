@@ -36,6 +36,10 @@ struct ContentView: View {
                 audioService.stopCapture()
             }
         }
+        .onDisappear {
+            canvasState.isRecording = false
+            audioService.stopCapture()
+        }
     }
 
 }

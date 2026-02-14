@@ -7,6 +7,13 @@ import { WidgetWindowManager, WidgetSpec } from "./WidgetWindowManager"
 export function initializeIpcHandlers(appState: AppState): void {
   let notificationsEnabled = true
   const widgetManager = new WidgetWindowManager()
+  const getLatestScreenshotPathFromQueues = (): string | undefined => {
+    const queue = appState.getScreenshotQueue()
+    const extraQueue = appState.getExtraScreenshotQueue()
+    const queueLatest = queue.length > 0 ? queue[queue.length - 1] : undefined
+    const extraLatest = extraQueue.length > 0 ? extraQueue[extraQueue.length - 1] : undefined
+    return extraLatest || queueLatest
+  }
 
   const notifyAgentReply = (text: string) => {
     if (!notificationsEnabled) return
@@ -138,7 +145,11 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   ipcMain.handle("claude-chat", async (event, message: string) => {
     try {
-      const result = await appState.processingHelper.getLLMHelper().chatWithClaude(message);
+      const latestScreenshotPath = getLatestScreenshotPathFromQueues()
+      const result = await appState
+        .processingHelper
+        .getLLMHelper()
+        .chatWithClaude(message, latestScreenshotPath || undefined);
       notifyAgentReply(result);
       event.sender.send("agent-reply", { text: result });
       return result;
@@ -151,7 +162,11 @@ export function initializeIpcHandlers(appState: AppState): void {
   ipcMain.handle("claude-chat-stream", async (event, requestId: string, message: string) => {
     try {
       const llm = appState.processingHelper.getLLMHelper();
-      const full = await llm.chatWithClaudeStream(message, (chunk) => {
+      const latestScreenshotPath = getLatestScreenshotPathFromQueues()
+      const full = await llm.chatWithClaudeStream(
+        message,
+        latestScreenshotPath || undefined,
+        (chunk) => {
         event.sender.send("claude-chat-stream-chunk", { requestId, chunk });
       });
       notifyAgentReply(full);

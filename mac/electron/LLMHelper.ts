@@ -177,6 +177,31 @@ export class LLMHelper {
     return this.callClaude([{ type: "text", text: prompt }])
   }
 
+  private async buildChatClaudeContent(
+    message: string,
+    latestScreenshotPath?: string
+  ): Promise<ClaudeContentBlock[]> {
+    if (!latestScreenshotPath) {
+      return [{ type: "text", text: message }]
+    }
+
+    try {
+      await fs.promises.access(latestScreenshotPath, fs.constants.F_OK)
+      return [
+        {
+          type: "text",
+          text:
+            "Use the attached latest screenshot as additional context when relevant. " +
+            "If the screenshot is not relevant, answer based on the user message only.\n\n" +
+            `User message:\n${message}`
+        },
+        await this.fileToClaudeImagePart(latestScreenshotPath)
+      ]
+    } catch {
+      return [{ type: "text", text: message }]
+    }
+  }
+
   private async callOllama(prompt: string): Promise<string> {
     try {
       const response = await fetch(`${this.ollamaUrl}/api/generate`, {
@@ -353,15 +378,22 @@ export class LLMHelper {
     }
   }
 
-  public async chatWithClaude(message: string): Promise<string> {
+  public async chatWithClaude(
+    message: string,
+    latestScreenshotPath?: string
+  ): Promise<string> {
     try {
       if (/(who are you|what(?:'s| is) your name|what are you called|who am i talking to|your name)/i.test(message)) {
         return "I'm Iris."
       }
       if (this.useOllama) {
-        return this.callOllama(message)
+        const prompt = latestScreenshotPath
+          ? `Latest screenshot path: ${latestScreenshotPath}\n\nUser message:\n${message}`
+          : message
+        return this.callOllama(prompt)
       }
-      return this.callClaudeText(message)
+      const content = await this.buildChatClaudeContent(message, latestScreenshotPath)
+      return this.callClaude(content)
     } catch (error) {
       console.error("[LLMHelper] Error in chatWithClaude:", error)
       throw error
@@ -370,6 +402,7 @@ export class LLMHelper {
 
   public async chatWithClaudeStream(
     message: string,
+    latestScreenshotPath: string | undefined,
     onChunk: (chunk: string) => void
   ): Promise<string> {
     try {
@@ -380,12 +413,16 @@ export class LLMHelper {
       }
 
       if (this.useOllama) {
-        const text = await this.callOllama(message)
+        const prompt = latestScreenshotPath
+          ? `Latest screenshot path: ${latestScreenshotPath}\n\nUser message:\n${message}`
+          : message
+        const text = await this.callOllama(prompt)
         onChunk(text)
         return text
       }
 
-      return this.callClaudeStream([{ type: "text", text: message }], onChunk)
+      const content = await this.buildChatClaudeContent(message, latestScreenshotPath)
+      return this.callClaudeStream(content, onChunk)
     } catch (error) {
       console.error("[LLMHelper] Error in chatWithClaudeStream:", error)
       throw error

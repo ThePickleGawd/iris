@@ -1,22 +1,52 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
+import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, request, send_file, url_for
+from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
-AUDIO_CHUNKS_DIR = DATA_DIR / "audio_chunks"
-AUDIO_FINAL_DIR = DATA_DIR / "audio_final"
 SCREENSHOTS_DIR = DATA_DIR / "screenshots"
 DB_PATH = DATA_DIR / "iris.db"
+MAX_REQUEST_BYTES = 15 * 1024 * 1024
+MAX_TRANSCRIPT_CHARS = 20_000
+MAX_LIST_LIMIT = 200
+DEFAULT_LIST_LIMIT = 50
+GLOBAL_RATE_LIMIT_PER_MINUTE = 120
+SCREENSHOT_UPLOAD_RATE_LIMIT_PER_MINUTE = 30
+ALLOWED_SCREENSHOT_MIME_PREFIX = "image/"
+CORS_ALLOW_ORIGIN = os.environ.get("CORS_ALLOW_ORIGIN", "*").strip() or "*"
+CORS_ALLOW_METHODS = "GET,POST,PUT,DELETE,OPTIONS"
+CORS_ALLOW_HEADERS = "Content-Type, Authorization, X-Requested-With"
+CORS_MAX_AGE_SECONDS = "600"
+CURSOR_SEPARATOR = "|"
+COMMAND_STATUS_QUEUED = "queued"
+COMMAND_STATUS_IN_PROGRESS = "in_progress"
+COMMAND_STATUS_COMPLETED = "completed"
+COMMAND_STATUS_FAILED = "failed"
+COMMAND_STATUS_CANCELED = "canceled"
+COMMAND_STATUSES = {
+    COMMAND_STATUS_QUEUED,
+    COMMAND_STATUS_IN_PROGRESS,
+    COMMAND_STATUS_COMPLETED,
+    COMMAND_STATUS_FAILED,
+    COMMAND_STATUS_CANCELED,
+}
+
+
+RATE_LIMIT_STATE: dict[str, list[float]] = {}
+RATE_LIMIT_LOCK = threading.Lock()
 
 
 def now_iso() -> str:
@@ -25,8 +55,6 @@ def now_iso() -> str:
 
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(exist_ok=True)
-    AUDIO_CHUNKS_DIR.mkdir(exist_ok=True)
-    AUDIO_FINAL_DIR.mkdir(exist_ok=True)
     SCREENSHOTS_DIR.mkdir(exist_ok=True)
 
 
@@ -36,30 +64,25 @@ def db_connect() -> sqlite3.Connection:
     return conn
 
 
+def ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    columns = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    column_names = {col["name"] for col in columns}
+    if column not in column_names:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
 def init_db() -> None:
     with db_connect() as conn:
         conn.executescript(
             """
-            CREATE TABLE IF NOT EXISTS audio_sessions (
+            CREATE TABLE IF NOT EXISTS transcripts (
                 id TEXT PRIMARY KEY,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
+                captured_at TEXT NOT NULL,
                 device_id TEXT,
-                mime_type TEXT,
-                status TEXT NOT NULL,
-                audio_path TEXT,
-                transcript TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS audio_chunks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                chunk_index INTEGER NOT NULL,
-                chunk_path TEXT NOT NULL,
-                byte_size INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                UNIQUE(session_id, chunk_index),
-                FOREIGN KEY(session_id) REFERENCES audio_sessions(id)
+                source TEXT,
+                text TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS screenshots (
@@ -74,18 +97,25 @@ def init_db() -> None:
                 file_path TEXT NOT NULL,
                 notes TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS device_commands (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                target_device_id TEXT NOT NULL,
+                source_device_id TEXT,
+                command_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                acknowledged_at TEXT,
+                completed_at TEXT,
+                result_json TEXT,
+                error_text TEXT
+            );
             """
         )
-
-
-def run_migrations() -> None:
-    with db_connect() as conn:
-        columns = conn.execute("PRAGMA table_info(screenshots)").fetchall()
-        column_names = {col["name"] for col in columns}
-        if "captured_at" not in column_names:
-            conn.execute("ALTER TABLE screenshots ADD COLUMN captured_at TEXT")
-        if "session_id" not in column_names:
-            conn.execute("ALTER TABLE screenshots ADD COLUMN session_id TEXT")
+        ensure_column(conn, "screenshots", "captured_at", "TEXT")
+        ensure_column(conn, "screenshots", "session_id", "TEXT")
 
 
 def parse_iso8601_to_utc(ts: str) -> str:
@@ -100,20 +130,78 @@ def parse_iso8601_to_utc(ts: str) -> str:
     return parsed.isoformat()
 
 
-def session_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+def parse_list_limit(raw_limit: str | None) -> int:
+    if raw_limit is None or not raw_limit.strip():
+        return DEFAULT_LIST_LIMIT
+    cleaned = raw_limit.strip()
+    if not cleaned.isdigit():
+        raise ValueError("limit must be a positive integer")
+    limit = int(cleaned)
+    if limit <= 0:
+        raise ValueError("limit must be greater than 0")
+    return min(limit, MAX_LIST_LIMIT)
+
+
+def parse_since(raw_since: str | None) -> str | None:
+    if raw_since is None or not raw_since.strip():
+        return None
+    return parse_iso8601_to_utc(raw_since)
+
+
+def parse_cursor(raw_cursor: str | None) -> tuple[str | None, str | None]:
+    if raw_cursor is None or not raw_cursor.strip():
+        return None, None
+    token = raw_cursor.strip()
+    if CURSOR_SEPARATOR not in token:
+        raise ValueError("cursor must be in the format '<iso-ts>|<id>'")
+    ts_raw, item_id = token.split(CURSOR_SEPARATOR, 1)
+    ts_raw = ts_raw.replace(" ", "+")
+    ts = parse_iso8601_to_utc(ts_raw)
+    if not item_id.strip():
+        raise ValueError("cursor id cannot be empty")
+    return ts, item_id.strip()
+
+
+def parse_paging_cursor(raw_cursor: str | None, raw_since: str | None) -> tuple[str | None, str | None]:
+    if raw_cursor and raw_cursor.strip():
+        return parse_cursor(raw_cursor)
+    return parse_since(raw_since), None
+
+
+def make_cursor(ts: str, item_id: str) -> str:
+    cursor_ts = ts.replace("+00:00", "Z")
+    return f"{cursor_ts}{CURSOR_SEPARATOR}{item_id}"
+
+
+def check_rate_limit(key: str, limit: int, window_seconds: int = 60) -> tuple[bool, int]:
+    now = time.time()
+    cutoff = now - window_seconds
+    with RATE_LIMIT_LOCK:
+        timestamps = RATE_LIMIT_STATE.get(key, [])
+        timestamps = [t for t in timestamps if t >= cutoff]
+        if len(timestamps) >= limit:
+            retry_after = int(max(1, window_seconds - (now - timestamps[0])))
+            RATE_LIMIT_STATE[key] = timestamps
+            return False, retry_after
+        timestamps.append(now)
+        RATE_LIMIT_STATE[key] = timestamps
+    return True, 0
+
+
+def transcript_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "id": row["id"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+        "captured_at": row["captured_at"],
         "device_id": row["device_id"],
-        "mime_type": row["mime_type"],
-        "status": row["status"],
-        "audio_path": row["audio_path"],
-        "transcript": row["transcript"],
+        "source": row["source"],
+        "text": row["text"],
     }
 
 
 def screenshot_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    file_url = url_for("get_screenshot_file", screenshot_id=row["id"], _external=True)
     return {
         "id": row["id"],
         "created_at": row["created_at"],
@@ -124,61 +212,47 @@ def screenshot_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "source": row["source"],
         "mime_type": row["mime_type"],
         "file_path": row["file_path"],
+        "file_url": file_url,
         "notes": row["notes"],
     }
 
 
-def join_chunks(session_id: str, mime_type: str | None) -> Path:
-    ext = ".bin"
-    if mime_type:
-        if "wav" in mime_type:
-            ext = ".wav"
-        elif "mpeg" in mime_type or "mp3" in mime_type:
-            ext = ".mp3"
-        elif "ogg" in mime_type:
-            ext = ".ogg"
-        elif "webm" in mime_type:
-            ext = ".webm"
-        elif "mp4" in mime_type or "m4a" in mime_type:
-            ext = ".m4a"
-
-    output_path = AUDIO_FINAL_DIR / f"{session_id}{ext}"
-
-    with db_connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT chunk_path
-            FROM audio_chunks
-            WHERE session_id = ?
-            ORDER BY chunk_index ASC
-            """,
-            (session_id,),
-        ).fetchall()
-
-    if not rows:
-        raise ValueError("No chunks found for session")
-
-    with output_path.open("wb") as out_file:
-        for row in rows:
-            chunk_path = Path(row["chunk_path"])
-            with chunk_path.open("rb") as in_file:
-                out_file.write(in_file.read())
-
-    return output_path
+def parse_json_field(raw: str | None, default: Any) -> Any:
+    if raw is None:
+        return default
+    try:
+        return json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return default
 
 
-def get_chunk_paths(session_id: str) -> list[Path]:
-    with db_connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT chunk_path
-            FROM audio_chunks
-            WHERE session_id = ?
-            ORDER BY chunk_index ASC
-            """,
-            (session_id,),
-        ).fetchall()
-    return [Path(row["chunk_path"]) for row in rows]
+def command_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "target_device_id": row["target_device_id"],
+        "source_device_id": row["source_device_id"],
+        "command_type": row["command_type"],
+        "payload": parse_json_field(row["payload_json"], {}),
+        "status": row["status"],
+        "acknowledged_at": row["acknowledged_at"],
+        "completed_at": row["completed_at"],
+        "result": parse_json_field(row["result_json"], None),
+        "error": row["error_text"],
+    }
+
+
+def parse_status_list(raw_statuses: str | None, default_statuses: set[str]) -> list[str]:
+    if raw_statuses is None or not raw_statuses.strip():
+        return sorted(default_statuses)
+    statuses = [part.strip() for part in raw_statuses.split(",") if part.strip()]
+    if not statuses:
+        return sorted(default_statuses)
+    invalid = [status for status in statuses if status not in COMMAND_STATUSES]
+    if invalid:
+        raise ValueError("invalid status values")
+    return sorted(set(statuses))
 
 
 def delete_files(paths: list[Path]) -> dict[str, int]:
@@ -207,204 +281,522 @@ def screenshot_device_dir(device_id: str | None) -> Path:
 def create_app() -> Flask:
     ensure_dirs()
     init_db()
-    run_migrations()
 
     app = Flask(__name__)
+    app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
+
+    @app.after_request
+    def apply_cors_headers(response: Any) -> Any:
+        if request.path.startswith("/api/"):
+            response.headers["Access-Control-Allow-Origin"] = CORS_ALLOW_ORIGIN
+            response.headers["Access-Control-Allow-Methods"] = CORS_ALLOW_METHODS
+            response.headers["Access-Control-Allow-Headers"] = CORS_ALLOW_HEADERS
+            response.headers["Access-Control-Max-Age"] = CORS_MAX_AGE_SECONDS
+            if CORS_ALLOW_ORIGIN != "*":
+                response.headers["Vary"] = "Origin"
+        return response
+
+    @app.before_request
+    def apply_basic_guards() -> Any:
+        if request.path == "/health":
+            return None
+        if not request.path.startswith("/api/"):
+            return None
+        if request.method == "OPTIONS":
+            return ("", 204)
+
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        client_ip = forwarded.split(",")[0].strip() if forwarded else (request.remote_addr or "unknown")
+        limit = GLOBAL_RATE_LIMIT_PER_MINUTE
+        if request.method == "POST" and request.path == "/api/screenshots":
+            limit = SCREENSHOT_UPLOAD_RATE_LIMIT_PER_MINUTE
+
+        allowed, retry_after = check_rate_limit(
+            key=f"{client_ip}:{request.method}:{request.path}",
+            limit=limit,
+        )
+        if not allowed:
+            return (
+                jsonify(
+                    {
+                        "error": "rate limit exceeded",
+                        "retry_after_seconds": retry_after,
+                    }
+                ),
+                429,
+                {"Retry-After": str(retry_after)},
+            )
+        return None
+
+    @app.errorhandler(RequestEntityTooLarge)
+    def handle_request_too_large(_: RequestEntityTooLarge) -> Any:
+        return (
+            jsonify(
+                {
+                    "error": "request too large",
+                    "max_bytes": MAX_REQUEST_BYTES,
+                }
+            ),
+            413,
+        )
 
     @app.get("/health")
     def health() -> Any:
         return jsonify({"status": "ok", "ts": now_iso()})
 
-    @app.post("/api/audio/sessions")
-    def create_audio_session() -> Any:
+    @app.post("/api/transcripts")
+    def create_transcript() -> Any:
         payload = request.get_json(silent=True) or {}
-        session_id = str(uuid.uuid4())
+        text = payload.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return jsonify({"error": "text is required"}), 400
+        if len(text.strip()) > MAX_TRANSCRIPT_CHARS:
+            return jsonify({"error": f"text exceeds max length ({MAX_TRANSCRIPT_CHARS} chars)"}), 400
+
+        transcript_id = str(uuid.uuid4())
         created_at = now_iso()
+        captured_at_raw = payload.get("captured_at")
+        captured_at = created_at
+        if captured_at_raw:
+            try:
+                captured_at = parse_iso8601_to_utc(captured_at_raw)
+            except ValueError:
+                return jsonify({"error": "captured_at must be a valid ISO-8601 timestamp"}), 400
+
         device_id = payload.get("device_id")
-        mime_type = payload.get("mime_type")
+        source = payload.get("source")
 
         with db_connect() as conn:
             conn.execute(
                 """
-                INSERT INTO audio_sessions (
-                    id, created_at, updated_at, device_id, mime_type, status
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO transcripts (
+                    id, created_at, updated_at, captured_at, device_id, source, text
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (session_id, created_at, created_at, device_id, mime_type, "collecting"),
+                (
+                    transcript_id,
+                    created_at,
+                    created_at,
+                    captured_at,
+                    device_id,
+                    source,
+                    text.strip(),
+                ),
             )
             row = conn.execute(
-                "SELECT * FROM audio_sessions WHERE id = ?", (session_id,)
+                "SELECT * FROM transcripts WHERE id = ?", (transcript_id,)
             ).fetchone()
+        return jsonify(transcript_to_dict(row)), 201
 
-        return jsonify(session_to_dict(row)), 201
-
-    @app.post("/api/audio/sessions/<session_id>/chunks")
-    def upload_audio_chunk(session_id: str) -> Any:
-        chunk_index_raw = request.args.get("index", "").strip()
-        if not chunk_index_raw.isdigit():
-            return jsonify({"error": "index query parameter must be a non-negative integer"}), 400
-        chunk_index = int(chunk_index_raw)
-
+    @app.get("/api/transcripts/<transcript_id>")
+    def get_transcript(transcript_id: str) -> Any:
         with db_connect() as conn:
-            session_row = conn.execute(
-                "SELECT * FROM audio_sessions WHERE id = ?", (session_id,)
+            row = conn.execute(
+                "SELECT * FROM transcripts WHERE id = ?", (transcript_id,)
             ).fetchone()
-        if not session_row:
-            return jsonify({"error": "audio session not found"}), 404
+        if not row:
+            return jsonify({"error": "transcript not found"}), 404
+        return jsonify(transcript_to_dict(row))
 
-        if "chunk" in request.files:
-            raw_bytes = request.files["chunk"].read()
-        else:
-            raw_bytes = request.get_data()
-
-        if not raw_bytes:
-            return jsonify({"error": "chunk payload is empty"}), 400
-
-        chunk_path = AUDIO_CHUNKS_DIR / f"{session_id}_{chunk_index:08d}.part"
-        with chunk_path.open("wb") as chunk_file:
-            chunk_file.write(raw_bytes)
-
-        ts = now_iso()
-        with db_connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO audio_chunks (session_id, chunk_index, chunk_path, byte_size, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(session_id, chunk_index) DO UPDATE SET
-                    chunk_path = excluded.chunk_path,
-                    byte_size = excluded.byte_size,
-                    created_at = excluded.created_at
-                """,
-                (session_id, chunk_index, str(chunk_path), len(raw_bytes), ts),
-            )
-            conn.execute(
-                """
-                UPDATE audio_sessions
-                SET updated_at = ?, status = ?
-                WHERE id = ?
-                """,
-                (ts, "collecting", session_id),
-            )
-
-        return (
-            jsonify(
-                {
-                    "session_id": session_id,
-                    "chunk_index": chunk_index,
-                    "byte_size": len(raw_bytes),
-                    "stored_at": str(chunk_path),
-                }
-            ),
-            201,
-        )
-
-    @app.post("/api/audio/sessions/<session_id>/finalize")
-    def finalize_audio_session(session_id: str) -> Any:
-        payload = request.get_json(silent=True) or {}
-        transcript = payload.get("transcript")
-
-        with db_connect() as conn:
-            session_row = conn.execute(
-                "SELECT * FROM audio_sessions WHERE id = ?", (session_id,)
-            ).fetchone()
-        if not session_row:
-            return jsonify({"error": "audio session not found"}), 404
-
+    @app.get("/api/transcripts")
+    def list_transcripts() -> Any:
         try:
-            final_path = join_chunks(session_id, session_row["mime_type"])
+            limit = parse_list_limit(request.args.get("limit"))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        status = "received"
-        if transcript:
-            status = "transcribed"
-
-        ts = now_iso()
-        chunk_paths = get_chunk_paths(session_id)
-        with db_connect() as conn:
-            conn.execute(
-                """
-                UPDATE audio_sessions
-                SET updated_at = ?, audio_path = ?, transcript = COALESCE(?, transcript), status = ?
-                WHERE id = ?
-                """,
-                (ts, str(final_path), transcript, status, session_id),
+        try:
+            cursor_ts, cursor_id = parse_paging_cursor(
+                request.args.get("cursor"),
+                request.args.get("since"),
             )
-            conn.execute("DELETE FROM audio_chunks WHERE session_id = ?", (session_id,))
-            row = conn.execute(
-                "SELECT * FROM audio_sessions WHERE id = ?", (session_id,)
-            ).fetchone()
+        except ValueError:
+            return jsonify({"error": "cursor/since must be a valid value"}), 400
 
-        delete_files(chunk_paths)
-        return jsonify(session_to_dict(row))
-
-    @app.put("/api/audio/sessions/<session_id>/transcript")
-    def update_transcript(session_id: str) -> Any:
-        payload = request.get_json(silent=True) or {}
-        transcript = payload.get("text")
-        if not isinstance(transcript, str) or not transcript.strip():
-            return jsonify({"error": "text is required"}), 400
-
-        ts = now_iso()
+        device_id = request.args.get("device_id")
         with db_connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM audio_sessions WHERE id = ?", (session_id,)
-            ).fetchone()
-            if not row:
-                return jsonify({"error": "audio session not found"}), 404
-
-            conn.execute(
+            rows = conn.execute(
                 """
-                UPDATE audio_sessions
-                SET updated_at = ?, transcript = ?, status = ?
-                WHERE id = ?
+                SELECT *
+                FROM transcripts
+                WHERE (
+                      ? IS NULL
+                   OR captured_at > ?
+                   OR (captured_at = ? AND id > ?)
+                )
+                  AND (? IS NULL OR device_id = ?)
+                ORDER BY captured_at ASC, created_at ASC, id ASC
+                LIMIT ?
                 """,
-                (ts, transcript.strip(), "transcribed", session_id),
-            )
-            row = conn.execute(
-                "SELECT * FROM audio_sessions WHERE id = ?", (session_id,)
-            ).fetchone()
-
-        return jsonify(session_to_dict(row))
-
-    @app.get("/api/audio/sessions/<session_id>")
-    def get_audio_session(session_id: str) -> Any:
-        with db_connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM audio_sessions WHERE id = ?", (session_id,)
-            ).fetchone()
-        if not row:
-            return jsonify({"error": "audio session not found"}), 404
-        return jsonify(session_to_dict(row))
-
-    @app.delete("/api/audio/sessions/<session_id>")
-    def delete_audio_session(session_id: str) -> Any:
-        with db_connect() as conn:
-            session_row = conn.execute(
-                "SELECT * FROM audio_sessions WHERE id = ?", (session_id,)
-            ).fetchone()
-            if not session_row:
-                return jsonify({"error": "audio session not found"}), 404
-
-            chunk_rows = conn.execute(
-                "SELECT chunk_path FROM audio_chunks WHERE session_id = ?",
-                (session_id,),
+                (
+                    cursor_ts,
+                    cursor_ts,
+                    cursor_ts,
+                    cursor_id,
+                    device_id,
+                    device_id,
+                    limit,
+                ),
             ).fetchall()
-            conn.execute("DELETE FROM audio_chunks WHERE session_id = ?", (session_id,))
-            conn.execute("DELETE FROM audio_sessions WHERE id = ?", (session_id,))
 
-        paths_to_delete = [Path(row["chunk_path"]) for row in chunk_rows]
-        if session_row["audio_path"]:
-            paths_to_delete.append(Path(session_row["audio_path"]))
-        file_stats = delete_files(paths_to_delete)
-
+        items = [transcript_to_dict(row) for row in rows]
+        next_since = items[-1]["captured_at"] if items else cursor_ts
+        next_cursor = make_cursor(items[-1]["captured_at"], items[-1]["id"]) if items else None
         return jsonify(
             {
-                "id": session_id,
-                "deleted": True,
-                "files_removed": file_stats["removed"],
-                "files_missing": file_stats["missing"],
-                "files_failed": file_stats["failed"],
+                "items": items,
+                "count": len(items),
+                "next_since": next_since,
+                "next_cursor": next_cursor,
+            }
+        )
+
+    @app.put("/api/transcripts/<transcript_id>")
+    def update_transcript(transcript_id: str) -> Any:
+        payload = request.get_json(silent=True) or {}
+        text = payload.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return jsonify({"error": "text is required"}), 400
+        if len(text.strip()) > MAX_TRANSCRIPT_CHARS:
+            return jsonify({"error": f"text exceeds max length ({MAX_TRANSCRIPT_CHARS} chars)"}), 400
+
+        ts = now_iso()
+        captured_at_raw = payload.get("captured_at")
+        captured_at: str | None = None
+        if captured_at_raw:
+            try:
+                captured_at = parse_iso8601_to_utc(captured_at_raw)
+            except ValueError:
+                return jsonify({"error": "captured_at must be a valid ISO-8601 timestamp"}), 400
+
+        with db_connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM transcripts WHERE id = ?", (transcript_id,)
+            ).fetchone()
+            if not row:
+                return jsonify({"error": "transcript not found"}), 404
+
+            conn.execute(
+                """
+                UPDATE transcripts
+                SET updated_at = ?, text = ?, captured_at = COALESCE(?, captured_at)
+                WHERE id = ?
+                """,
+                (ts, text.strip(), captured_at, transcript_id),
+            )
+            row = conn.execute(
+                "SELECT * FROM transcripts WHERE id = ?", (transcript_id,)
+            ).fetchone()
+        return jsonify(transcript_to_dict(row))
+
+    @app.delete("/api/transcripts/<transcript_id>")
+    def delete_transcript(transcript_id: str) -> Any:
+        with db_connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM transcripts WHERE id = ?", (transcript_id,)
+            ).fetchone()
+            if not row:
+                return jsonify({"error": "transcript not found"}), 404
+            conn.execute("DELETE FROM transcripts WHERE id = ?", (transcript_id,))
+        return jsonify({"id": transcript_id, "deleted": True})
+
+    @app.post("/api/device-commands")
+    def create_device_command() -> Any:
+        payload = request.get_json(silent=True) or {}
+        target_device_id = payload.get("target_device_id")
+        command_type = payload.get("command_type")
+        command_payload = payload.get("payload", {})
+        source_device_id = payload.get("source_device_id")
+
+        if not isinstance(target_device_id, str) or not target_device_id.strip():
+            return jsonify({"error": "target_device_id is required"}), 400
+        if not isinstance(command_type, str) or not command_type.strip():
+            return jsonify({"error": "command_type is required"}), 400
+
+        command_id = str(uuid.uuid4())
+        ts = now_iso()
+        with db_connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO device_commands (
+                    id,
+                    created_at,
+                    updated_at,
+                    target_device_id,
+                    source_device_id,
+                    command_type,
+                    payload_json,
+                    status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    command_id,
+                    ts,
+                    ts,
+                    target_device_id.strip(),
+                    source_device_id.strip() if isinstance(source_device_id, str) else None,
+                    command_type.strip(),
+                    json.dumps(command_payload),
+                    COMMAND_STATUS_QUEUED,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM device_commands WHERE id = ?",
+                (command_id,),
+            ).fetchone()
+        return jsonify(command_to_dict(row)), 201
+
+    @app.get("/api/device-commands")
+    def list_device_commands() -> Any:
+        target_device_id = (request.args.get("target_device_id") or "").strip()
+        if not target_device_id:
+            return jsonify({"error": "target_device_id query parameter is required"}), 400
+
+        try:
+            limit = parse_list_limit(request.args.get("limit"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        try:
+            cursor_ts, cursor_id = parse_paging_cursor(
+                request.args.get("cursor"),
+                request.args.get("since"),
+            )
+        except ValueError:
+            return jsonify({"error": "cursor/since must be a valid value"}), 400
+
+        try:
+            statuses = parse_status_list(
+                request.args.get("statuses"),
+                {COMMAND_STATUS_QUEUED, COMMAND_STATUS_IN_PROGRESS},
+            )
+        except ValueError:
+            return jsonify({"error": "statuses must be comma-separated known status values"}), 400
+
+        status_placeholders = ",".join("?" for _ in statuses)
+        query = f"""
+            SELECT *
+            FROM device_commands
+            WHERE target_device_id = ?
+              AND status IN ({status_placeholders})
+              AND (
+                    ? IS NULL
+                 OR created_at > ?
+                 OR (created_at = ? AND id > ?)
+              )
+            ORDER BY created_at ASC, id ASC
+            LIMIT ?
+        """
+        params: list[Any] = [target_device_id, *statuses, cursor_ts, cursor_ts, cursor_ts, cursor_id, limit]
+        with db_connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        items = [command_to_dict(row) for row in rows]
+        next_since = items[-1]["created_at"] if items else cursor_ts
+        next_cursor = make_cursor(items[-1]["created_at"], items[-1]["id"]) if items else None
+        return jsonify(
+            {
+                "items": items,
+                "count": len(items),
+                "next_since": next_since,
+                "next_cursor": next_cursor,
+            }
+        )
+
+    @app.get("/api/device-commands/<command_id>")
+    def get_device_command(command_id: str) -> Any:
+        with db_connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM device_commands WHERE id = ?",
+                (command_id,),
+            ).fetchone()
+        if not row:
+            return jsonify({"error": "device command not found"}), 404
+        return jsonify(command_to_dict(row))
+
+    @app.post("/api/device-commands/<command_id>/ack")
+    def ack_device_command(command_id: str) -> Any:
+        payload = request.get_json(silent=True) or {}
+        status = payload.get("status")
+        if status not in {
+            COMMAND_STATUS_IN_PROGRESS,
+            COMMAND_STATUS_COMPLETED,
+            COMMAND_STATUS_FAILED,
+            COMMAND_STATUS_CANCELED,
+        }:
+            return jsonify({"error": "status must be one of: in_progress, completed, failed, canceled"}), 400
+
+        ts = now_iso()
+        with db_connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM device_commands WHERE id = ?",
+                (command_id,),
+            ).fetchone()
+            if not row:
+                return jsonify({"error": "device command not found"}), 404
+
+            acknowledged_at = row["acknowledged_at"] or ts
+            completed_at = ts if status in {COMMAND_STATUS_COMPLETED, COMMAND_STATUS_FAILED, COMMAND_STATUS_CANCELED} else None
+
+            result_json = row["result_json"]
+            if "result" in payload:
+                result_json = json.dumps(payload.get("result"))
+
+            error_text = row["error_text"]
+            if "error" in payload:
+                error_value = payload.get("error")
+                if error_value is not None and not isinstance(error_value, str):
+                    return jsonify({"error": "error must be a string or null"}), 400
+                error_text = error_value
+
+            conn.execute(
+                """
+                UPDATE device_commands
+                SET updated_at = ?,
+                    status = ?,
+                    acknowledged_at = ?,
+                    completed_at = ?,
+                    result_json = ?,
+                    error_text = ?
+                WHERE id = ?
+                """,
+                (
+                    ts,
+                    status,
+                    acknowledged_at,
+                    completed_at,
+                    result_json,
+                    error_text,
+                    command_id,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM device_commands WHERE id = ?",
+                (command_id,),
+            ).fetchone()
+
+        return jsonify(command_to_dict(row))
+
+    @app.get("/api/events")
+    def list_events() -> Any:
+        try:
+            limit = parse_list_limit(request.args.get("limit"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        try:
+            cursor_ts, cursor_id = parse_paging_cursor(
+                request.args.get("cursor"),
+                request.args.get("since"),
+            )
+        except ValueError:
+            return jsonify({"error": "cursor/since must be a valid value"}), 400
+
+        device_id = request.args.get("device_id")
+        event_type = request.args.get("event_type")
+        if event_type and event_type not in {"transcript", "screenshot"}:
+            return jsonify({"error": "event_type must be one of: transcript, screenshot"}), 400
+
+        with db_connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    e.event_type,
+                    e.id,
+                    e.created_at,
+                    e.updated_at,
+                    e.captured_at,
+                    e.device_id,
+                    e.source,
+                    e.text,
+                    e.mime_type,
+                    e.file_path,
+                    e.notes,
+                    e.sort_ts
+                FROM (
+                    SELECT
+                        'transcript' AS event_type,
+                        id,
+                        created_at,
+                        updated_at,
+                        captured_at,
+                        device_id,
+                        source,
+                        text,
+                        NULL AS mime_type,
+                        NULL AS file_path,
+                        NULL AS notes,
+                        captured_at AS sort_ts
+                    FROM transcripts
+                    UNION ALL
+                    SELECT
+                        'screenshot' AS event_type,
+                        id,
+                        created_at,
+                        updated_at,
+                        captured_at,
+                        device_id,
+                        source,
+                        NULL AS text,
+                        mime_type,
+                        file_path,
+                        notes,
+                        COALESCE(captured_at, created_at) AS sort_ts
+                    FROM screenshots
+                ) AS e
+                WHERE (
+                      ? IS NULL
+                   OR e.sort_ts > ?
+                   OR (e.sort_ts = ? AND e.id > ?)
+                )
+                  AND (? IS NULL OR e.device_id = ?)
+                  AND (? IS NULL OR e.event_type = ?)
+                ORDER BY e.sort_ts ASC, e.created_at ASC, e.id ASC
+                LIMIT ?
+                """,
+                (
+                    cursor_ts,
+                    cursor_ts,
+                    cursor_ts,
+                    cursor_id,
+                    device_id,
+                    device_id,
+                    event_type,
+                    event_type,
+                    limit,
+                ),
+            ).fetchall()
+
+        items = [
+            {
+                "event_type": row["event_type"],
+                "id": row["id"],
+                "event_ts": row["sort_ts"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "captured_at": row["captured_at"],
+                "device_id": row["device_id"],
+                "source": row["source"],
+                "text": row["text"],
+                "mime_type": row["mime_type"],
+                "file_path": row["file_path"],
+                "file_url": (
+                    url_for("get_screenshot_file", screenshot_id=row["id"], _external=True)
+                    if row["event_type"] == "screenshot"
+                    else None
+                ),
+                "notes": row["notes"],
+            }
+            for row in rows
+        ]
+        next_since = items[-1]["event_ts"] if items else cursor_ts
+        next_cursor = make_cursor(items[-1]["event_ts"], items[-1]["id"]) if items else None
+        return jsonify(
+            {
+                "items": items,
+                "count": len(items),
+                "next_since": next_since,
+                "next_cursor": next_cursor,
             }
         )
 
@@ -424,7 +816,9 @@ def create_app() -> Flask:
         source = request.form.get("source")
         notes = request.form.get("notes")
         captured_at_raw = request.form.get("captured_at")
-        mime_type = shot.content_type
+        mime_type = shot.content_type or ""
+        if not mime_type.startswith(ALLOWED_SCREENSHOT_MIME_PREFIX):
+            return jsonify({"error": "screenshot must be an image MIME type"}), 400
 
         captured_at = created_at
         if captured_at_raw:
@@ -470,25 +864,64 @@ def create_app() -> Flask:
     @app.get("/api/screenshots")
     def list_screenshots() -> Any:
         session_id = request.args.get("session_id")
-        device_id = request.args.get("device_id")
-
-        with db_connect() as conn:
-            if session_id:
+        if session_id:
+            with db_connect() as conn:
                 rows = conn.execute(
                     "SELECT * FROM screenshots WHERE session_id = ? ORDER BY created_at DESC",
                     (session_id,),
                 ).fetchall()
-            elif device_id:
-                rows = conn.execute(
-                    "SELECT * FROM screenshots WHERE device_id = ? ORDER BY created_at DESC",
-                    (device_id,),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM screenshots ORDER BY created_at DESC"
-                ).fetchall()
+            return jsonify([screenshot_to_dict(r) for r in rows])
 
-        return jsonify([screenshot_to_dict(r) for r in rows])
+        try:
+            limit = parse_list_limit(request.args.get("limit"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        try:
+            cursor_ts, cursor_id = parse_paging_cursor(
+                request.args.get("cursor"),
+                request.args.get("since"),
+            )
+        except ValueError:
+            return jsonify({"error": "cursor/since must be a valid value"}), 400
+
+        device_id = request.args.get("device_id")
+        with db_connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM screenshots
+                WHERE (
+                      ? IS NULL
+                   OR COALESCE(captured_at, created_at) > ?
+                   OR (COALESCE(captured_at, created_at) = ? AND id > ?)
+                )
+                  AND (? IS NULL OR device_id = ?)
+                ORDER BY COALESCE(captured_at, created_at) ASC, created_at ASC, id ASC
+                LIMIT ?
+                """,
+                (
+                    cursor_ts,
+                    cursor_ts,
+                    cursor_ts,
+                    cursor_id,
+                    device_id,
+                    device_id,
+                    limit,
+                ),
+            ).fetchall()
+
+        items = [screenshot_to_dict(row) for row in rows]
+        next_ts = (items[-1]["captured_at"] or items[-1]["created_at"]) if items else cursor_ts
+        next_cursor = make_cursor(next_ts, items[-1]["id"]) if items else None
+        return jsonify(
+            {
+                "items": items,
+                "count": len(items),
+                "next_since": next_ts,
+                "next_cursor": next_cursor,
+            }
+        )
 
     @app.get("/api/screenshots/<screenshot_id>")
     def get_screenshot_meta(screenshot_id: str) -> Any:
@@ -496,10 +929,8 @@ def create_app() -> Flask:
             row = conn.execute(
                 "SELECT * FROM screenshots WHERE id = ?", (screenshot_id,)
             ).fetchone()
-
         if not row:
             return jsonify({"error": "screenshot not found"}), 404
-
         return jsonify(screenshot_to_dict(row))
 
     @app.get("/api/screenshots/<screenshot_id>/file")
@@ -508,14 +939,12 @@ def create_app() -> Flask:
             row = conn.execute(
                 "SELECT * FROM screenshots WHERE id = ?", (screenshot_id,)
             ).fetchone()
-
         if not row:
             return jsonify({"error": "screenshot not found"}), 404
 
         file_path = Path(row["file_path"])
         if not file_path.exists():
             return jsonify({"error": "screenshot file missing"}), 410
-
         mimetype = row["mime_type"] or "application/octet-stream"
         return send_file(file_path, mimetype=mimetype)
 
@@ -543,9 +972,9 @@ def create_app() -> Flask:
     return app
 
 
-_app = create_app()
+app = create_app()
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    _app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=port, debug=True)
