@@ -33,7 +33,20 @@ When creating widgets, produce premium, polished UI — not plain utility HTML.
 - Visual accents: status pills, progress bars, icon chips, KPI numbers when relevant
 
 **CSS pattern:** Define tokens in :root, compose classes like .panel, .metric, .badge, .kpi.
-Keep widgets self-contained (inline CSS/JS, no external frameworks).\
+Keep widgets self-contained (inline CSS/JS, no external frameworks).
+
+## Device Targeting — ALWAYS choose one
+
+Always set `target` for each widget. Never push to both.
+
+- "mac" — reference info that should stay out of the way while the user writes \
+or draws. Status panels, lookup results, quick-reference cards, timers.
+- "ipad" — content the user should interact with via touch or Apple Pencil. \
+Diagrams, spatial layouts, collaborative canvases, dashboards to annotate.
+
+The requesting device is shown in [Device: ...] at the start of each message. \
+Use your judgment: if the user is drawing on iPad and asks for reference data, \
+push it to the Mac so it doesn't cover their canvas.\
 """
 
 TOOLS = [
@@ -56,6 +69,11 @@ TOOLS = [
                         "type": "string",
                         "description": "A unique identifier for this widget. Use a descriptive slug.",
                     },
+                    "target": {
+                        "type": "string",
+                        "enum": ["ipad", "mac"],
+                        "description": "Which device to display this widget on.",
+                    },
                     "width": {
                         "type": "number",
                         "description": "Widget width in points. Default 320.",
@@ -65,7 +83,7 @@ TOOLS = [
                         "description": "Widget height in points. Default 220.",
                     },
                 },
-                "required": ["html", "widget_id"],
+                "required": ["html", "widget_id", "target"],
             },
         },
     }
@@ -120,11 +138,13 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str) -> dict:
                 args = json.loads(tc.function.arguments)
                 widget_id = args.get("widget_id", "widget")
                 html = args.get("html", "")
+                target = args.get("target", "mac").strip().lower()
                 width = _clamp(args.get("width"), 320)
                 height = _clamp(args.get("height"), 220)
                 widgets.append({
                     "widget_id": widget_id,
                     "html": html,
+                    "target": target,
                     "width": width,
                     "height": height,
                 })
@@ -170,11 +190,13 @@ def _run_anthropic(messages: list[dict], user_message: str) -> dict:
                 args = block.get("input") or {}
                 widget_id = args.get("widget_id", "widget")
                 html = args.get("html", "")
+                target = args.get("target", "mac")
                 width = _clamp(args.get("width"), 320)
                 height = _clamp(args.get("height"), 220)
                 widgets.append({
                     "widget_id": widget_id,
                     "html": html,
+                    "target": target,
                     "width": width,
                     "height": height,
                 })

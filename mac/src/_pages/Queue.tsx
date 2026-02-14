@@ -97,6 +97,9 @@ const Queue: React.FC = () => {
     if (!spec) return false
     try {
       const result = await window.electronAPI.openWidget(spec)
+      if (result.success && result.id) {
+        window.electronAPI.registerRenderedWidget(result.id).catch(() => {})
+      }
       if (!result.success && result.error) {
         console.warn("Failed to open widget:", result.error)
       }

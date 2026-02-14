@@ -114,7 +114,12 @@ enum AgentClient {
         sessionID: String,
         serverURL: URL
     ) async -> [AgentWidget] {
-        let url = serverURL.appendingPathComponent("sessions").appendingPathComponent(sessionID)
+        var components = URLComponents(
+            url: serverURL.appendingPathComponent("sessions").appendingPathComponent(sessionID),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [URLQueryItem(name: "target", value: "ipad")]
+        let url = components.url!
         var request = URLRequest(url: url)
         request.timeoutInterval = 5
 
@@ -145,9 +150,12 @@ enum AgentClient {
         if let events = json["events"] as? [[String: Any]] {
             for event in events {
                 guard let kind = event["kind"] as? String, kind == "widget.open" else { continue }
-                if let widgetDict = event["widget"] as? [String: Any],
-                   let widget = parseWidgetFromEvent(widgetDict) {
-                    widgets.append(widget)
+                if let widgetDict = event["widget"] as? [String: Any] {
+                    let target = widgetDict["target"] as? String ?? "mac"
+                    guard target == "ipad" else { continue }
+                    if let widget = parseWidgetFromEvent(widgetDict) {
+                        widgets.append(widget)
+                    }
                 }
             }
         }

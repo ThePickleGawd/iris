@@ -212,7 +212,32 @@ def get_session(session_id: str) -> Any:
     session = _load_session(session_id)
     if not session:
         return jsonify({"error": "session not found"}), 404
+
+    target_filter = (request.args.get("target") or "").strip().lower()
+    if target_filter:
+        session = {**session}  # shallow copy
+        session["widgets"] = [
+            w for w in session.get("widgets", [])
+            if w.get("target", "mac") == target_filter
+        ]
+
     return jsonify(session)
+
+
+@app.delete("/api/sessions/<session_id>/widgets/<widget_id>")
+@app.delete("/sessions/<session_id>/widgets/<widget_id>")
+def delete_widget(session_id: str, widget_id: str) -> Any:
+    session = _load_session(session_id)
+    if not session:
+        return jsonify({"error": "session not found"}), 404
+    widgets = session.get("widgets", [])
+    before = len(widgets)
+    session["widgets"] = [w for w in widgets if w.get("id") != widget_id]
+    if len(session["widgets"]) == before:
+        return jsonify({"error": "widget not found"}), 404
+    session["updated_at"] = _now()
+    _save_session(session)
+    return jsonify({"id": widget_id, "deleted": True})
 
 
 @app.delete("/api/sessions/<session_id>")
@@ -443,8 +468,13 @@ def v1_agent() -> Any:
         "device_id": device.get("id"),
     })
 
+    # Prepend device info so the agent knows which device is asking
+    device_name = device.get("name", "unknown")
+    device_platform = device.get("platform", "unknown")
+    augmented_message = f"[Device: {device_name} ({device_platform})]\n{message}"
+
     # Call agent
-    result = agent_module.run(context, message, model=model)
+    result = agent_module.run(context, augmented_message, model=model)
 
     # Append assistant response
     ts = _now()
@@ -462,6 +492,7 @@ def v1_agent() -> Any:
         widget_record = {
             "id": w.get("widget_id", str(uuid.uuid4())),
             "html": w.get("html", ""),
+            "target": w.get("target", "mac"),
             "width": w.get("width", 320),
             "height": w.get("height", 220),
             "created_at": ts,
@@ -473,6 +504,7 @@ def v1_agent() -> Any:
             "widget": {
                 "kind": "html",
                 "id": widget_record["id"],
+                "target": widget_record["target"],
                 "payload": {"html": widget_record["html"]},
                 "width": widget_record["width"],
                 "height": widget_record["height"],
