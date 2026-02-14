@@ -47,6 +47,7 @@ struct Document: Identifiable, Codable, Hashable {
         let lowered = model.lowercased()
         if lowered == "gpt-5.2" { return "GPT-5.2" }
         if lowered.hasPrefix("claude") { return "Claude" }
+        if lowered.hasPrefix("gemini") { return "Gemini" }
         if lowered == "codex" { return "Codex" }
         return model
     }
@@ -59,6 +60,9 @@ struct Document: Identifiable, Codable, Hashable {
         let lowered = model.lowercased()
         if lowered == "iris" || lowered == "claude_code" || lowered == "claude" {
             return "claude-sonnet-4-5-20250929"
+        }
+        if lowered == "gemini" || lowered == "gemini-flash" {
+            return "gemini-2.0-flash"
         }
         if lowered == "codex" {
             return "gpt-5.2"

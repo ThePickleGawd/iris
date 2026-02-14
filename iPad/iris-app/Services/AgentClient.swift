@@ -7,12 +7,22 @@ struct AgentWidget {
     let html: String
     let width: CGFloat
     let height: CGFloat
+    let x: CGFloat
+    let y: CGFloat
+    let coordinateSpace: String
+    let anchor: String
 }
 
 /// Full result from the agent — text reply plus any widgets.
 struct AgentResponse {
     let text: String
     let widgets: [AgentWidget]
+}
+
+struct ProactiveDescriptionResult {
+    let model: String
+    let description: [String: Any]
+    let descriptionJSON: String
 }
 
 /// Sends user messages to the agents server running on the linked Mac.
@@ -30,6 +40,7 @@ enum AgentClient {
         _ message: String,
         model: String,
         chatID: String,
+        coordinateSnapshot: [String: Any]? = nil,
         serverURL: URL
     ) async throws -> AgentResponse {
         let url = serverURL
@@ -65,7 +76,8 @@ enum AgentClient {
             "model": model,
             "metadata": [
                 "model": model,
-                "agent": model
+                "agent": model,
+                "coordinate_snapshot": coordinateSnapshot ?? [:]
             ]
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
@@ -163,8 +175,21 @@ enum AgentClient {
         let id = (dict["id"] as? String) ?? (dict["widget_id"] as? String) ?? UUID().uuidString
         let width = CGFloat((dict["width"] as? NSNumber)?.doubleValue ?? 320)
         let height = CGFloat((dict["height"] as? NSNumber)?.doubleValue ?? 220)
+        let x = CGFloat((dict["x"] as? NSNumber)?.doubleValue ?? 0)
+        let y = CGFloat((dict["y"] as? NSNumber)?.doubleValue ?? 0)
+        let coordinateSpace = (dict["coordinate_space"] as? String) ?? "viewport_offset"
+        let anchor = (dict["anchor"] as? String) ?? "top_left"
 
-        return AgentWidget(id: id, html: html, width: width, height: height)
+        return AgentWidget(
+            id: id,
+            html: html,
+            width: width,
+            height: height,
+            x: x,
+            y: y,
+            coordinateSpace: coordinateSpace,
+            anchor: anchor
+        )
     }
 
     private static func parseWidgetDict(_ dict: [String: Any]) -> AgentWidget? {
@@ -172,7 +197,20 @@ enum AgentClient {
         let id = (dict["id"] as? String) ?? UUID().uuidString
         let width = CGFloat((dict["width"] as? NSNumber)?.doubleValue ?? 320)
         let height = CGFloat((dict["height"] as? NSNumber)?.doubleValue ?? 220)
-        return AgentWidget(id: id, html: html, width: width, height: height)
+        let x = CGFloat((dict["x"] as? NSNumber)?.doubleValue ?? 0)
+        let y = CGFloat((dict["y"] as? NSNumber)?.doubleValue ?? 0)
+        let coordinateSpace = (dict["coordinate_space"] as? String) ?? "viewport_offset"
+        let anchor = (dict["anchor"] as? String) ?? "top_left"
+        return AgentWidget(
+            id: id,
+            html: html,
+            width: width,
+            height: height,
+            x: x,
+            y: y,
+            coordinateSpace: coordinateSpace,
+            anchor: anchor
+        )
     }
 
     private static func getOrCreateDeviceID() -> String {
@@ -315,6 +353,75 @@ enum BackendClient {
             "captured_at": ISO8601DateFormatter().string(from: Date())
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw BackendClientError.invalidResponse
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw BackendClientError.serverError(statusCode: http.statusCode, body: body)
+        }
+    }
+
+    static func describeProactiveScreenshot(
+        screenshotID: String,
+        coordinateSnapshot: [String: Any],
+        backendURL: URL,
+        previousDescription: [String: Any]? = nil
+    ) async throws -> ProactiveDescriptionResult {
+        let endpoint = backendURL
+            .appendingPathComponent("api")
+            .appendingPathComponent("proactive")
+            .appendingPathComponent("describe")
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        var payload: [String: Any] = [
+            "screenshot_id": screenshotID,
+            "coordinate_snapshot": coordinateSnapshot
+        ]
+        if let previousDescription {
+            payload["previous_description"] = previousDescription
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw BackendClientError.invalidResponse
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw BackendClientError.serverError(statusCode: http.statusCode, body: body)
+        }
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw BackendClientError.invalidResponse
+        }
+        guard let description = json["description"] as? [String: Any] else {
+            throw BackendClientError.invalidResponse
+        }
+        let model = (json["model"] as? String) ?? "gemini-2.0-flash"
+        let descriptionData = try JSONSerialization.data(withJSONObject: description, options: [.sortedKeys])
+        let descriptionJSON = String(data: descriptionData, encoding: .utf8) ?? "{}"
+        return ProactiveDescriptionResult(
+            model: model,
+            description: description,
+            descriptionJSON: descriptionJSON
+        )
+    }
+
+    static func deleteScreenshot(
+        screenshotID: String,
+        backendURL: URL
+    ) async throws {
+        let endpoint = backendURL
+            .appendingPathComponent("api")
+            .appendingPathComponent("screenshots")
+            .appendingPathComponent(screenshotID)
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "DELETE"
 
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {

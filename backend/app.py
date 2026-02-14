@@ -128,11 +128,28 @@ def _session_summary(session: dict) -> dict:
     }
 
 
+def _spatial_context_text(metadata: dict[str, Any] | None) -> str:
+    if not isinstance(metadata, dict):
+        return ""
+    snapshot = metadata.get("coordinate_snapshot")
+    if not isinstance(snapshot, dict):
+        return ""
+    try:
+        return (
+            "Coordinate snapshot (document_axis): "
+            + json.dumps(snapshot, ensure_ascii=False)
+        )
+    except (TypeError, ValueError):
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # Screenshot storage helpers (kept simple — separate files)
 # ---------------------------------------------------------------------------
 SCREENSHOTS_META_DIR = DATA_DIR / "screenshot_meta"
 SCREENSHOTS_META_DIR.mkdir(parents=True, exist_ok=True)
+PROACTIVE_DESCRIPTIONS_DIR = DATA_DIR / "proactive_descriptions"
+PROACTIVE_DESCRIPTIONS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _screenshot_meta_path(screenshot_id: str) -> Path:
@@ -164,6 +181,16 @@ def _list_screenshots() -> list[dict]:
         except (json.JSONDecodeError, OSError):
             continue
     return rows
+
+
+def _save_proactive_description(payload: dict[str, Any]) -> None:
+    screenshot_id = str(payload.get("screenshot_id") or "").strip()
+    if not screenshot_id:
+        return
+    path = PROACTIVE_DESCRIPTIONS_DIR / f"{screenshot_id}.json"
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False))
+    tmp.replace(path)
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +411,51 @@ def get_screenshot_file(screenshot_id: str) -> Any:
     return send_file(fp, mimetype=row.get("mime_type", "application/octet-stream"))
 
 
+@app.post("/api/proactive/describe")
+def proactive_describe_screenshot() -> Any:
+    body = request.get_json(silent=True) or {}
+    screenshot_id = str(body.get("screenshot_id") or "").strip()
+    if not screenshot_id:
+        return jsonify({"error": "screenshot_id is required"}), 400
+
+    row = _load_screenshot(screenshot_id)
+    if not row:
+        return jsonify({"error": "screenshot not found"}), 404
+
+    fp = Path(str(row.get("file_path") or ""))
+    if not fp.exists():
+        return jsonify({"error": "screenshot file missing"}), 410
+
+    coordinate_snapshot = body.get("coordinate_snapshot")
+    if not isinstance(coordinate_snapshot, dict):
+        coordinate_snapshot = None
+
+    previous_description = body.get("previous_description")
+    if not isinstance(previous_description, dict):
+        previous_description = None
+
+    try:
+        description = agent_module.describe_screenshot_with_gemini(
+            fp,
+            str(row.get("mime_type") or "image/png"),
+            coordinate_snapshot=coordinate_snapshot,
+            previous_description=previous_description,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"description failed: {exc}"}), 500
+
+    result = {
+        "screenshot_id": screenshot_id,
+        "session_id": row.get("session_id"),
+        "device_id": row.get("device_id"),
+        "created_at": _now(),
+        "model": os.environ.get("PROACTIVE_GEMINI_MODEL", agent_module.DEFAULT_GEMINI_MODEL),
+        "description": description,
+    }
+    _save_proactive_description(result)
+    return jsonify(result), 200
+
+
 @app.delete("/api/screenshots/<screenshot_id>")
 def delete_screenshot(screenshot_id: str) -> Any:
     row = _load_screenshot(screenshot_id)
@@ -442,6 +514,7 @@ def v1_agent() -> Any:
 
     model = (body.get("model") or "").strip() or "gpt-5.2"
     device = body.get("device") or {}
+    metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
 
     # Load or create session
     session = _load_session(session_id)
@@ -470,8 +543,12 @@ def v1_agent() -> Any:
         "device_id": device.get("id"),
     })
 
-    # Call agent
-    result = agent_module.run(context, message, model=model)
+    # Call agent with optional spatial context from caller metadata.
+    enriched_message = message
+    spatial_note = _spatial_context_text(metadata)
+    if spatial_note:
+        enriched_message = f"{message}\n\n{spatial_note}"
+    result = agent_module.run(context, enriched_message, model=model)
 
     # Append assistant response
     ts = _now()
@@ -491,6 +568,10 @@ def v1_agent() -> Any:
             "html": w.get("html", ""),
             "width": w.get("width", 320),
             "height": w.get("height", 220),
+            "x": w.get("x", 0),
+            "y": w.get("y", 0),
+            "coordinate_space": w.get("coordinate_space", "viewport_offset"),
+            "anchor": w.get("anchor", "top_left"),
             "created_at": ts,
         }
         session.setdefault("widgets", []).append(widget_record)
@@ -503,6 +584,10 @@ def v1_agent() -> Any:
                 "payload": {"html": widget_record["html"]},
                 "width": widget_record["width"],
                 "height": widget_record["height"],
+                "x": widget_record["x"],
+                "y": widget_record["y"],
+                "coordinate_space": widget_record["coordinate_space"],
+                "anchor": widget_record["anchor"],
             },
         })
 
