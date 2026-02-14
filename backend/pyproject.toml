@@ -1,0 +1,9 @@
+[project]
+name = "iris-backend"
+version = "0.1.0"
+description = "Flask backend for multimodal ingestion in Iris"
+requires-python = ">=3.10"
+dependencies = [
+    "flask==3.1.0",
+]
+
