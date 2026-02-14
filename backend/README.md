@@ -16,6 +16,8 @@ uv run python app.py
 
 Service starts at `http://localhost:8000`.
 
+Environment is loaded from the repository root `.env` (if present).
+
 Optional env:
 
 - `CORS_ALLOW_ORIGIN` (default `*`), e.g. `http://localhost:5173` for a specific frontend origin.
