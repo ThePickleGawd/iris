@@ -39,9 +39,26 @@ export class WindowHelper {
   }
 
   public setWindowDimensions(_width: number, height: number): void {
-    // Intentionally disabled: renderer-driven auto-resize was fighting manual resize.
-    // Keep manual OS resize behavior as the single source of truth.
-    return
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return
+
+    const [minWidth, minHeight] = this.mainWindow.getMinimumSize()
+    const maxHeight = Math.floor(screen.getPrimaryDisplay().workAreaSize.height * 0.9)
+    const targetHeight = Math.max(minHeight, Math.min(maxHeight, Math.ceil(height)))
+
+    const bounds = this.mainWindow.getBounds()
+    if (Math.abs(bounds.height - targetHeight) < 2) return
+
+    this.mainWindow.setBounds({
+      x: bounds.x,
+      y: bounds.y,
+      width: Math.max(minWidth, bounds.width),
+      height: targetHeight
+    })
+
+    this.windowSize = {
+      width: Math.max(minWidth, bounds.width),
+      height: targetHeight
+    }
   }
 
   public createWindow(): void {
@@ -56,9 +73,9 @@ export class WindowHelper {
     
     const windowSettings: Electron.BrowserWindowConstructorOptions = {
       width: 400,
-      height: 600,
+      height: 92,
       minWidth: 300,
-      minHeight: 200,
+      minHeight: 72,
       webPreferences: {
         nodeIntegration: true,
         contextIsolation: true,

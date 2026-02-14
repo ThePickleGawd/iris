@@ -15,7 +15,7 @@ struct CanvasView: UIViewRepresentable {
 
         view.backgroundColor = UIColor(red: 0.96, green: 0.97, blue: 0.99, alpha: 1)
         view.isOpaque = true
-        view.drawingPolicy = .anyInput
+        view.drawingPolicy = .pencilOnly
         view.overrideUserInterfaceStyle = .light
 
         view.minimumZoomScale = 0.5
@@ -58,6 +58,8 @@ struct CanvasView: UIViewRepresentable {
             canvasView.tool = PKInkingTool(.marker, color: canvasState.currentColor.withAlphaComponent(0.35), width: canvasState.strokeWidth * 3)
         case .eraser:
             canvasView.tool = PKEraserTool(.vector)
+        case .lasso:
+            canvasView.tool = PKLassoTool()
         }
     }
 
