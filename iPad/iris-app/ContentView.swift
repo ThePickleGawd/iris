@@ -27,11 +27,12 @@ struct ContentView: View {
     @State private var proactiveStrokeIdleTask: Task<Void, Never>?
     @State private var proactiveIdleCycleID = 0
     @State private var proactiveCapturedIdleCycleID: Int?
+    @State private var expandedSuggestionIDs: Set<UUID> = []
 
     private let proactiveIntervalSeconds: TimeInterval = 5
     private let proactiveStrokePauseSeconds: TimeInterval = 0.75
     private let proactiveMaxSuggestionsPerTick = 3
-    private let proactiveTestSingleSuggestionPerScreenshot = true
+    private let proactiveTestSingleSuggestionPerScreenshot = false
     private let proactiveAlwaysSaveScreenshots = false
     private let proactiveForceSuggestAfterTicks = 4
     private let proactiveTriageModel = "gemini-2.0-flash"
@@ -71,10 +72,24 @@ struct ContentView: View {
                 isRecording: canvasState.isRecording,
                 onZoomIn: { objectManager.zoom(by: 0.06) },
                 onZoomOut: { objectManager.zoom(by: -0.06) },
-                onZoomReset: { objectManager.setZoomScale(1.0) }
+                onZoomReset: { objectManager.setZoomScale(1.0) },
+                showAIButton: false
             )
             .environmentObject(canvasState)
             .zIndex(20)
+
+            VStack {
+                Spacer()
+                HStack {
+                    Spacer()
+                    AIButton(isRecording: canvasState.isRecording) {
+                        canvasState.isRecording.toggle()
+                    }
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 26)
+                }
+            }
+            .zIndex(21)
 
             AgentCursorView(controller: cursor)
                 .zIndex(50)
@@ -102,6 +117,10 @@ struct ContentView: View {
             proactiveIdleCycleID += 1
             proactiveCapturedIdleCycleID = nil
             scheduleProactiveCaptureAfterStrokePause()
+        }
+        .onChange(of: canvasState.lastPencilDoubleTapAt) { _, tappedAt in
+            guard tappedAt != nil else { return }
+            Task { await handlePencilDoubleTapExplicitAnswer() }
         }
         .onDisappear {
             canvasState.isRecording = false
@@ -180,6 +199,7 @@ struct ContentView: View {
                         I uploaded an iPad canvas screenshot with device_id "ipad" and screenshot id \(screenshotID).
                         First call read_screenshot for device "ipad" to inspect what is on screen.
                         If the request asks for a widget, create and push an iPad widget grounded in that screenshot.
+                        If the request is a direct question that can be answered immediately, answer it directly in text and do not create a follow-up-question widget.
                         """
                     }
                 }
@@ -248,6 +268,82 @@ struct ContentView: View {
                     autoDismissResponse()
                 }
             }
+        }
+    }
+
+    @MainActor
+    private func handlePencilDoubleTapExplicitAnswer() async {
+        guard !isProcessing else { return }
+        await runExplicitScreenAnswer(
+            userIntent: "Analyze the current iPad screen and answer the most concrete visible question or task directly."
+        )
+    }
+
+    @MainActor
+    private func handleSuggestionAccepted(_ suggestion: CanvasSuggestion) async {
+        guard !isProcessing else { return }
+        _ = objectManager.rejectSuggestion(id: suggestion.id)
+        expandedSuggestionIDs.remove(suggestion.id)
+        let intent = "\(suggestion.title). \(suggestion.summary)".trimmingCharacters(in: .whitespacesAndNewlines)
+        await runExplicitScreenAnswer(userIntent: intent)
+    }
+
+    @MainActor
+    private func runExplicitScreenAnswer(userIntent: String) async {
+        guard let serverURL = objectManager.httpServer.agentServerURL() else {
+            withAnimation { lastResponse = "No linked Mac found. Open the Iris Mac app first." }
+            autoDismissResponse()
+            return
+        }
+
+        isProcessing = true
+        defer { isProcessing = false }
+
+        do {
+            var message = userIntent
+            if let backendURL = objectManager.httpServer.backendServerURL(),
+               let screenshotID = try await uploadCanvasScreenshot(
+                note: "Explicit pencil request: \(userIntent.prefix(180))",
+                backendURL: backendURL
+               ),
+               !screenshotID.isEmpty {
+                message = """
+                Explicit user request triggered by Apple Pencil double tap.
+                User intent:
+                \(userIntent)
+
+                I uploaded an iPad canvas screenshot with device_id "ipad" and screenshot id \(screenshotID).
+                First call read_screenshot for device "ipad".
+                Then provide a direct answer to the most concrete task/question visible.
+                Do not return follow-up-question suggestions in place of the answer.
+                If useful, create one concise iPad widget that directly contains the answer.
+                """
+            }
+
+            let coordinateSnapshot = currentCoordinateSnapshotDict()
+            let agentResponse = try await AgentClient.sendMessage(
+                message,
+                model: document.resolvedModel,
+                chatID: document.id.uuidString,
+                coordinateSnapshot: coordinateSnapshot,
+                serverURL: serverURL
+            )
+
+            for widget in agentResponse.widgets {
+                let pos = widgetOrigin(for: widget)
+                await objectManager.place(
+                    html: widget.html,
+                    at: pos,
+                    size: CGSize(width: widget.width, height: widget.height)
+                )
+                renderedWidgetIDs.insert(widget.id)
+            }
+
+            withAnimation { lastResponse = agentResponse.text }
+            autoDismissResponse()
+        } catch {
+            withAnimation { lastResponse = "Error: \(error.localizedDescription)" }
+            autoDismissResponse()
         }
     }
 
@@ -354,10 +450,11 @@ struct ContentView: View {
                 previousDescription: previousDescription
             )
             lastProactiveDescription = descriptionResult.description
-            let forceSuggestionRequired = proactiveTestSingleSuggestionPerScreenshot
-                || shouldForceProactiveSuggestion(descriptionResult.description)
-
             if processedProactiveScreenshotIDs.contains(screenshotID) {
+                return
+            }
+            guard shouldAllowProactiveSuggestion(for: descriptionResult.description) else {
+                processedProactiveScreenshotIDs.insert(screenshotID)
                 return
             }
 
@@ -376,23 +473,13 @@ struct ContentView: View {
             - suggestions max \(suggestionLimit)
             - x_norm and y_norm must be in [0, 1]
             - if should_suggest is false, suggestions must be []
-            \(forceSuggestionRequired ? "- The same clear task has persisted too long; you must set should_suggest=true and provide at least 1 suggestion." : "")
+            - If canvas_state.is_blank is true, should_suggest must be false.
+            - Only set should_suggest=true when there is a concrete, specific task/question to complete now.
+            - Do not suggest for vague brainstorming, empty notes, or ambiguous intent.
+            - Phrase suggestion titles as short optional nudges (for example: "Add diagram?" or "Provide hint for problem?").
 
             Description JSON:
             \(descriptionResult.descriptionJSON)
-            """
-
-            let widgetPrompt = """
-            Build proactive suggestion widgets from this screenshot description:
-            \(descriptionResult.descriptionJSON)
-
-            Requirements:
-            - Use description.problem_to_solve and description.task_objective as the core objective.
-            - Create at most \(suggestionLimit) concise Apple-style widgets.
-            - If possible, align placement with description.suggestion_candidates anchor_norm.
-            - Every widget_id must start with "proactive-suggestion-\(screenshotID)-".
-            - Use coordinate_space=document_axis and anchor=top_left.
-            \(forceSuggestionRequired ? "- This task has persisted too long. You must output at least one push_widget suggestion." : "")
             """
 
             async let triageResponseTask: AgentResponse? = try? await AgentClient.sendMessage(
@@ -402,113 +489,52 @@ struct ContentView: View {
                 coordinateSnapshot: coordinateSnapshot,
                 serverURL: serverURL
             )
-            async let widgetResponseTask: AgentResponse? = try? await AgentClient.sendMessage(
-                widgetPrompt,
-                model: proactiveWidgetModel,
-                chatID: sessionID,
-                ephemeral: true,
-                coordinateSnapshot: coordinateSnapshot,
-                serverURL: serverURL
-            )
 
             let triageResponse = await triageResponseTask
-            let widgetResponse = await widgetResponseTask
 
             if triageResponse == nil {
                 print("Proactive triage agent call failed; using local fallback suggestions.")
             }
-            if widgetResponse == nil {
-                print("Proactive widget agent call failed; using fallback suggestion HTML.")
-            }
 
-            var triage = parseProactiveDecision(triageResponse?.text ?? "") ?? ProactiveDecision(
-                shouldSuggest: true,
+            let triage = parseProactiveDecision(triageResponse?.text ?? "") ?? ProactiveDecision(
+                shouldSuggest: false,
                 reason: "",
                 suggestions: []
             )
-            if forceSuggestionRequired && (!triage.shouldSuggest || triage.suggestions.isEmpty) {
-                let fallback = fallbackSuggestionsFromDescription(descriptionResult.description)
-                triage = ProactiveDecision(
-                    shouldSuggest: true,
-                    reason: triage.reason.isEmpty ? "Persistent task detected; proactive suggestion required." : triage.reason,
-                    suggestions: fallback.isEmpty ? triage.suggestions : fallback
-                )
+            guard triage.shouldSuggest else {
+                processedProactiveScreenshotIDs.insert(screenshotID)
+                return
             }
-            // Every saved proactive screenshot must produce a suggestion.
-            // If triage fails to propose one, synthesize from the screenshot description.
+
+            // Proactive mode is suggestion-only: suggest lightweight actions, not full answers.
             var selected = Array(triage.suggestions.prefix(suggestionLimit))
             if selected.isEmpty {
                 selected = fallbackSuggestionsFromDescription(descriptionResult.description)
             }
-            if selected.isEmpty {
-                let problem = ((descriptionResult.description["problem_to_solve"] as? String) ?? "")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                let objective = ((descriptionResult.description["task_objective"] as? String) ?? "")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                let summary = objective.isEmpty
-                    ? ((((descriptionResult.description["scene_summary"] as? String) ?? "")
-                        .trimmingCharacters(in: .whitespacesAndNewlines)).isEmpty
-                        ? "Tap to place an AI-generated helper widget."
-                        : (((descriptionResult.description["scene_summary"] as? String) ?? "")
-                            .trimmingCharacters(in: .whitespacesAndNewlines)))
-                    : objective
-                selected = [
-                    ProactiveSuggestionDecision(
-                        title: problem.isEmpty ? "Suggested Next Step" : problem,
-                        summary: summary,
-                        xNorm: 0.6,
-                        yNorm: 0.35,
-                        priority: 1
-                    )
-                ]
-            }
+            selected = selected.filter { textLooksConcreteTask($0.title) || textLooksConcreteTask($0.summary) }
             selected = Array(selected.prefix(suggestionLimit))
-            processedProactiveScreenshotIDs.insert(screenshotID)
-
-            let chips = Array((widgetResponse?.widgets ?? []).prefix(suggestionLimit))
-            if chips.isEmpty {
-                for meta in selected {
-                    let fallbackSize = CGSize(width: 290, height: 150)
-                    let origin = mappedProactiveOrigin(
-                        from: meta,
-                        description: descriptionResult.description,
-                        coordinateSnapshot: coordinateSnapshot,
-                        widgetSize: fallbackSize
-                    ) ?? objectManager.viewportCenter
-                    _ = objectManager.addSuggestion(
-                        title: meta.title,
-                        summary: meta.summary,
-                        html: fallbackSuggestionHTML(title: meta.title, summary: meta.summary),
-                        at: origin,
-                        size: fallbackSize,
-                        animateOnPlace: true
-                    )
-                }
+            guard !selected.isEmpty else {
+                processedProactiveScreenshotIDs.insert(screenshotID)
                 return
             }
+            processedProactiveScreenshotIDs.insert(screenshotID)
 
-            for (index, widget) in chips.enumerated() {
-                let signature = "\(widget.html)|\(Int(widget.width))x\(Int(widget.height))"
-                guard !renderedSuggestionSignatures.contains(signature) else { continue }
-                renderedWidgetIDs.insert(widget.id)
-
-                let meta = index < selected.count ? selected[index] : nil
-                let fallbackOrigin = widgetOrigin(for: widget)
-                let baseOrigin = mappedProactiveOrigin(
+            for meta in selected {
+                let fallbackSize = CGSize(width: 300, height: 160)
+                let origin = mappedProactiveOrigin(
                     from: meta,
                     description: descriptionResult.description,
                     coordinateSnapshot: coordinateSnapshot,
-                    widgetSize: CGSize(width: widget.width, height: widget.height)
-                ) ?? fallbackOrigin
+                    widgetSize: fallbackSize
+                ) ?? objectManager.viewportCenter
                 _ = objectManager.addSuggestion(
-                    title: meta?.title ?? "Suggestion",
-                    summary: meta?.summary ?? triage.reason,
-                    html: widget.html,
-                    at: baseOrigin,
-                    size: CGSize(width: widget.width, height: widget.height),
-                    animateOnPlace: true
+                    title: meta.title,
+                    summary: meta.summary,
+                    html: fallbackSuggestionHTML(title: meta.title, summary: meta.summary),
+                    at: origin,
+                    size: fallbackSize,
+                    animateOnPlace: false
                 )
-                renderedSuggestionSignatures.insert(signature)
             }
         } catch {
             print("Proactive monitor failed: \(error.localizedDescription)")
@@ -603,62 +629,93 @@ struct ContentView: View {
     }
 
     private var proactiveSuggestionChips: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .topLeading) {
-                ForEach(objectManager.suggestions.values.sorted(by: { $0.createdAt < $1.createdAt })) { suggestion in
-                    let anchor = objectManager.screenPoint(forCanvasPoint: suggestion.position)
-                    let x = min(max(anchor.x + 72, 74), geo.size.width - 74)
-                    let y = min(max(anchor.y - 14, 20), geo.size.height - 20)
+        VStack(alignment: .trailing, spacing: 8) {
+            ForEach(objectManager.suggestions.values.sorted(by: { $0.createdAt < $1.createdAt })) { suggestion in
+                let expanded = expandedSuggestionIDs.contains(suggestion.id)
 
-                    HStack(spacing: 6) {
-                        Text(suggestion.title.isEmpty ? "Suggest" : suggestion.title)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(.black.opacity(0.8))
-                            .lineLimit(1)
-
-                        Button {
-                            Task { @MainActor in
-                                _ = await objectManager.approveSuggestion(
-                                    id: suggestion.id,
-                                    preferredScreenCenter: CGPoint(x: x, y: y)
-                                )
-                            }
-                        } label: {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundColor(.green.opacity(0.9))
-                                .frame(width: 28, height: 28)
-                                .contentShape(Rectangle())
+                VStack(alignment: .leading, spacing: expanded ? 8 : 0) {
+                    Button {
+                        if expanded {
+                            expandedSuggestionIDs.remove(suggestion.id)
+                        } else {
+                            expandedSuggestionIDs.insert(suggestion.id)
                         }
-                        .buttonStyle(.plain)
-
-                        Button {
-                            _ = objectManager.rejectSuggestion(id: suggestion.id)
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundColor(.red.opacity(0.9))
-                                .frame(width: 28, height: 28)
-                                .contentShape(Rectangle())
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text(suggestion.title.isEmpty ? "Suggestion" : suggestion.title)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(.black.opacity(0.82))
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                            Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(.black.opacity(0.45))
                         }
-                        .buttonStyle(.plain)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
                     }
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 6)
-                    .frame(maxWidth: 160, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color.white.opacity(0.92))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(Color.black.opacity(0.08), lineWidth: 1)
-                    )
-                    .shadow(color: Color.black.opacity(0.12), radius: 4, x: 0, y: 2)
-                    .position(x: x, y: y)
+                    .buttonStyle(.plain)
+
+                    if expanded {
+                        Text(suggestion.summary.isEmpty ? "Would you like Iris to do this?" : suggestion.summary)
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundColor(.black.opacity(0.66))
+                            .lineLimit(3)
+                            .padding(.horizontal, 10)
+
+                        HStack(spacing: 8) {
+                            Button {
+                                Task { @MainActor in
+                                    await handleSuggestionAccepted(suggestion)
+                                }
+                            } label: {
+                                Text("Accept")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(.green.opacity(0.95))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                            }
+                            .buttonStyle(.plain)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(Color.green.opacity(0.12))
+                            )
+
+                            Button {
+                                _ = objectManager.rejectSuggestion(id: suggestion.id)
+                                expandedSuggestionIDs.remove(suggestion.id)
+                            } label: {
+                                Text("Reject")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(.red.opacity(0.95))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                            }
+                            .buttonStyle(.plain)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(Color.red.opacity(0.11))
+                            )
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.bottom, 10)
+                    }
                 }
+                .frame(width: 240, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.white.opacity(0.95))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                )
+                .shadow(color: Color.black.opacity(0.12), radius: 5, x: 0, y: 2)
             }
         }
+        .padding(.top, 16)
+        .padding(.trailing, 14)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
         .zIndex(40)
     }
 
@@ -741,6 +798,84 @@ struct ContentView: View {
         return currentJSON != previousJSON
     }
 
+    private func shouldAllowProactiveSuggestion(for description: [String: Any]) -> Bool {
+        if isBlankCanvasDescription(description) {
+            return false
+        }
+        return hasConcreteTaskDescription(description)
+    }
+
+    private func isBlankCanvasDescription(_ description: [String: Any]) -> Bool {
+        let canvasState = (description["canvas_state"] as? [String: Any]) ?? [:]
+        if (canvasState["is_blank"] as? Bool) == true {
+            return true
+        }
+        let regions = (description["regions"] as? [[String: Any]]) ?? []
+        let candidates = (description["suggestion_candidates"] as? [[String: Any]]) ?? []
+        let problem = ((description["problem_to_solve"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let objective = ((description["task_objective"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return regions.isEmpty && candidates.isEmpty && problem.isEmpty && objective.isEmpty
+    }
+
+    private func hasConcreteTaskDescription(_ description: [String: Any]) -> Bool {
+        let problem = ((description["problem_to_solve"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let objective = ((description["task_objective"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let scene = ((description["scene_summary"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidates = (description["suggestion_candidates"] as? [[String: Any]]) ?? []
+
+        let hasStrongCandidate = candidates.contains { row in
+            let title = ((row["title"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let summary = ((row["summary"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let confidence = (row["confidence"] as? NSNumber)?.doubleValue ?? 0
+            return confidence >= 0.7 && (textLooksConcreteTask(title) || textLooksConcreteTask(summary))
+        }
+
+        return textLooksConcreteTask(problem)
+            || textLooksConcreteTask(objective)
+            || hasStrongCandidate
+            || scene.contains("?")
+    }
+
+    private func textLooksConcreteTask(_ text: String) -> Bool {
+        let t = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return false }
+        let words = t.split(whereSeparator: \.isWhitespace)
+        guard words.count >= 4 else { return false }
+
+        let genericPhrases = [
+            "brainstorm",
+            "ideas",
+            "random notes",
+            "scratch work",
+            "doodle",
+            "maybe",
+            "something",
+            "anything"
+        ]
+        if genericPhrases.contains(where: { t.contains($0) }) {
+            return false
+        }
+
+        if t.contains("?") {
+            return true
+        }
+        if t.rangeOfCharacter(from: .decimalDigits) != nil {
+            return true
+        }
+
+        let actionVerbs = [
+            "solve", "calculate", "compute", "prove", "simplify", "derive",
+            "find", "determine", "write", "draft", "fix", "compare",
+            "summarize", "explain", "complete", "finish", "answer"
+        ]
+        return actionVerbs.contains(where: { t.contains($0) })
+    }
+
     private func shouldForceProactiveSuggestion(_ description: [String: Any]) -> Bool {
         let signature = proactiveTaskSignature(from: description)
         guard let signature else {
@@ -803,8 +938,8 @@ struct ContentView: View {
         if !problem.isEmpty || !objective.isEmpty {
             return [
                 ProactiveSuggestionDecision(
-                    title: problem.isEmpty ? "Next Step" : problem,
-                    summary: objective,
+                    title: "Provide hint for problem?",
+                    summary: objective.isEmpty ? "I can generate a concise hint for the current task." : objective,
                     xNorm: 0.6,
                     yNorm: 0.35,
                     priority: 1
@@ -965,6 +1100,8 @@ struct ContentView: View {
     private func widgetOrigin(for widget: AgentWidget) -> CGPoint {
         let w = max(100, widget.width)
         let h = max(100, widget.height)
+        let hasExplicitCoords = abs(widget.x) > 0.5 || abs(widget.y) > 0.5
+        let writingAnchorCanvas = mostRecentWritingAnchorCanvasPoint()
 
         let anchorOffset: CGPoint = {
             if widget.anchor.lowercased() == "center" {
@@ -976,16 +1113,46 @@ struct ContentView: View {
         let base: CGPoint
         switch widget.coordinateSpace.lowercased() {
         case "canvas_absolute":
-            base = CGPoint(x: widget.x, y: widget.y)
+            if hasExplicitCoords {
+                base = CGPoint(x: widget.x, y: widget.y)
+            } else if let writingAnchorCanvas {
+                base = CGPoint(x: writingAnchorCanvas.x + 14, y: writingAnchorCanvas.y + 6)
+            } else {
+                base = objectManager.viewportCenter
+            }
         case "document_axis":
-            base = objectManager.canvasPoint(
-                forAxisPoint: CGPoint(x: widget.x, y: widget.y)
-            )
+            if hasExplicitCoords {
+                base = objectManager.canvasPoint(
+                    forAxisPoint: CGPoint(x: widget.x, y: widget.y)
+                )
+            } else if let writingAnchorCanvas {
+                base = CGPoint(x: writingAnchorCanvas.x + 14, y: writingAnchorCanvas.y + 6)
+            } else {
+                base = objectManager.viewportCenter
+            }
         default:
-            let viewport = objectManager.viewportCenter
-            base = CGPoint(x: viewport.x + widget.x, y: viewport.y + widget.y)
+            if hasExplicitCoords {
+                let viewport = objectManager.viewportCenter
+                base = CGPoint(x: viewport.x + widget.x, y: viewport.y + widget.y)
+            } else if let writingAnchorCanvas {
+                base = CGPoint(x: writingAnchorCanvas.x + 14, y: writingAnchorCanvas.y + 6)
+            } else {
+                base = objectManager.viewportCenter
+            }
         }
 
         return CGPoint(x: base.x - anchorOffset.x, y: base.y - anchorOffset.y)
+    }
+
+    private func mostRecentWritingAnchorCanvasPoint() -> CGPoint? {
+        let snapshot = currentCoordinateSnapshotDict()
+        guard
+            let center = snapshot["mostRecentStrokeCenterAxis"] as? [String: Any],
+            let axisX = (center["x"] as? NSNumber)?.doubleValue,
+            let axisY = (center["y"] as? NSNumber)?.doubleValue
+        else {
+            return nil
+        }
+        return objectManager.canvasPoint(forAxisPoint: CGPoint(x: axisX, y: axisY))
     }
 }

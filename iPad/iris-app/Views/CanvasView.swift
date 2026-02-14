@@ -73,9 +73,6 @@ struct CanvasView: UIViewRepresentable {
         var parent: CanvasView
         private var saveTimer: Timer?
         private var squeezePreviousTool: DrawingTool?
-        private var tapSequenceCount: Int = 0
-        private var tapSequenceWorkItem: DispatchWorkItem?
-        private let tapSequenceWindow: TimeInterval = 0.35
 
         init(_ parent: CanvasView) {
             self.parent = parent
@@ -113,10 +110,6 @@ struct CanvasView: UIViewRepresentable {
             }
         }
 
-        deinit {
-            tapSequenceWorkItem?.cancel()
-        }
-
         func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
             registerPencilTap()
         }
@@ -148,24 +141,8 @@ struct CanvasView: UIViewRepresentable {
 
         private func registerPencilTap() {
             DispatchQueue.main.async {
-                self.tapSequenceCount += 1
-                self.tapSequenceWorkItem?.cancel()
-
-                let workItem = DispatchWorkItem { [weak self] in
-                    guard let self else { return }
-                    switch self.tapSequenceCount {
-                    case 1:
-                        self.parent.canvasState.undo()
-                    case 2:
-                        self.parent.canvasState.redo()
-                    default:
-                        break
-                    }
-                    self.tapSequenceCount = 0
-                    self.tapSequenceWorkItem = nil
-                }
-                self.tapSequenceWorkItem = workItem
-                DispatchQueue.main.asyncAfter(deadline: .now() + self.tapSequenceWindow, execute: workItem)
+                // Apple Pencil flat-side double tap is treated as an explicit AI request trigger.
+                self.parent.canvasState.lastPencilDoubleTapAt = Date()
             }
         }
     }

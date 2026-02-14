@@ -22,6 +22,7 @@ final class CanvasState: ObservableObject {
     @Published var canRedo: Bool = false
     @Published var isRecording: Bool = false
     @Published var lastStrokeActivityAt: Date? = nil
+    @Published var lastPencilDoubleTapAt: Date? = nil
     weak var undoManager: UndoManager?
 
     static let availableColors: [UIColor] = [
