@@ -56,9 +56,45 @@ interface ElectronAPI {
   
   // Session Management
   getSessions: () => Promise<{ items: any[]; count: number }>
-  getCurrentSession: () => Promise<{ id: string; model: string; name: string } | null>
-  setCurrentSession: (session: { id: string; model: string; name: string } | null) => Promise<{ success: boolean }>
-  createSession: (params: { id: string; name: string; model: string }) => Promise<any>
+  getCurrentSession: () => Promise<{
+    id: string
+    model: string
+    name: string
+    metadata?: {
+      claude_code_conversation_id?: string
+      codex_conversation_id?: string
+      codex_cwd?: string
+    }
+  } | null>
+  setCurrentSession: (session: {
+    id: string
+    model: string
+    name: string
+    metadata?: {
+      claude_code_conversation_id?: string
+      codex_conversation_id?: string
+      codex_cwd?: string
+    }
+  } | null) => Promise<{ success: boolean }>
+  createSession: (params: {
+    id: string
+    name: string
+    model: string
+    metadata?: {
+      claude_code_conversation_id?: string
+      codex_conversation_id?: string
+      codex_cwd?: string
+    }
+  }) => Promise<any>
+  getCodexSessions: () => Promise<Array<{ id: string; title: string; timestamp?: string; cwd?: string }>>
+  getClaudeCodeSessions: () => Promise<Array<{ id: string; title: string; timestamp?: string; cwd?: string }>>
+  sendCodexMessage: (params: { conversationId: string; prompt: string; cwd?: string }) => Promise<{ text: string }>
+  createSessionMessage: (params: {
+    sessionId: string
+    role: "user" | "assistant"
+    content: string
+    deviceId?: string
+  }) => Promise<any>
   getSessionMessages: (sessionId: string, since?: string) => Promise<{ items: any[]; count: number }>
   onSessionMessagesUpdate: (callback: (data: { sessionId: string; messages: any[] }) => void) => () => void
 
@@ -235,10 +271,39 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // ─── Session Management ──────────────────────────────
   getSessions: () => ipcRenderer.invoke("get-sessions"),
   getCurrentSession: () => ipcRenderer.invoke("get-current-session"),
-  setCurrentSession: (session: { id: string; model: string; name: string } | null) =>
+  setCurrentSession: (session: {
+    id: string
+    model: string
+    name: string
+    metadata?: {
+      claude_code_conversation_id?: string
+      codex_conversation_id?: string
+      codex_cwd?: string
+    }
+  } | null) =>
     ipcRenderer.invoke("set-current-session", session),
-  createSession: (params: { id: string; name: string; model: string }) =>
+  createSession: (params: {
+    id: string
+    name: string
+    model: string
+    metadata?: {
+      claude_code_conversation_id?: string
+      codex_conversation_id?: string
+      codex_cwd?: string
+    }
+  }) =>
     ipcRenderer.invoke("create-session", params),
+  getCodexSessions: () => ipcRenderer.invoke("get-codex-sessions"),
+  getClaudeCodeSessions: () => ipcRenderer.invoke("get-claude-code-sessions"),
+  sendCodexMessage: (params: { conversationId: string; prompt: string; cwd?: string }) =>
+    ipcRenderer.invoke("send-codex-message", params),
+  createSessionMessage: (params: {
+    sessionId: string
+    role: "user" | "assistant"
+    content: string
+    deviceId?: string
+  }) =>
+    ipcRenderer.invoke("create-session-message", params),
   getSessionMessages: (sessionId: string, since?: string) =>
     ipcRenderer.invoke("get-session-messages", sessionId, since),
   deleteSession: (sessionId: string) =>

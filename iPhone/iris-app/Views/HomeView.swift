@@ -199,7 +199,7 @@ private struct SettingsView: View {
         NavigationStack {
             Form {
                 Section("Backend") {
-                    TextField("http://<mac-lan-ip>:5001", text: $backendURL)
+                    TextField("http://<mac-lan-ip>:8000", text: $backendURL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     Text("Use your Mac LAN IP when running on physical iPhone.")

@@ -5,6 +5,7 @@ import http from "http"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { spawn } from "node:child_process"
 import { AppState } from "./main"
 import { WidgetWindowManager, WidgetSpec } from "./WidgetWindowManager"
 import { uploadScreenshotToBackend } from "./backendUploader"
@@ -20,6 +21,25 @@ interface SessionInfo {
   id: string
   model: string
   name: string
+  metadata?: {
+    claude_code_conversation_id?: string
+    codex_conversation_id?: string
+    codex_cwd?: string
+  }
+}
+
+interface CodexSessionInfo {
+  id: string
+  title: string
+  timestamp?: string
+  cwd?: string
+}
+
+interface ClaudeCodeSessionInfo {
+  id: string
+  title: string
+  timestamp?: string
+  cwd?: string
 }
 
 export function initializeIpcHandlers(appState: AppState): void {
@@ -108,6 +128,128 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   ipcMain.handle("delete-screenshot", async (event, path: string) => {
     return appState.deleteScreenshot(path)
+  })
+
+  ipcMain.handle("get-codex-sessions", async () => {
+    try {
+      const sessionsRoot = path.join(os.homedir(), ".codex", "sessions")
+      const files: string[] = []
+
+      const walk = async (dir: string): Promise<void> => {
+        const entries = await fs.promises.readdir(dir, { withFileTypes: true })
+        await Promise.all(entries.map(async (entry) => {
+          const fullPath = path.join(dir, entry.name)
+          if (entry.isDirectory()) {
+            await walk(fullPath)
+            return
+          }
+          if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+            files.push(fullPath)
+          }
+        }))
+      }
+
+      await walk(sessionsRoot)
+      files.sort((a, b) => b.localeCompare(a))
+
+      const out: CodexSessionInfo[] = []
+      const seen = new Set<string>()
+      for (const filePath of files.slice(0, 200)) {
+        try {
+          const raw = await fs.promises.readFile(filePath, "utf-8")
+          const firstLine = raw.split("\n")[0] || ""
+          const parsed = JSON.parse(firstLine)
+          const payload = parsed?.payload || {}
+          const id = String(payload.id || "").trim()
+          if (!id || seen.has(id)) continue
+          seen.add(id)
+
+          const cwd = typeof payload.cwd === "string" ? payload.cwd : ""
+          const baseName = cwd ? path.basename(cwd) : "Codex Session"
+          const timestamp = typeof payload.timestamp === "string" ? payload.timestamp : undefined
+          out.push({
+            id,
+            title: baseName,
+            timestamp,
+            cwd: cwd || undefined,
+          })
+        } catch {
+          // ignore malformed entries
+        }
+      }
+
+      return out
+    } catch {
+      return []
+    }
+  })
+
+  ipcMain.handle("get-claude-code-sessions", async () => {
+    try {
+      const sessionsRoot = path.join(os.homedir(), ".claude", "projects")
+      const files: string[] = []
+
+      const walk = async (dir: string): Promise<void> => {
+        const entries = await fs.promises.readdir(dir, { withFileTypes: true })
+        await Promise.all(entries.map(async (entry) => {
+          const fullPath = path.join(dir, entry.name)
+          if (entry.isDirectory()) {
+            await walk(fullPath)
+            return
+          }
+          if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+            files.push(fullPath)
+          }
+        }))
+      }
+
+      await walk(sessionsRoot)
+      files.sort((a, b) => b.localeCompare(a))
+
+      const out: ClaudeCodeSessionInfo[] = []
+      const seen = new Set<string>()
+      for (const filePath of files.slice(0, 300)) {
+        try {
+          const raw = await fs.promises.readFile(filePath, "utf-8")
+          const lines = raw.split("\n")
+          let id = ""
+          let timestamp: string | undefined
+          let cwd: string | undefined
+
+          for (const line of lines) {
+            const trimmed = line.trim()
+            if (!trimmed.startsWith("{")) continue
+            const parsed = JSON.parse(trimmed)
+            const sessionId = typeof parsed?.sessionId === "string" ? parsed.sessionId.trim() : ""
+            if (sessionId && !id) id = sessionId
+            if (!timestamp && typeof parsed?.timestamp === "string") {
+              timestamp = parsed.timestamp
+            }
+            if (!cwd && typeof parsed?.cwd === "string" && parsed.cwd.trim()) {
+              cwd = parsed.cwd.trim()
+            }
+            if (id && timestamp && cwd) break
+          }
+
+          if (!id || seen.has(id)) continue
+          seen.add(id)
+
+          const baseName = cwd ? path.basename(cwd) : "Claude Code Session"
+          out.push({
+            id,
+            title: baseName,
+            timestamp,
+            cwd,
+          })
+        } catch {
+          // ignore malformed entries
+        }
+      }
+
+      return out
+    } catch {
+      return []
+    }
   })
 
   ipcMain.handle("take-screenshot", async () => {
@@ -376,12 +518,32 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true }
   })
 
-  ipcMain.handle("create-session", async (_, params: { id: string; name: string; model: string }) => {
+  ipcMain.handle(
+    "create-session",
+    async (
+      _,
+      params: {
+        id: string
+        name: string
+        model: string
+        metadata?: {
+          claude_code_conversation_id?: string
+          codex_conversation_id?: string
+          codex_cwd?: string
+        }
+      }
+    ) => {
     try {
       const model = (params.model || (params as any).agent || "gpt-5.2").trim() || "gpt-5.2"
-      const body = { id: params.id, name: params.name, model, agent: model }
+      const body = {
+        id: params.id,
+        name: params.name,
+        model,
+        agent: model,
+        metadata: params.metadata || undefined,
+      }
       const result = await agentServerPost("/sessions", body)
-      currentSession = { id: params.id, name: params.name, model }
+      currentSession = { id: params.id, name: params.name, model, metadata: params.metadata }
       lastMessageTimestamp = null
       startMessagePoller()
       return result
@@ -390,6 +552,114 @@ export function initializeIpcHandlers(appState: AppState): void {
       return { error: error.message }
     }
   })
+
+  ipcMain.handle(
+    "create-session-message",
+    async (
+      _,
+      params: {
+        sessionId: string
+        role: "user" | "assistant"
+        content: string
+        deviceId?: string
+      }
+    ) => {
+      try {
+        const sessionId = String(params?.sessionId || "").trim()
+        const role = params?.role
+        const content = String(params?.content || "").trim()
+        if (!sessionId) return { error: "sessionId is required" }
+        if (role !== "user" && role !== "assistant") return { error: "role must be 'user' or 'assistant'" }
+        if (!content) return { error: "content is required" }
+
+        return await agentServerPost(`/sessions/${encodeURIComponent(sessionId)}/messages`, {
+          role,
+          content,
+          device_id: params?.deviceId || undefined,
+        })
+      } catch (error: any) {
+        console.error("Failed to create session message:", error)
+        return { error: error?.message || String(error) }
+      }
+    }
+  )
+
+  ipcMain.handle(
+    "send-codex-message",
+    async (
+      _,
+      params: {
+        conversationId: string
+        prompt: string
+        cwd?: string
+      }
+    ) => {
+      const conversationId = String(params?.conversationId || "").trim()
+      const prompt = String(params?.prompt || "").trim()
+      const cwd = String(params?.cwd || "").trim()
+      if (!conversationId) {
+        throw new Error("Codex conversation id is required")
+      }
+      if (!prompt) {
+        throw new Error("Prompt is required")
+      }
+
+      const lastMessagePath = path.join(
+        os.tmpdir(),
+        `iris-codex-last-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`
+      )
+
+      const args = ["exec", "--output-last-message", lastMessagePath]
+      if (cwd) {
+        args.push("--cd", cwd)
+      }
+      args.push("resume", conversationId, prompt, "--json", "--skip-git-repo-check")
+
+      const run = await new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve, reject) => {
+        const child = spawn("codex", args, {
+          cwd: cwd || undefined,
+          env: process.env,
+        })
+        let stdout = ""
+        let stderr = ""
+        child.stdout.on("data", (chunk) => {
+          stdout += chunk.toString()
+        })
+        child.stderr.on("data", (chunk) => {
+          stderr += chunk.toString()
+        })
+        child.on("error", reject)
+        child.on("close", (code) => {
+          resolve({
+            exitCode: typeof code === "number" ? code : 1,
+            stdout,
+            stderr,
+          })
+        })
+      })
+
+      let text = ""
+      try {
+        text = (await fs.promises.readFile(lastMessagePath, "utf-8")).trim()
+      } catch {
+        text = ""
+      } finally {
+        fs.promises.unlink(lastMessagePath).catch(() => {})
+      }
+
+      if (run.exitCode !== 0) {
+        const detail = extractCodexError(run.stderr) || extractCodexError(run.stdout)
+        throw new Error(detail || `Codex exited with status ${run.exitCode}`)
+      }
+
+      if (!text) {
+        const detail = extractCodexError(run.stderr) || extractCodexError(run.stdout)
+        throw new Error(detail || "Codex returned no assistant text")
+      }
+
+      return { text }
+    }
+  )
 
   ipcMain.handle("delete-session", async (_, sessionId: string) => {
     try {
@@ -484,6 +754,8 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   function buildAgentRequestEnvelope(message: string, chatId: string, model: string) {
     const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    const claudeCodeConversationId = currentSession?.metadata?.claude_code_conversation_id?.trim() || ""
+    const codexConversationId = currentSession?.metadata?.codex_conversation_id?.trim() || ""
     return {
       protocol_version: "1.0",
       kind: "agent.request",
@@ -507,7 +779,9 @@ export function initializeIpcHandlers(appState: AppState): void {
       model,
       metadata: {
         model,
-        agent: model
+        agent: model,
+        ...(claudeCodeConversationId ? { claude_code_conversation_id: claudeCodeConversationId } : {}),
+        ...(codexConversationId ? { codex_conversation_id: codexConversationId } : {}),
       }
     }
   }
@@ -596,4 +870,33 @@ function isRetryableNetworkError(error: unknown): boolean {
     msg.includes("econnrefused") ||
     msg.includes("socket hang up")
   )
+}
+
+function extractCodexError(raw: string): string | null {
+  const lines = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  let fallback = ""
+  for (const line of lines) {
+    if (line.startsWith("{") && line.endsWith("}")) {
+      try {
+        const parsed = JSON.parse(line)
+        if (parsed?.type === "error" && typeof parsed?.message === "string" && parsed.message.trim()) {
+          return parsed.message.trim()
+        }
+        const nested = parsed?.error?.message
+        if (typeof nested === "string" && nested.trim()) {
+          fallback = nested.trim()
+        }
+      } catch {
+        // ignore malformed line
+      }
+      continue
+    }
+    if (line.startsWith("WARNING:")) continue
+    if (line.includes("codex_core::")) continue
+    fallback = line
+  }
+  return fallback || null
 }

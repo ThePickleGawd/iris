@@ -27,6 +27,11 @@ interface SessionInfo {
   id: string
   model: string
   name: string
+  metadata?: {
+    claude_code_conversation_id?: string
+    codex_conversation_id?: string
+    codex_cwd?: string
+  }
 }
 
 function formatRelativeTime(iso: string): string {
@@ -47,8 +52,12 @@ function formatRelativeTime(iso: string): string {
 const modelChoices = [
   { id: "gpt-5.2", name: "GPT-5.2", subtitle: "OpenAI general-purpose model" },
   { id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5", subtitle: "Best for screenshot and widget workflows" },
-  { id: "claude", name: "Claude (Alias)", subtitle: "Routes to default Claude model" },
+  { id: "claude_code", name: "Claude Code", subtitle: "Link this Iris session to a Claude Code conversation" },
+  { id: "codex", name: "Codex", subtitle: "Link this Iris session to a Codex conversation" },
 ] as const
+
+const CLAUDE_CODE_MODEL_ID = "claude_code"
+const CODEX_MODEL_ID = "codex"
 
 const Queue: React.FC = () => {
   const [toastOpen, setToastOpen] = useState(false)
@@ -62,6 +71,8 @@ const Queue: React.FC = () => {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatLoading, setChatLoading] = useState(false)
   const [showModelPicker, setShowModelPicker] = useState(false)
+  const [showClaudeCodeSessionPicker, setShowClaudeCodeSessionPicker] = useState(false)
+  const [showCodexSessionPicker, setShowCodexSessionPicker] = useState(false)
   const [showSessionDrawer, setShowSessionDrawer] = useState(false)
 
   const [backendBaseUrl] = useState("http://localhost:8000")
@@ -71,6 +82,18 @@ const Queue: React.FC = () => {
   const [backendAuthToken] = useState("")
 
   const [sessions, setSessions] = useState<SessionInfo[]>([])
+  const [claudeCodeSessions, setClaudeCodeSessions] = useState<Array<{
+    id: string
+    title: string
+    timestamp?: string
+    cwd?: string
+  }>>([])
+  const [codexSessions, setCodexSessions] = useState<Array<{
+    id: string
+    title: string
+    timestamp?: string
+    cwd?: string
+  }>>([])
   const [currentSession, setCurrentSession] = useState<SessionInfo | null>(null)
 
   const contentRef = useRef<HTMLDivElement>(null)
@@ -138,8 +161,8 @@ const Queue: React.FC = () => {
           return tb.localeCompare(ta)
         })
         const best = sorted[0]
-        window.electronAPI.setCurrentSession({ id: best.id, model: best.model, name: best.name }).catch(() => {})
-        return { id: best.id, model: best.model, name: best.name }
+        window.electronAPI.setCurrentSession({ id: best.id, model: best.model, name: best.name, metadata: best.metadata }).catch(() => {})
+        return { id: best.id, model: best.model, name: best.name, metadata: best.metadata }
       })
     } catch {
       // Session API unavailable is non-fatal.
@@ -147,7 +170,7 @@ const Queue: React.FC = () => {
   }, [])
 
   const handleSelectSession = useCallback(async (session: SessionInfo) => {
-    const info = { id: session.id, model: session.model, name: session.name }
+    const info = { id: session.id, model: session.model, name: session.name, metadata: session.metadata }
     setCurrentSession(info)
     setChatMessages([])
     setChatLoading(true)
@@ -168,13 +191,13 @@ const Queue: React.FC = () => {
     }
   }, [])
 
-  const handleNewChat = useCallback(async (model = "gpt-5.2") => {
+  const handleNewChat = useCallback(async (model = "gpt-5.2", metadata?: SessionInfo["metadata"]) => {
     const id = crypto.randomUUID().toUpperCase()
     const name = `Chat ${new Date().toLocaleTimeString()}`
 
     try {
-      await window.electronAPI.createSession({ id, name, model })
-      const info = { id, name, model }
+      await window.electronAPI.createSession({ id, name, model, metadata })
+      const info = { id, name, model, metadata }
       setCurrentSession(info)
       setChatMessages([])
       await refreshSessions()
@@ -187,7 +210,42 @@ const Queue: React.FC = () => {
   const handleModelPick = useCallback(async (modelId: string) => {
     setShowModelPicker(false)
     setShowSessionDrawer(false)
+    if (modelId === CLAUDE_CODE_MODEL_ID) {
+      await refreshSessions()
+      const discovered = await window.electronAPI.getClaudeCodeSessions().catch(() => [])
+      setClaudeCodeSessions(discovered || [])
+      setShowClaudeCodeSessionPicker(true)
+      setShowCodexSessionPicker(false)
+      return
+    }
+    if (modelId === CODEX_MODEL_ID) {
+      await refreshSessions()
+      const discovered = await window.electronAPI.getCodexSessions().catch(() => [])
+      setCodexSessions(discovered || [])
+      setShowCodexSessionPicker(true)
+      setShowClaudeCodeSessionPicker(false)
+      return
+    }
+    setShowClaudeCodeSessionPicker(false)
+    setShowCodexSessionPicker(false)
     await handleNewChat(modelId)
+  }, [handleNewChat, refreshSessions])
+
+  const handlePickClaudeCodeSession = useCallback(async (conversationId: string) => {
+    setShowClaudeCodeSessionPicker(false)
+    setShowCodexSessionPicker(false)
+    setShowSessionDrawer(false)
+    await handleNewChat(CLAUDE_CODE_MODEL_ID, { claude_code_conversation_id: conversationId })
+  }, [handleNewChat])
+
+  const handlePickCodexSession = useCallback(async (conversationId: string, cwd?: string) => {
+    setShowCodexSessionPicker(false)
+    setShowClaudeCodeSessionPicker(false)
+    setShowSessionDrawer(false)
+    await handleNewChat(CODEX_MODEL_ID, {
+      codex_conversation_id: conversationId,
+      ...(cwd ? { codex_cwd: cwd } : {})
+    })
   }, [handleNewChat])
 
   const handlePickSession = useCallback(async (session: SessionInfo) => {
@@ -338,6 +396,64 @@ const Queue: React.FC = () => {
     })
   }, [sessions])
 
+  const claudeCodeLinkChoices = useMemo(() => {
+    const byId = new Map<string, { conversationId: string; sessionName: string }>()
+    for (const s of sessions) {
+      const conversationId = (
+        s.metadata?.claude_code_conversation_id ||
+        (s.model === CLAUDE_CODE_MODEL_ID ? s.id : "")
+      ).trim()
+      if (!conversationId || byId.has(conversationId)) continue
+      byId.set(conversationId, {
+        conversationId,
+        sessionName: s.name || "Untitled"
+      })
+    }
+
+    for (const discovered of claudeCodeSessions) {
+      const conversationId = (discovered.id || "").trim()
+      if (!conversationId || byId.has(conversationId)) continue
+      byId.set(conversationId, {
+        conversationId,
+        sessionName: discovered.title || "Claude Code Session"
+      })
+    }
+
+    const choices = [...byId.values()]
+    choices.sort((a, b) => a.sessionName.localeCompare(b.sessionName))
+    return choices
+  }, [sessions, claudeCodeSessions])
+
+  const codexLinkChoices = useMemo(() => {
+    const byId = new Map<string, { conversationId: string; sessionName: string; cwd?: string }>()
+    for (const s of sessions) {
+      const conversationId = (
+        s.metadata?.codex_conversation_id ||
+        (s.model === CODEX_MODEL_ID ? s.id : "")
+      ).trim()
+      if (!conversationId || byId.has(conversationId)) continue
+      byId.set(conversationId, {
+        conversationId,
+        sessionName: s.name || "Untitled",
+        cwd: s.metadata?.codex_cwd
+      })
+    }
+
+    for (const discovered of codexSessions) {
+      const conversationId = (discovered.id || "").trim()
+      if (!conversationId || byId.has(conversationId)) continue
+      byId.set(conversationId, {
+        conversationId,
+        sessionName: discovered.title || "Codex Session",
+        cwd: discovered.cwd
+      })
+    }
+
+    const choices = [...byId.values()]
+    choices.sort((a, b) => a.sessionName.localeCompare(b.sessionName))
+    return choices
+  }, [sessions, codexSessions])
+
   const sendChatMessage = async (message: string) => {
     const trimmed = message.trim()
     if (!trimmed) return
@@ -373,39 +489,76 @@ const Queue: React.FC = () => {
       model: selectedSession?.model || "gpt-5.2",
       workspaceId: selectedSession?.id || workspaceId,
       sessionId: selectedSession?.id || sessionId,
+      claudeCodeConversationId: selectedSession?.metadata?.claude_code_conversation_id || "",
+      codexConversationId: selectedSession?.metadata?.codex_conversation_id || "",
       authToken: backendAuthToken
     }
 
     try {
-      if (!settings.backendBaseUrl) {
-        throw new Error("Backend URL is required")
-      }
-
-      await requestAgentResponse({
-        settings,
-        requestId,
-        message: trimmed,
-        history: chatMessages,
-        callbacks: {
-          onFinal: (text) => {
-            if (activeStreamRequestRef.current !== requestId) return
-            if (text) {
-              void applyFinalAssistantOutput(text, (clean) => setAssistantText(clean))
-            }
-          },
-          onStatus: () => {},
-          onToolCall: () => {},
-          onToolResult: () => {},
-          onWidgetOpen: (widget) => {
-            if (activeStreamRequestRef.current !== requestId) return
-            void openWidget(widget)
-          },
-          onError: (msg) => {
-            if (activeStreamRequestRef.current !== requestId) return
-            setAssistantText(`Error: ${msg}`)
-          }
+      const isCodexSession = selectedSession.model === CODEX_MODEL_ID
+      if (isCodexSession) {
+        const codexConversationId = (selectedSession?.metadata?.codex_conversation_id || "").trim()
+        const codexCwd = selectedSession?.metadata?.codex_cwd?.trim() || undefined
+        if (!codexConversationId) {
+          throw new Error("Codex conversation id is missing for this session")
         }
-      })
+
+        await window.electronAPI.createSessionMessage({
+          sessionId: selectedSession.id,
+          role: "user",
+          content: trimmed
+        }).catch(() => {})
+
+        const result = await window.electronAPI.sendCodexMessage({
+          conversationId: codexConversationId,
+          prompt: trimmed,
+          cwd: codexCwd
+        })
+
+        const cleanText = result?.text || ""
+        if (cleanText) {
+          await applyFinalAssistantOutput(cleanText, (clean) => setAssistantText(clean))
+        } else {
+          setAssistantText("Codex returned no text.")
+        }
+
+        const assistantText = cleanText || "Codex returned no text."
+        await window.electronAPI.createSessionMessage({
+          sessionId: selectedSession.id,
+          role: "assistant",
+          content: assistantText
+        }).catch(() => {})
+      } else {
+        if (!settings.backendBaseUrl) {
+          throw new Error("Backend URL is required")
+        }
+
+        await requestAgentResponse({
+          settings,
+          requestId,
+          message: trimmed,
+          history: chatMessages,
+          callbacks: {
+            onFinal: (text) => {
+              if (activeStreamRequestRef.current !== requestId) return
+              if (text) {
+                void applyFinalAssistantOutput(text, (clean) => setAssistantText(clean))
+              }
+            },
+            onStatus: () => {},
+            onToolCall: () => {},
+            onToolResult: () => {},
+            onWidgetOpen: (widget) => {
+              if (activeStreamRequestRef.current !== requestId) return
+              void openWidget(widget)
+            },
+            onError: (msg) => {
+              if (activeStreamRequestRef.current !== requestId) return
+              setAssistantText(`Error: ${msg}`)
+            }
+          }
+        })
+      }
     } catch (error: any) {
       setAssistantText(`Error: ${error?.message || String(error)}`)
     } finally {
@@ -539,6 +692,58 @@ const Queue: React.FC = () => {
         </div>
       )}
 
+      {showClaudeCodeSessionPicker && (
+        <div
+          className="iris-agent-picker-backdrop interactive"
+          onClick={() => setShowClaudeCodeSessionPicker(false)}
+        >
+          <div className="iris-agent-picker" onClick={(e) => e.stopPropagation()}>
+            <div className="iris-agent-picker-title">Link Claude Code Session</div>
+            {claudeCodeLinkChoices.length === 0 ? (
+              <div className="iris-session-empty">No linked Claude Code sessions found yet.</div>
+            ) : (
+              claudeCodeLinkChoices.map((choice) => (
+                <button
+                  key={choice.conversationId}
+                  type="button"
+                  className="iris-agent-picker-option interactive"
+                  onClick={() => handlePickClaudeCodeSession(choice.conversationId)}
+                >
+                  <span className="iris-agent-picker-name">{choice.sessionName}</span>
+                  <span className="iris-agent-picker-sub">{choice.conversationId}</span>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {showCodexSessionPicker && (
+        <div
+          className="iris-agent-picker-backdrop interactive"
+          onClick={() => setShowCodexSessionPicker(false)}
+        >
+          <div className="iris-agent-picker" onClick={(e) => e.stopPropagation()}>
+            <div className="iris-agent-picker-title">Link Codex Session</div>
+            {codexLinkChoices.length === 0 ? (
+              <div className="iris-session-empty">No linked Codex sessions found yet.</div>
+            ) : (
+              codexLinkChoices.map((choice) => (
+                <button
+                  key={choice.conversationId}
+                  type="button"
+                  className="iris-agent-picker-option interactive"
+                  onClick={() => handlePickCodexSession(choice.conversationId, choice.cwd)}
+                >
+                  <span className="iris-agent-picker-name">{choice.sessionName}</span>
+                  <span className="iris-agent-picker-sub">{choice.conversationId}</span>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
       {!isExpanded ? (
         /* Collapsed: compact bar with convo name and close */
         <div className="iris-floating-bar draggable-area">
@@ -614,7 +819,15 @@ const Queue: React.FC = () => {
                   sortedSessions.map((s) => {
                     const isActive = currentSession?.id === s.id
                     const ts = (s as any).updated_at || (s as any).created_at || ""
-                    const modelLabel = s.model?.includes("claude") ? "Claude" : s.model === "gpt-5.2" ? "GPT-5.2" : s.model || "GPT-5.2"
+                    const modelLabel = s.model === CLAUDE_CODE_MODEL_ID
+                      ? "Claude Code"
+                      : s.model === CODEX_MODEL_ID
+                        ? "Codex"
+                      : s.model?.includes("claude")
+                        ? "Claude"
+                        : s.model === "gpt-5.2"
+                          ? "GPT-5.2"
+                          : s.model || "GPT-5.2"
                     return (
                       <button
                         key={s.id}

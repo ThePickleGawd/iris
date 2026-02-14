@@ -9,6 +9,8 @@ export interface AgentTransportSettings {
   model: string
   workspaceId: string
   sessionId: string
+  claudeCodeConversationId?: string
+  codexConversationId?: string
   authToken: string
 }
 
@@ -40,6 +42,9 @@ export interface AgentRequestEnvelope {
   model: string
   metadata: {
     model: string
+    agent?: string
+    claude_code_conversation_id?: string
+    codex_conversation_id?: string
   }
 }
 
@@ -84,7 +89,14 @@ export function buildAgentRequestEnvelope(params: {
     },
     model: settings.model || "gpt-5.2",
     metadata: {
-      model: settings.model || "gpt-5.2"
+      model: settings.model || "gpt-5.2",
+      agent: settings.model || "gpt-5.2",
+      ...(settings.claudeCodeConversationId
+        ? { claude_code_conversation_id: settings.claudeCodeConversationId }
+        : {}),
+      ...(settings.codexConversationId
+        ? { codex_conversation_id: settings.codexConversationId }
+        : {})
     }
   }
 }

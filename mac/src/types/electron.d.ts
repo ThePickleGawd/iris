@@ -46,9 +46,45 @@ export interface ElectronAPI {
     }
   }) => Promise<{ success: boolean; id: string; error?: string }>
   getSessions: () => Promise<{ items: any[]; count: number }>
-  getCurrentSession: () => Promise<{ id: string; model: string; name: string } | null>
-  setCurrentSession: (session: { id: string; model: string; name: string } | null) => Promise<{ success: boolean }>
-  createSession: (params: { id: string; name: string; model: string }) => Promise<any>
+  getCurrentSession: () => Promise<{
+    id: string
+    model: string
+    name: string
+    metadata?: {
+      claude_code_conversation_id?: string
+      codex_conversation_id?: string
+      codex_cwd?: string
+    }
+  } | null>
+  setCurrentSession: (session: {
+    id: string
+    model: string
+    name: string
+    metadata?: {
+      claude_code_conversation_id?: string
+      codex_conversation_id?: string
+      codex_cwd?: string
+    }
+  } | null) => Promise<{ success: boolean }>
+  createSession: (params: {
+    id: string
+    name: string
+    model: string
+    metadata?: {
+      claude_code_conversation_id?: string
+      codex_conversation_id?: string
+      codex_cwd?: string
+    }
+  }) => Promise<any>
+  getCodexSessions: () => Promise<Array<{ id: string; title: string; timestamp?: string; cwd?: string }>>
+  getClaudeCodeSessions: () => Promise<Array<{ id: string; title: string; timestamp?: string; cwd?: string }>>
+  sendCodexMessage: (params: { conversationId: string; prompt: string; cwd?: string }) => Promise<{ text: string }>
+  createSessionMessage: (params: {
+    sessionId: string
+    role: "user" | "assistant"
+    content: string
+    deviceId?: string
+  }) => Promise<any>
   getSessionMessages: (sessionId: string, since?: string) => Promise<{ items: any[]; count: number }>
   deleteSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>
   onSessionMessagesUpdate: (callback: (data: { sessionId: string; messages: any[] }) => void) => () => void

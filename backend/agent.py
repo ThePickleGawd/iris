@@ -7,8 +7,6 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from openai import OpenAI
-
 DEFAULT_MODEL = "gpt-5.2"
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-5-20250929"
 MAX_TOOL_ROUNDS = 6
@@ -98,6 +96,11 @@ def run(messages: list[dict], user_message: str, *, model: str | None = None) ->
 
 
 def _run_openai(messages: list[dict], user_message: str, *, model: str) -> dict:
+    try:
+        from openai import OpenAI
+    except Exception as exc:
+        raise RuntimeError("openai package is not installed") from exc
+
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not set")

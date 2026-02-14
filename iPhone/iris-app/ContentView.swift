@@ -10,7 +10,12 @@ struct SessionSummary: Identifiable, Hashable {
     let createdAt: String
     let updatedAt: String
     let name: String
+    let model: String
     let status: String
+    let claudeCodeConversationID: String?
+    let claudeCodeCwd: String?
+    let codexConversationID: String?
+    let codexCwd: String?
     let transcriptCount: Int
     let pendingCommandCount: Int
     let latestStatusHeadline: String?
@@ -68,7 +73,7 @@ final class IrisPhoneState: ObservableObject {
     private let deviceIDKey = "iris_phone_device_id"
 
     init() {
-        self.backendBaseURL = defaults.string(forKey: backendKey) ?? "http://127.0.0.1:5001"
+        self.backendBaseURL = defaults.string(forKey: backendKey) ?? "http://127.0.0.1:8000"
         self.deviceID = defaults.string(forKey: deviceIDKey) ?? "iPhone"
     }
 
@@ -76,7 +81,7 @@ final class IrisPhoneState: ObservableObject {
         let normalizedBackend = backendBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedDeviceID = normalizedDeviceID()
 
-        backendBaseURL = normalizedBackend.isEmpty ? "http://127.0.0.1:5001" : normalizedBackend
+        backendBaseURL = normalizedBackend.isEmpty ? "http://127.0.0.1:8000" : normalizedBackend
         deviceID = normalizedDeviceID
 
         defaults.set(backendBaseURL, forKey: backendKey)
@@ -144,19 +149,111 @@ final class IrisPhoneState: ObservableObject {
 
         do {
             let body: [String: Any] = [
-                "session_id": sessionID,
-                "text": trimmed,
+                "role": "user",
+                "content": trimmed,
                 "device_id": deviceID,
                 "source": source,
                 "captured_at": ISO8601DateFormatter().string(from: Date())
             ]
-            let raw = try await requestJSON(path: "/api/transcripts", method: "POST", body: body)
-            guard let dict = raw as? [String: Any] else { throw makeError("Unexpected transcript response") }
-            self.lastTranscriptID = dict["id"] as? String
+            let raw = try await requestJSON(path: "/api/sessions/\(sessionID)/messages", method: "POST", body: body)
+            if let dict = raw as? [String: Any] {
+                self.lastTranscriptID = dict["id"] as? String
+            } else {
+                self.lastTranscriptID = nil
+            }
             self.lastError = nil
+            await fetchAgentChat(sessionID: sessionID)
+            await fetchStatus(sessionID: sessionID)
             await fetchSessions()
         } catch {
             self.lastError = error.localizedDescription
+        }
+    }
+
+    func sendAgentMessage(text: String, session: SessionSummary) async -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            let message = "Message is empty."
+            lastError = message
+            return message
+        }
+
+        isBusy = true
+        defer { isBusy = false }
+
+        do {
+            let model = session.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "gpt-5.2"
+                : session.model.trimmingCharacters(in: .whitespacesAndNewlines)
+            if model.lowercased() == "codex" {
+                var payload: [String: Any] = [
+                    "session_id": session.id,
+                    "prompt": trimmed,
+                    "device_id": deviceID
+                ]
+                if let codexConversationID = session.codexConversationID, !codexConversationID.isEmpty {
+                    payload["conversation_id"] = codexConversationID
+                }
+                if let codexCwd = session.codexCwd, !codexCwd.isEmpty {
+                    payload["cwd"] = codexCwd
+                }
+                _ = try await requestJSON(path: "/api/codex/respond", method: "POST", body: payload)
+            } else if model.lowercased() == "claude_code" {
+                var payload: [String: Any] = [
+                    "session_id": session.id,
+                    "prompt": trimmed,
+                    "device_id": deviceID
+                ]
+                if let claudeCodeConversationID = session.claudeCodeConversationID, !claudeCodeConversationID.isEmpty {
+                    payload["conversation_id"] = claudeCodeConversationID
+                }
+                if let claudeCodeCwd = session.claudeCodeCwd, !claudeCodeCwd.isEmpty {
+                    payload["cwd"] = claudeCodeCwd
+                }
+                _ = try await requestJSON(path: "/api/claude-code/respond", method: "POST", body: payload)
+            } else {
+                let requestID = "\(Int(Date().timeIntervalSince1970 * 1000))-\(UUID().uuidString.prefix(8))"
+                let payload: [String: Any] = [
+                    "protocol_version": "1.0",
+                    "kind": "agent.request",
+                    "request_id": requestID,
+                    "timestamp": ISO8601DateFormatter().string(from: Date()),
+                    "workspace_id": session.id,
+                    "session_id": session.id,
+                    "device": [
+                        "id": deviceID,
+                        "name": UIDevice.current.name,
+                        "platform": "iOS",
+                        "app_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
+                    ],
+                    "input": [
+                        "type": "text",
+                        "text": trimmed
+                    ],
+                    "context": [
+                        "recent_messages": []
+                    ],
+                    "model": model,
+                    "metadata": [
+                        "model": model,
+                        "agent": model,
+                        "claude_code_conversation_id": session.claudeCodeConversationID as Any,
+                        "claude_code_cwd": session.claudeCodeCwd as Any,
+                        "codex_conversation_id": session.codexConversationID as Any,
+                        "codex_cwd": session.codexCwd as Any
+                    ]
+                ]
+                _ = try await requestJSON(path: "/v1/agent", method: "POST", body: payload)
+            }
+            lastError = nil
+            await fetchAgentChat(sessionID: session.id)
+            await fetchStatus(sessionID: session.id)
+            await fetchSessions()
+            return nil
+        } catch {
+            let message = error.localizedDescription
+            lastError = message
+            return message
         }
     }
 
@@ -234,31 +331,43 @@ final class IrisPhoneState: ObservableObject {
     }
 
     func fetchStatus(sessionID: String) async {
-        do {
-            let raw = try await requestJSON(path: "/api/agent-status", query: [
-                URLQueryItem(name: "session_id", value: sessionID)
-            ])
-            guard let dict = raw as? [String: Any] else { throw makeError("Unexpected status response") }
+        let messages = sessionChatMessages[sessionID] ?? []
+        let latestAssistant = messages.last(where: { $0.role == "assistant" })
+        let latestUser = messages.last(where: { $0.role == "user" })
 
-            let statusDict = dict["status"] as? [String: Any]
-            let counts = dict["command_counts"] as? [String: Int] ?? [:]
+        let phase: String
+        let headline: String
+        let detail: String
+        let updatedAt: String?
 
-            let snapshot = SessionStatusSnapshot(
-                phase: (statusDict?["phase"] as? String) ?? "idle",
-                headline: (statusDict?["headline"] as? String) ?? "No status yet",
-                detail: (statusDict?["detail"] as? String) ?? "",
-                updatedAt: statusDict?["updated_at"] as? String,
-                queuedCount: counts["queued"] ?? 0,
-                inProgressCount: counts["in_progress"] ?? 0,
-                completedCount: counts["completed"] ?? 0,
-                failedCount: counts["failed"] ?? 0
-            )
-
-            sessionStatus[sessionID] = snapshot
-            lastError = nil
-        } catch {
-            lastError = error.localizedDescription
+        if let assistant = latestAssistant {
+            phase = "active"
+            let parts = splitHeadlineAndDetail(from: assistant.text)
+            headline = parts.headline
+            detail = parts.detail
+            updatedAt = assistant.eventAt
+        } else if let user = latestUser {
+            phase = "working"
+            headline = "Awaiting agent response"
+            detail = user.text
+            updatedAt = user.eventAt
+        } else {
+            phase = "idle"
+            headline = "No activity yet"
+            detail = ""
+            updatedAt = nil
         }
+
+        sessionStatus[sessionID] = SessionStatusSnapshot(
+            phase: phase,
+            headline: headline,
+            detail: detail,
+            updatedAt: updatedAt,
+            queuedCount: 0,
+            inProgressCount: 0,
+            completedCount: 0,
+            failedCount: 0
+        )
     }
 
     func fetchSnapshots(sessionID: String, limit: Int = 200) async {
@@ -280,11 +389,10 @@ final class IrisPhoneState: ObservableObject {
 
     func fetchAgentChat(sessionID: String, limit: Int = 200) async {
         do {
-            let raw = try await requestJSON(path: "/api/agent-chat", query: [
-                URLQueryItem(name: "session_id", value: sessionID),
+            let raw = try await requestJSON(path: "/api/sessions/\(sessionID)/messages", query: [
                 URLQueryItem(name: "limit", value: String(limit))
             ])
-            guard let dict = raw as? [String: Any] else { throw makeError("Unexpected agent chat response") }
+            guard let dict = raw as? [String: Any] else { throw makeError("Unexpected messages response") }
             let parsed = (dict["items"] as? [[String: Any]] ?? []).compactMap(parseAgentChatMessage)
             sessionChatMessages[sessionID] = parsed.sorted { lhs, rhs in
                 chatSortDate(lhs) < chatSortDate(rhs)
@@ -304,14 +412,27 @@ final class IrisPhoneState: ObservableObject {
         let name = ((dict["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
             $0.isEmpty ? nil : $0
         } ?? "Untitled Session"
+        let model = ((dict["model"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
+            $0.isEmpty ? nil : $0
+        } ?? "gpt-5.2"
         let status = (dict["status"] as? String ?? "active").lowercased()
+        let metadata = dict["metadata"] as? [String: Any]
+        let claudeCodeConversationID = (metadata?["claude_code_conversation_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let claudeCodeCwd = (metadata?["claude_code_cwd"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let codexConversationID = (metadata?["codex_conversation_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let codexCwd = (metadata?["codex_cwd"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
 
         return SessionSummary(
             id: id,
             createdAt: createdAt,
             updatedAt: updatedAt,
             name: name,
+            model: model,
             status: status,
+            claudeCodeConversationID: claudeCodeConversationID?.isEmpty == false ? claudeCodeConversationID : nil,
+            claudeCodeCwd: claudeCodeCwd?.isEmpty == false ? claudeCodeCwd : nil,
+            codexConversationID: codexConversationID?.isEmpty == false ? codexConversationID : nil,
+            codexCwd: codexCwd?.isEmpty == false ? codexCwd : nil,
             transcriptCount: parseInt(dict["transcript_count"]),
             pendingCommandCount: parseInt(dict["pending_command_count"]),
             latestStatusHeadline: dict["latest_status_headline"] as? String,
@@ -321,17 +442,16 @@ final class IrisPhoneState: ObservableObject {
     }
 
     private func parseSnapshot(dict: [String: Any]) -> SessionScreenshot? {
-        guard
-            let id = dict["id"] as? String,
-            let fileURL = dict["file_url"] as? String
-        else {
+        guard let id = dict["id"] as? String else {
             return nil
         }
+        let fileURL = (dict["file_url"] as? String) ?? makeScreenshotFileURL(screenshotID: id)
+        guard let fileURL else { return nil }
 
         return SessionScreenshot(
             id: id,
             deviceID: (dict["device_id"] as? String) ?? "Unknown device",
-            capturedAt: dict["captured_at"] as? String,
+            capturedAt: (dict["captured_at"] as? String) ?? (dict["created_at"] as? String),
             createdAt: dict["created_at"] as? String,
             fileURL: fileURL,
             notes: dict["notes"] as? String
@@ -339,29 +459,46 @@ final class IrisPhoneState: ObservableObject {
     }
 
     private func parseAgentChatMessage(dict: [String: Any]) -> AgentChatMessage? {
-        guard
+        if
+            let id = dict["id"] as? String,
+            let role = dict["role"] as? String,
+            let text = dict["content"] as? String,
+            let createdAt = dict["created_at"] as? String
+        {
+            let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedText.isEmpty else { return nil }
+            return AgentChatMessage(
+                id: id,
+                entryType: "message",
+                role: role,
+                text: trimmedText,
+                eventAt: createdAt,
+                createdAt: createdAt,
+                sourceDeviceID: dict["device_id"] as? String
+            )
+        }
+
+        if
             let id = dict["id"] as? String,
             let entryType = dict["entry_type"] as? String,
             let role = dict["role"] as? String,
             let text = dict["text"] as? String,
             let eventAt = dict["event_ts"] as? String
-        else {
-            return nil
-        }
-        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedText.isEmpty else {
-            return nil
+        {
+            let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedText.isEmpty else { return nil }
+            return AgentChatMessage(
+                id: id,
+                entryType: entryType,
+                role: role,
+                text: trimmedText,
+                eventAt: eventAt,
+                createdAt: dict["created_at"] as? String,
+                sourceDeviceID: dict["source_device_id"] as? String
+            )
         }
 
-        return AgentChatMessage(
-            id: id,
-            entryType: entryType,
-            role: role,
-            text: trimmedText,
-            eventAt: eventAt,
-            createdAt: dict["created_at"] as? String,
-            sourceDeviceID: dict["source_device_id"] as? String
-        )
+        return nil
     }
 
     private func snapshotSortDate(_ snapshot: SessionScreenshot) -> Date {
@@ -408,6 +545,25 @@ final class IrisPhoneState: ObservableObject {
         return trimmed.isEmpty ? "iPhone" : trimmed
     }
 
+    private func splitHeadlineAndDetail(from text: String) -> (headline: String, detail: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return ("Active", "")
+        }
+        var lines = trimmed.split(separator: "\n", omittingEmptySubsequences: true).map { String($0) }
+        if lines.isEmpty {
+            return ("Active", "")
+        }
+        let head = lines.removeFirst().trimmingCharacters(in: .whitespacesAndNewlines)
+        let detail = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return (head.isEmpty ? "Active" : head, detail)
+    }
+
+    private func makeScreenshotFileURL(screenshotID: String) -> String? {
+        guard !screenshotID.isEmpty else { return nil }
+        return try? makeURL(path: "/api/screenshots/\(screenshotID)/file", query: []).absoluteString
+    }
+
     private func requestJSON(
         path: String,
         method: String = "GET",
@@ -450,6 +606,12 @@ final class IrisPhoneState: ObservableObject {
         guard let baseURL = URL(string: base), !base.isEmpty else {
             throw makeError("Backend URL is invalid")
         }
+        if !isRunningOnSimulator {
+            let host = (baseURL.host ?? "").lowercased()
+            if host == "127.0.0.1" || host == "localhost" {
+                throw makeError("Use your Mac LAN IP (for example, http://192.168.x.x:8000), not localhost, on physical iPhone.")
+            }
+        }
 
         let normalizedPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
         var components = URLComponents(url: baseURL.appendingPathComponent(normalizedPath), resolvingAgainstBaseURL: false)
@@ -464,12 +626,20 @@ final class IrisPhoneState: ObservableObject {
     private func makeError(_ message: String) -> NSError {
         NSError(domain: "IrisPhone", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
+
+    private var isRunningOnSimulator: Bool {
+        #if targetEnvironment(simulator)
+        true
+        #else
+        false
+        #endif
+    }
 }
 
 private enum SessionTab: String, CaseIterable, Identifiable {
     case record = "Record"
     case camera = "Camera"
-    case status = "Status"
+    case status = "Chat"
 
     var id: String { rawValue }
 }
@@ -587,9 +757,8 @@ struct ContentView: View {
             transcriptText = partial
         }
         .task {
-            async let statusTask: Void = appState.fetchStatus(sessionID: session.id)
-            async let chatTask: Void = appState.fetchAgentChat(sessionID: session.id)
-            _ = await (statusTask, chatTask)
+            await appState.fetchAgentChat(sessionID: session.id)
+            await appState.fetchStatus(sessionID: session.id)
             cameraController.prepare()
             updateCameraLifecycle(for: selectedTab)
         }
@@ -631,9 +800,8 @@ struct ContentView: View {
         .onReceive(statusRefreshTimer) { _ in
             guard selectedTab == .status else { return }
             Task {
-                async let statusTask: Void = appState.fetchStatus(sessionID: session.id)
-                async let chatTask: Void = appState.fetchAgentChat(sessionID: session.id)
-                _ = await (statusTask, chatTask)
+                await appState.fetchAgentChat(sessionID: session.id)
+                await appState.fetchStatus(sessionID: session.id)
             }
         }
     }
@@ -905,9 +1073,8 @@ struct ContentView: View {
     }
 
     private func refreshStatusData() async {
-        async let statusTask: Void = appState.fetchStatus(sessionID: session.id)
-        async let chatTask: Void = appState.fetchAgentChat(sessionID: session.id)
-        _ = await (statusTask, chatTask)
+        await appState.fetchAgentChat(sessionID: session.id)
+        await appState.fetchStatus(sessionID: session.id)
     }
 
     private func sendStatusChatMessage() async {
@@ -919,8 +1086,7 @@ struct ContentView: View {
         statusChatDraft = ""
         isStatusInputFocused = false
         shouldScrollStatusChatToBottom = true
-        await appState.sendTranscript(text: trimmed, sessionID: session.id, source: "chat")
-        await appState.fetchAgentChat(sessionID: session.id)
+        _ = await appState.sendAgentMessage(text: trimmed, session: session)
     }
 
     private func updateCameraLifecycle(for tab: SessionTab) {
@@ -1083,13 +1249,23 @@ struct ContentView: View {
     }
 
     private func relativeTimestamp(_ raw: String) -> String {
-        let parser = ISO8601DateFormatter()
-        if let date = parser.date(from: raw) {
+        if let date = parseISO8601(raw) {
             let formatter = RelativeDateTimeFormatter()
             formatter.unitsStyle = .full
             return formatter.localizedString(for: date, relativeTo: Date())
         }
-        return raw
+        return "just now"
+    }
+
+    private func parseISO8601(_ raw: String) -> Date? {
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = parser.date(from: raw) {
+            return date
+        }
+
+        parser.formatOptions = [.withInternetDateTime]
+        return parser.date(from: raw)
     }
 }
 
@@ -1495,7 +1671,12 @@ private extension Data {
                 createdAt: "",
                 updatedAt: "",
                 name: "Demo Session",
+                model: "gpt-5.2",
                 status: "active",
+                claudeCodeConversationID: nil,
+                claudeCodeCwd: nil,
+                codexConversationID: nil,
+                codexCwd: nil,
                 transcriptCount: 3,
                 pendingCommandCount: 1,
                 latestStatusHeadline: "Running",
