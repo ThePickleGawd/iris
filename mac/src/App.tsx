@@ -67,10 +67,7 @@ const App: React.FC = () => {
   }, [])
 
   return (
-    <div ref={containerRef} className="app-shell min-h-0">
-      <div className="window-titlebar draggable-area">
-        <span className="window-title">Iris</span>
-      </div>
+    <div ref={containerRef} className="app-shell">
       <QueryClientProvider client={queryClient}>
         <ToastProvider>
           <Queue />

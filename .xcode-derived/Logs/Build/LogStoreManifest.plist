@@ -5,6 +5,91 @@
 	<key>logFormatVersion</key>
 	<integer>12</integer>
 	<key>logs</key>
-	<dict/>
+	<dict>
+		<key>020B5731-20DB-4EB2-BDBD-73D445CAE0D0</key>
+		<dict>
+			<key>className</key>
+			<string>IDECommandLineBuildLog</string>
+			<key>documentTypeString</key>
+			<string>&lt;nil&gt;</string>
+			<key>domainType</key>
+			<string>Xcode.IDEActivityLogDomainType.BuildLog</string>
+			<key>fileName</key>
+			<string>020B5731-20DB-4EB2-BDBD-73D445CAE0D0.xcactivitylog</string>
+			<key>hasPrimaryLog</key>
+			<true/>
+			<key>primaryObservable</key>
+			<dict>
+				<key>highLevelStatus</key>
+				<string>E</string>
+				<key>totalNumberOfAnalyzerIssues</key>
+				<integer>0</integer>
+				<key>totalNumberOfErrors</key>
+				<integer>5</integer>
+				<key>totalNumberOfTestFailures</key>
+				<integer>0</integer>
+				<key>totalNumberOfWarnings</key>
+				<integer>0</integer>
+			</dict>
+			<key>schemeIdentifier-containerName</key>
+			<string>iris-app project</string>
+			<key>schemeIdentifier-schemeName</key>
+			<string>iris-app</string>
+			<key>schemeIdentifier-sharedScheme</key>
+			<integer>1</integer>
+			<key>signature</key>
+			<string>Building project iris-app with scheme iris-app and configuration Debug</string>
+			<key>timeStartedRecording</key>
+			<real>792757615.57480597</real>
+			<key>timeStoppedRecording</key>
+			<real>792757619.417274</real>
+			<key>title</key>
+			<string>Building project iris-app with scheme iris-app and configuration Debug</string>
+			<key>uniqueIdentifier</key>
+			<string>020B5731-20DB-4EB2-BDBD-73D445CAE0D0</string>
+		</dict>
+		<key>AFBAA9AB-9A73-4282-AB7A-A6FD246AA6A2</key>
+		<dict>
+			<key>className</key>
+			<string>IDECommandLineBuildLog</string>
+			<key>documentTypeString</key>
+			<string>&lt;nil&gt;</string>
+			<key>domainType</key>
+			<string>Xcode.IDEActivityLogDomainType.BuildLog</string>
+			<key>fileName</key>
+			<string>AFBAA9AB-9A73-4282-AB7A-A6FD246AA6A2.xcactivitylog</string>
+			<key>hasPrimaryLog</key>
+			<true/>
+			<key>primaryObservable</key>
+			<dict>
+				<key>highLevelStatus</key>
+				<string>S</string>
+				<key>totalNumberOfAnalyzerIssues</key>
+				<integer>0</integer>
+				<key>totalNumberOfErrors</key>
+				<integer>0</integer>
+				<key>totalNumberOfTestFailures</key>
+				<integer>0</integer>
+				<key>totalNumberOfWarnings</key>
+				<integer>0</integer>
+			</dict>
+			<key>schemeIdentifier-containerName</key>
+			<string>iris-app project</string>
+			<key>schemeIdentifier-schemeName</key>
+			<string>iris-app</string>
+			<key>schemeIdentifier-sharedScheme</key>
+			<integer>1</integer>
+			<key>signature</key>
+			<string>Building project iris-app with scheme iris-app and configuration Debug</string>
+			<key>timeStartedRecording</key>
+			<real>792757806.407915</real>
+			<key>timeStoppedRecording</key>
+			<real>792757809.75728297</real>
+			<key>title</key>
+			<string>Building project iris-app with scheme iris-app and configuration Debug</string>
+			<key>uniqueIdentifier</key>
+			<string>AFBAA9AB-9A73-4282-AB7A-A6FD246AA6A2</string>
+		</dict>
+	</dict>
 </dict>
 </plist>

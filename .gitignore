@@ -9,6 +9,7 @@ mac/.env
 mac/.env.local
 mac/.env.*.local
 
+
 # logs and caches
 mac/*.log
 mac/npm-debug.log*
@@ -34,3 +35,6 @@ iPhone/**/*.xcworkspace/xcuserdata/
 
 # iPad app - local Xcode artifacts
 iPad/.derived
+
+#fuck this one fucking file
+iPad/iris-app.xcodeproj/project.xcworkspace/xcuserdata/

@@ -26,60 +26,7 @@ export async function streamAgentResponse(params: {
   history: AgentMessage[]
   callbacks: AgentStreamCallbacks
 }): Promise<void> {
-  const { settings } = params
-  if (settings.mode === "backend") {
-    return streamViaBackend(params)
-  }
-  return streamViaDirect(params)
-}
-
-async function streamViaDirect(params: {
-  requestId: string
-  message: string
-  callbacks: AgentStreamCallbacks
-}): Promise<void> {
-  const { requestId, message, callbacks } = params
-
-  await new Promise<void>(async (resolve) => {
-    let full = ""
-
-    let cleanupChunk = () => {}
-    let cleanupDone = () => {}
-    let cleanupError = () => {}
-
-    cleanupChunk = window.electronAPI.onClaudeChatStreamChunk((data) => {
-      if (data.requestId !== requestId) return
-      full += data.chunk
-      callbacks.onDelta(data.chunk)
-    })
-
-    cleanupDone = window.electronAPI.onClaudeChatStreamDone((data) => {
-      if (data.requestId !== requestId) return
-      cleanupChunk()
-      cleanupDone()
-      cleanupError()
-      callbacks.onFinal(data.text || full)
-      resolve()
-    })
-
-    cleanupError = window.electronAPI.onClaudeChatStreamError((data) => {
-      if (data.requestId !== requestId) return
-      cleanupChunk()
-      cleanupDone()
-      cleanupError()
-      callbacks.onError(data.error || "Unknown stream error")
-      resolve()
-    })
-
-    const start = await window.electronAPI.startClaudeChatStream(requestId, message)
-    if (!start.success) {
-      cleanupChunk()
-      cleanupDone()
-      cleanupError()
-      callbacks.onError(start.error || "Failed to start local stream")
-      resolve()
-    }
-  })
+  return streamViaBackend(params)
 }
 
 async function streamViaBackend(params: {

@@ -5,6 +5,7 @@ enum DrawingTool: String, CaseIterable {
     case pen
     case highlighter
     case eraser
+    case lasso
 }
 
 final class CanvasState: ObservableObject {

@@ -327,6 +327,13 @@ SWIFT_CLASS("_TtC8iris_app14NoteCanvasView")
 - (UIView * _Nullable)hitTest:(CGPoint)point withEvent:(UIEvent * _Nullable)event SWIFT_WARN_UNUSED_RESULT;
 @end
 
+SWIFT_CLASS("_TtC8iris_app18SuggestionChipView")
+@interface SuggestionChipView : UIView
+- (nullable instancetype)initWithCoder:(NSCoder * _Nonnull)coder OBJC_DESIGNATED_INITIALIZER;
+- (void)layoutSubviews;
+- (nonnull instancetype)initWithFrame:(CGRect)frame SWIFT_UNAVAILABLE;
+@end
+
 SWIFT_CLASS("_TtC8iris_app17WidgetOverlayView")
 @interface WidgetOverlayView : UIView
 - (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent * _Nullable)event SWIFT_WARN_UNUSED_RESULT;
