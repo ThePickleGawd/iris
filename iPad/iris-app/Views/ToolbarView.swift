@@ -4,8 +4,8 @@ struct ToolbarView: View {
     @EnvironmentObject var canvasState: CanvasState
 
     var onBack: (() -> Void)?
-    var onAddWidget: (() -> Void)?
-    var onSpeak: (() -> Void)?
+    var onAITap: (() -> Void)?
+    var isRecording: Bool = false
     var onZoomIn: (() -> Void)?
     var onZoomOut: (() -> Void)?
     var onZoomReset: (() -> Void)?
@@ -22,12 +22,15 @@ struct ToolbarView: View {
 
             zoomPill
 
-            if let onAddWidget {
-                textButton("Widget", icon: "rectangle.on.rectangle", action: onAddWidget)
-            }
-
-            if let onSpeak {
-                textButton("Speak", icon: "speaker.wave.2.fill", action: onSpeak)
+            if let onAITap {
+                Button(action: onAITap) {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(isRecording ? .white : .primary)
+                        .frame(width: 38, height: 38)
+                        .background(isRecording ? Color.red : Color.white.opacity(0.85))
+                        .clipShape(Circle())
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -93,22 +96,6 @@ struct ToolbarView: View {
                 .frame(width: 30, height: 30)
                 .background(Color.white.opacity(0.75))
                 .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-        }
-    }
-
-    private func textButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.system(size: 13, weight: .semibold))
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-            }
-            .foregroundColor(.primary)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(.ultraThinMaterial)
-            .clipShape(Capsule())
         }
     }
 

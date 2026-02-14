@@ -126,4 +126,17 @@ final class CanvasObjectManager: ObservableObject {
 
     func cursorClick() { cursor?.click() }
     func cursorDisappear() { cursor?.disappear() }
+
+    /// Captures the current visible canvas viewport as PNG data.
+    func captureViewportPNGData() -> Data? {
+        guard let canvasView, canvasView.bounds.width > 0, canvasView.bounds.height > 0 else {
+            return nil
+        }
+
+        let renderer = UIGraphicsImageRenderer(bounds: canvasView.bounds)
+        let image = renderer.image { _ in
+            canvasView.drawHierarchy(in: canvasView.bounds, afterScreenUpdates: true)
+        }
+        return image.pngData()
+    }
 }

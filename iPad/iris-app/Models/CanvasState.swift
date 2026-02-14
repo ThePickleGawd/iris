@@ -19,6 +19,7 @@ final class CanvasState: ObservableObject {
 
     @Published var canUndo: Bool = false
     @Published var canRedo: Bool = false
+    @Published var isRecording: Bool = false
     weak var undoManager: UndoManager?
 
     static let availableColors: [UIColor] = [

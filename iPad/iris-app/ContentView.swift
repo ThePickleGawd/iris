@@ -1,34 +1,30 @@
 import SwiftUI
-import AVFoundation
 
 struct ContentView: View {
     @EnvironmentObject var canvasState: CanvasState
 
-    let document: Document?
+    let document: Document
     var onBack: (() -> Void)?
 
     @StateObject private var objectManager = CanvasObjectManager()
     @StateObject private var cursor = AgentCursorController()
+    @StateObject private var audioService = AudioCaptureService()
+    @StateObject private var transcriber = SpeechTranscriber()
 
-    @State private var speakText: String = ""
-
-    private let speaker = AVSpeechSynthesizer()
-
-    init(document: Document? = nil, onBack: (() -> Void)? = nil) {
-        self.document = document
-        self.onBack = onBack
-    }
-    @State private var sessionRegistered = false
+    @State private var isProcessing = false
+    @State private var lastResponse: String?
 
     var body: some View {
         ZStack(alignment: .top) {
             CanvasView(document: document, objectManager: objectManager, cursor: cursor)
                 .environmentObject(canvasState)
 
+            SiriGlowView(isActive: canvasState.isRecording, audioLevel: audioService.audioLevel)
+
             ToolbarView(
                 onBack: onBack,
-                onAddWidget: addQuickWidget,
-                onSpeak: speakCurrentText,
+                onAITap: { canvasState.isRecording.toggle() },
+                isRecording: canvasState.isRecording,
                 onZoomIn: { objectManager.zoom(by: 0.06) },
                 onZoomOut: { objectManager.zoom(by: -0.06) },
                 onZoomReset: { objectManager.setZoomScale(1.0) }
@@ -39,69 +35,163 @@ struct ContentView: View {
             AgentCursorView(controller: cursor)
                 .zIndex(50)
 
-            VStack {
-                Spacer()
-                HStack(spacing: 8) {
-                    TextField("Type text for voice output and optional widget content", text: $speakText)
-                        .textFieldStyle(.plain)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .background(Color.white.opacity(0.9))
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-                    Button("Speak") { speakCurrentText() }
-                        .font(.system(size: 13, weight: .semibold))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .background(Color.white.opacity(0.92))
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-                    Button("Widget") { addQuickWidget() }
-                        .font(.system(size: 13, weight: .semibold))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .background(Color.blue.opacity(0.90))
-                        .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                .padding(.horizontal, 14)
-                .padding(.bottom, 14)
+            if isProcessing {
+                processingIndicator
             }
-            .zIndex(30)
+
+            if let response = lastResponse {
+                responseToast(response)
+            }
         }
         .ignoresSafeArea(.all, edges: .bottom)
-    }
-
-    private func speakCurrentText() {
-        let raw = speakText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return }
-
-        if speaker.isSpeaking { speaker.stopSpeaking(at: .immediate) }
-        let utterance = AVSpeechUtterance(string: raw)
-        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
-        utterance.rate = 0.48
-        utterance.pitchMultiplier = 1.0
-        speaker.speak(utterance)
-    }
-
-    private func addQuickWidget() {
-        let text = speakText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let body = text.isEmpty ? "New widget" : text
-        let html = """
-        <div class=\"card\">
-            <h3>Widget</h3>
-            <p>\(body.replacingOccurrences(of: "<", with: "&lt;"))</p>
-        </div>
-        """
-
-        Task {
-            _ = await objectManager.place(
-                html: html,
-                at: objectManager.viewportCenter,
-                size: CGSize(width: 360, height: 210),
-                animated: true
-            )
+        .onChange(of: canvasState.isRecording) { _, recording in
+            if recording {
+                startRecording()
+            } else {
+                stopRecordingAndSend()
+            }
+        }
+        .onDisappear {
+            canvasState.isRecording = false
+            audioService.stopCapture()
+        }
+        .onAppear {
+            SpeechTranscriber.requestAuthorization { _ in }
         }
     }
 
+    private func startRecording() {
+        lastResponse = nil
+        transcriber.startTranscribing()
+        audioService.onAudioBuffer = { [weak transcriber] buffer in
+            transcriber?.appendBuffer(buffer)
+        }
+        audioService.startCapture()
+    }
+
+    private func stopRecordingAndSend() {
+        audioService.stopCapture()
+        let transcript = transcriber.stopTranscribing().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !transcript.isEmpty else { return }
+        sendPromptToAgent(transcript)
+    }
+
+    private func sendPromptToAgent(_ prompt: String) {
+        guard let serverURL = objectManager.httpServer.agentServerURL() else {
+            withAnimation { lastResponse = "No linked Mac found. Open the Iris Mac app first." }
+            autoDismissResponse()
+            return
+        }
+
+        isProcessing = true
+
+        Task {
+            do {
+                var message = prompt
+                var screenshotID: String?
+                var screenshotUploadWarning: String?
+                if let backendURL = objectManager.httpServer.backendServerURL() {
+                    do {
+                        screenshotID = try await uploadCurrentCanvasScreenshot(prompt: prompt, backendURL: backendURL)
+                    } catch {
+                        screenshotUploadWarning = error.localizedDescription
+                    }
+                }
+
+                if document.agent == "iris", let screenshotID {
+                    if !screenshotID.isEmpty {
+                        message = """
+                        User voice command:
+                        \(prompt)
+
+                        I uploaded an iPad canvas screenshot with device_id "ipad" and screenshot id \(screenshotID).
+                        First call read_screenshot for device "ipad" to inspect the drawing.
+                        Then create and push iPad widgets matching the drawing.
+                        """
+                    }
+                }
+
+                let response = try await AgentClient.sendMessage(
+                    message,
+                    agent: document.agent,
+                    chatID: document.id.uuidString,
+                    serverURL: serverURL
+                )
+                await MainActor.run {
+                    if let screenshotUploadWarning {
+                        withAnimation { lastResponse = "Screenshot upload warning: \(screenshotUploadWarning)\n\n\(response)" }
+                    } else {
+                        withAnimation { lastResponse = response }
+                    }
+                    isProcessing = false
+                    autoDismissResponse()
+                }
+            } catch {
+                await MainActor.run {
+                    withAnimation { lastResponse = "Error: \(error.localizedDescription)" }
+                    isProcessing = false
+                    autoDismissResponse()
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func uploadCurrentCanvasScreenshot(prompt: String, backendURL: URL) async throws -> String? {
+        guard let pngData = objectManager.captureViewportPNGData() else {
+            return nil
+        }
+
+        return try await BackendClient.uploadScreenshot(
+            pngData: pngData,
+            deviceID: "ipad",
+            backendURL: backendURL,
+            notes: "Voice command: \(prompt.prefix(180))"
+        )
+    }
+
+    private func autoDismissResponse() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+            withAnimation { lastResponse = nil }
+        }
+    }
+
+    private func responseToast(_ text: String) -> some View {
+        VStack {
+            Spacer()
+            Text(text)
+                .font(.system(size: 14))
+                .foregroundColor(.white)
+                .padding(16)
+                .frame(maxWidth: 560, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color(white: 0.12))
+                )
+                .padding(.horizontal, 20)
+                .padding(.bottom, 28)
+                .onTapGesture {
+                    withAnimation { lastResponse = nil }
+                }
+        }
+        .zIndex(30)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    private var processingIndicator: some View {
+        VStack {
+            Spacer()
+            HStack(spacing: 8) {
+                ProgressView().tint(.white)
+                Text("Thinking...")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.white.opacity(0.8))
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Capsule().fill(Color(white: 0.12)))
+            .padding(.bottom, 30)
+        }
+        .zIndex(25)
+    }
 }

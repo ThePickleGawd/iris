@@ -5,6 +5,7 @@ import base64
 import httpx
 
 import os
+from datetime import datetime, timezone
 
 BACKEND_URL = os.environ.get("IRIS_BACKEND_URL", "http://localhost:5000")
 
@@ -49,6 +50,18 @@ def handle_read_screenshot(
     else:
         params["device_id"] = device
 
+    def _to_dt(value: object) -> datetime:
+        if not isinstance(value, str) or not value.strip():
+            return datetime.fromtimestamp(0, tz=timezone.utc)
+        normalized = value.strip().replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return datetime.fromtimestamp(0, tz=timezone.utc)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
     try:
         resp = httpx.get(
             f"{BACKEND_URL}/api/screenshots",
@@ -77,17 +90,45 @@ def handle_read_screenshot(
         if not screenshots:
             return f"No screenshots available for {device}.", None
 
-        # Take the most recent one (session query is already DESC; paginated is ASC so take last)
-        latest = screenshots[0] if session_id else screenshots[-1]
-
-        # Fetch the actual image bytes via the file endpoint
-        screenshot_id = latest["id"]
-        file_resp = httpx.get(
-            f"{BACKEND_URL}/api/screenshots/{screenshot_id}/file",
-            timeout=10,
+        # Always pick newest by timestamp and skip stale file rows (e.g. 410 Gone).
+        ordered = sorted(
+            screenshots,
+            key=lambda row: (
+                _to_dt(row.get("captured_at") or row.get("created_at")),
+                _to_dt(row.get("created_at")),
+                str(row.get("id", "")),
+            ),
+            reverse=True,
         )
-        if file_resp.status_code != 200:
-            return f"Screenshot metadata found but file fetch failed (HTTP {file_resp.status_code}).", None
+
+        latest = None
+        file_resp = None
+        screenshot_id = ""
+        for candidate in ordered:
+            candidate_id = str(candidate.get("id", ""))
+            if not candidate_id:
+                continue
+            candidate_resp = httpx.get(
+                f"{BACKEND_URL}/api/screenshots/{candidate_id}/file",
+                timeout=10,
+            )
+            if candidate_resp.status_code == 200:
+                latest = candidate
+                file_resp = candidate_resp
+                screenshot_id = candidate_id
+                break
+
+        if latest is None or file_resp is None:
+            status = "unknown"
+            if ordered:
+                fallback_id = str(ordered[0].get("id", ""))
+                if fallback_id:
+                    probe = httpx.get(
+                        f"{BACKEND_URL}/api/screenshots/{fallback_id}/file",
+                        timeout=10,
+                    )
+                    status = str(probe.status_code)
+            return f"Screenshot metadata found but no readable screenshot file (last HTTP {status}).", None
 
         image_bytes = file_resp.content
         mime_type = latest.get("mime_type", "image/png")
