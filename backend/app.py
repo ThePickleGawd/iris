@@ -6,7 +6,9 @@ import os
 import hashlib
 import subprocess
 import tempfile
+import traceback
 import uuid
+from functools import lru_cache
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -158,6 +160,25 @@ def _session_summary(session: dict) -> dict:
         "updated_at": session.get("updated_at", ""),
         "last_message_preview": preview,
     }
+
+
+@lru_cache(maxsize=1)
+def _iris_system_prompt() -> str:
+    override = str(os.environ.get("IRIS_LINKED_PROVIDER_SYSTEM_PROMPT") or "").strip()
+    if override:
+        return override
+    builder = getattr(agent_module, "_build_system_prompt", None)
+    if callable(builder):
+        try:
+            built = builder()
+            if isinstance(built, str) and built.strip():
+                return built
+        except Exception:
+            pass
+    return (
+        "You are Iris. Operate as a cross-device assistant, prioritize actionable outputs, "
+        "and preserve consistency across Mac, iPad, and iPhone workflows."
+    )
 
 
 def _spatial_context_text(metadata: dict[str, Any] | None) -> str:
@@ -437,7 +458,15 @@ def _extract_codex_error(raw: str) -> str | None:
 def _run_codex_resume(conversation_id: str, prompt: str, cwd: str | None = None) -> str:
     with tempfile.NamedTemporaryFile(prefix="iris-codex-last-", suffix=".txt", delete=False) as tmp:
         output_path = Path(tmp.name)
-    args = [CODEX_CLI_BIN, "exec", "--output-last-message", str(output_path)]
+    args = [
+        CODEX_CLI_BIN,
+        "exec",
+        "--output-last-message",
+        str(output_path),
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-c",
+        f"base_instructions={json.dumps(_iris_system_prompt())}",
+    ]
     if cwd:
         args.extend(["--cd", cwd])
     args.extend(["resume", conversation_id, prompt, "--json", "--skip-git-repo-check"])
@@ -643,6 +672,11 @@ def _run_claude_code_resume(conversation_id: str, prompt: str, cwd: str | None =
         "--output-format",
         "stream-json",
         "--verbose",
+        "--system-prompt",
+        _iris_system_prompt(),
+        "--dangerously-skip-permissions",
+        "--permission-mode",
+        "bypassPermissions",
     ]
     if cwd:
         args.extend(["--add-dir", cwd])
@@ -1213,7 +1247,33 @@ def proactive_describe_screenshot() -> Any:
             previous_description=previous_description,
         )
     except Exception as exc:
-        return jsonify({"error": f"description failed: {exc}"}), 500
+        app.logger.error(
+            "proactive_describe failed screenshot_id=%s device_id=%s session_id=%s error=%s\n%s",
+            screenshot_id,
+            row.get("device_id"),
+            row.get("session_id"),
+            str(exc),
+            traceback.format_exc(),
+        )
+        fallback_raw = previous_description or {
+            "schema_version": "1.0",
+            "scene_summary": "",
+            "problem_to_solve": "",
+            "task_objective": "",
+            "success_criteria": [],
+            "canvas_state": {
+                "is_blank": False,
+                "density": "low",
+                "primary_mode": "unknown",
+            },
+            "regions": [],
+            "suggestion_candidates": [],
+            "change_assessment": {
+                "novelty_vs_previous": 0.0,
+                "notable_changes": [],
+            },
+        }
+        description = agent_module._normalize_proactive_description(fallback_raw)
 
     result = {
         "screenshot_id": screenshot_id,
@@ -1416,6 +1476,14 @@ def v1_agent() -> Any:
     try:
         result = agent_module.run(context, enriched_message, model=model)
     except Exception as exc:
+        app.logger.error(
+            "v1_agent failed session_id=%s model=%s ephemeral=%s error=%s\n%s",
+            session_id,
+            model,
+            ephemeral,
+            str(exc),
+            traceback.format_exc(),
+        )
         return jsonify(
             {
                 "error": "agent_failed",

@@ -103,7 +103,6 @@ struct CanvasView: UIViewRepresentable {
         var parent: CanvasView
         private var saveTimer: Timer?
         private var squeezePreviousTool: DrawingTool?
-        private var previousToolBeforeEraser: DrawingTool?
 
         init(_ parent: CanvasView) {
             self.parent = parent
@@ -158,6 +157,7 @@ struct CanvasView: UIViewRepresentable {
 
         // MARK: - Pencil interaction
 
+
         func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
             toggleEraser()
         }
@@ -189,13 +189,8 @@ struct CanvasView: UIViewRepresentable {
 
         private func toggleEraser() {
             DispatchQueue.main.async {
-                if self.parent.canvasState.currentTool == .eraser {
-                    self.parent.canvasState.currentTool = self.previousToolBeforeEraser ?? .pen
-                    self.previousToolBeforeEraser = nil
-                } else {
-                    self.previousToolBeforeEraser = self.parent.canvasState.currentTool
-                    self.parent.canvasState.currentTool = .eraser
-                }
+                // Apple Pencil flat-side double tap is treated as an explicit AI request trigger.
+                self.parent.canvasState.lastPencilDoubleTapAt = Date()
             }
         }
     }

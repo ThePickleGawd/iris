@@ -13,6 +13,7 @@ struct ToolbarView: View {
     var onZoomIn: (() -> Void)?
     var onZoomOut: (() -> Void)?
     var onZoomReset: (() -> Void)?
+    var showAIButton: Bool = true
 
     var body: some View {
         HStack(spacing: 0) {
@@ -95,7 +96,7 @@ struct ToolbarView: View {
 
             Spacer().allowsHitTesting(false)
 
-            if let tap = onAITap ?? onSpeak {
+            if showAIButton, let tap = onAITap ?? onSpeak {
                 AIButton(isRecording: isRecording, action: tap)
                     .padding(.trailing, 16)
             }

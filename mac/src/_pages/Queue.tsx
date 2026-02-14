@@ -38,6 +38,7 @@ interface SessionInfo {
   name: string
   metadata?: {
     claude_code_conversation_id?: string
+    claude_code_cwd?: string
     codex_conversation_id?: string
     codex_cwd?: string
   }
@@ -245,11 +246,14 @@ const Queue: React.FC = () => {
     await handleNewChat(modelId)
   }, [handleNewChat, refreshSessions])
 
-  const handlePickClaudeCodeSession = useCallback(async (conversationId: string) => {
+  const handlePickClaudeCodeSession = useCallback(async (conversationId: string, cwd?: string) => {
     setShowClaudeCodeSessionPicker(false)
     setShowCodexSessionPicker(false)
     setShowSessionDrawer(false)
-    await handleNewChat(CLAUDE_CODE_MODEL_ID, { claude_code_conversation_id: conversationId })
+    await handleNewChat(CLAUDE_CODE_MODEL_ID, {
+      claude_code_conversation_id: conversationId,
+      ...(cwd ? { claude_code_cwd: cwd } : {})
+    })
   }, [handleNewChat])
 
   const handleCreateNewClaudeCodeSession = useCallback(async () => {
@@ -424,8 +428,8 @@ const Queue: React.FC = () => {
   }, [])
 
   const claudeCodeLinkChoices = useMemo(() => {
-    const byId = new Map<string, { conversationId: string; sessionName: string; updatedAt: string }>()
-    const upsert = (choice: { conversationId: string; sessionName: string; updatedAt: string }) => {
+    const byId = new Map<string, { conversationId: string; sessionName: string; cwd?: string; updatedAt: string }>()
+    const upsert = (choice: { conversationId: string; sessionName: string; cwd?: string; updatedAt: string }) => {
       const existing = byId.get(choice.conversationId)
       if (!existing || timestampMs(choice.updatedAt) >= timestampMs(existing.updatedAt)) {
         byId.set(choice.conversationId, choice)
@@ -441,6 +445,7 @@ const Queue: React.FC = () => {
       upsert({
         conversationId,
         sessionName: s.name || "Untitled",
+        cwd: s.metadata?.claude_code_cwd,
         updatedAt: (s as any).updated_at || (s as any).created_at || ""
       })
     }
@@ -451,6 +456,7 @@ const Queue: React.FC = () => {
       upsert({
         conversationId,
         sessionName: discovered.title || "Claude Code Session",
+        cwd: discovered.cwd,
         updatedAt: discovered.timestamp || ""
       })
     }
@@ -541,33 +547,48 @@ const Queue: React.FC = () => {
 
     try {
       const isCodexSession = selectedSession.model === CODEX_MODEL_ID
-      if (isCodexSession) {
-        const codexConversationId = (selectedSession?.metadata?.codex_conversation_id || "").trim()
-        const codexCwd = selectedSession?.metadata?.codex_cwd?.trim() || undefined
-        if (!codexConversationId) {
-          throw new Error("Codex conversation id is missing for this session")
-        }
-
+      const isClaudeCodeSession = selectedSession.model === CLAUDE_CODE_MODEL_ID
+      if (isCodexSession || isClaudeCodeSession) {
         await window.electronAPI.createSessionMessage({
           sessionId: selectedSession.id,
           role: "user",
           content: trimmed
         }).catch(() => {})
 
-        const result = await window.electronAPI.sendCodexMessage({
-          conversationId: codexConversationId,
-          prompt: trimmed,
-          cwd: codexCwd
-        })
+        let cleanText = ""
+        if (isCodexSession) {
+          const codexConversationId = (selectedSession?.metadata?.codex_conversation_id || "").trim()
+          const codexCwd = selectedSession?.metadata?.codex_cwd?.trim() || undefined
+          if (!codexConversationId) {
+            throw new Error("Codex conversation id is missing for this session")
+          }
+          const result = await window.electronAPI.sendCodexMessage({
+            conversationId: codexConversationId,
+            prompt: trimmed,
+            cwd: codexCwd
+          })
+          cleanText = result?.text || ""
+        } else {
+          const claudeCodeConversationId = (selectedSession?.metadata?.claude_code_conversation_id || "").trim()
+          const claudeCodeCwd = selectedSession?.metadata?.claude_code_cwd?.trim() || undefined
+          if (!claudeCodeConversationId) {
+            throw new Error("Claude Code conversation id is missing for this session")
+          }
+          const result = await window.electronAPI.sendClaudeCodeMessage({
+            conversationId: claudeCodeConversationId,
+            prompt: trimmed,
+            cwd: claudeCodeCwd
+          })
+          cleanText = result?.text || ""
+        }
 
-        const cleanText = result?.text || ""
         if (cleanText) {
           await applyFinalAssistantOutput(cleanText, (clean) => setAssistantText(clean))
         } else {
-          setAssistantText("Codex returned no text.")
+          setAssistantText(isCodexSession ? "Codex returned no text." : "Claude Code returned no text.")
         }
 
-        const assistantText = cleanText || "Codex returned no text."
+        const assistantText = cleanText || (isCodexSession ? "Codex returned no text." : "Claude Code returned no text.")
         await window.electronAPI.createSessionMessage({
           sessionId: selectedSession.id,
           role: "assistant",
@@ -687,9 +708,36 @@ const Queue: React.FC = () => {
       if (incoming.length === 0) return
 
       setChatMessages((prev) => {
-        const existing = new Set(prev.map((m) => m._id).filter(Boolean))
-        const toAdd = incoming.filter((m) => !existing.has(m._id))
-        return toAdd.length > 0 ? [...prev, ...toAdd] : prev
+        const updated = [...prev]
+        const existingById = new Map<string, number>()
+        updated.forEach((m, i) => {
+          if (m._id) existingById.set(m._id, i)
+        })
+
+        for (const msg of incoming) {
+          if (msg._id && existingById.has(msg._id)) {
+            continue
+          }
+
+          if (msg._id) {
+            // Reconcile optimistic local echoes (no _id) with canonical server messages.
+            const optimisticIdx = updated.findIndex(
+              (m) => !m._id && m.role === msg.role && m.text === msg.text
+            )
+            if (optimisticIdx >= 0) {
+              updated[optimisticIdx] = { ...updated[optimisticIdx], ...msg }
+              existingById.set(msg._id, optimisticIdx)
+              continue
+            }
+          }
+
+          updated.push(msg)
+          if (msg._id) {
+            existingById.set(msg._id, updated.length - 1)
+          }
+        }
+
+        return updated
       })
     })
 
@@ -773,7 +821,7 @@ const Queue: React.FC = () => {
                   key={choice.conversationId}
                   type="button"
                   className="iris-agent-picker-option interactive"
-                  onClick={() => handlePickClaudeCodeSession(choice.conversationId)}
+                  onClick={() => handlePickClaudeCodeSession(choice.conversationId, choice.cwd)}
                 >
                   <span className="iris-agent-picker-name">{choice.sessionName}</span>
                   <span className="iris-agent-picker-sub">{choice.conversationId}</span>
