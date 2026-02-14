@@ -25,6 +25,12 @@ export interface ElectronAPI {
   analyzeAudioFromBase64: (data: string, mimeType: string) => Promise<{ text: string; timestamp: number }>
   analyzeAudioFile: (path: string) => Promise<{ text: string; timestamp: number }>
   quitApp: () => Promise<void>
+  startClaudeChatStream: (requestId: string, message: string) => Promise<{ success: boolean; error?: string }>
+  onClaudeChatStreamChunk: (callback: (data: { requestId: string; chunk: string }) => void) => () => void
+  onClaudeChatStreamDone: (callback: (data: { requestId: string; text: string }) => void) => () => void
+  onClaudeChatStreamError: (callback: (data: { requestId: string; error: string }) => void) => () => void
+  onAgentReply: (callback: (data: { text: string }) => void) => () => void
+  setNotificationsEnabled: (enabled: boolean) => Promise<{ success: boolean }>
   invoke: (channel: string, ...args: any[]) => Promise<any>
 }
 

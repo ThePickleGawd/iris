@@ -27,41 +27,10 @@ export class WindowHelper {
     this.appState = appState
   }
 
-  public setWindowDimensions(width: number, height: number): void {
-    if (!this.mainWindow || this.mainWindow.isDestroyed()) return
-
-    // Get current window position
-    const [currentX, currentY] = this.mainWindow.getPosition()
-
-    // Get screen dimensions
-    const primaryDisplay = screen.getPrimaryDisplay()
-    const workArea = primaryDisplay.workAreaSize
-
-    // Use 75% width if debugging has occurred, otherwise use 60%
-    const maxAllowedWidth = Math.floor(
-      workArea.width * (this.appState.getHasDebugged() ? 0.75 : 0.5)
-    )
-
-    // Ensure width doesn't exceed max allowed width and height is reasonable
-    const newWidth = Math.min(width + 32, maxAllowedWidth)
-    const newHeight = Math.ceil(height)
-
-    // Center the window horizontally if it would go off screen
-    const maxX = workArea.width - newWidth
-    const newX = Math.min(Math.max(currentX, 0), maxX)
-
-    // Update window bounds
-    this.mainWindow.setBounds({
-      x: newX,
-      y: currentY,
-      width: newWidth,
-      height: newHeight
-    })
-
-    // Update internal state
-    this.windowPosition = { x: newX, y: currentY }
-    this.windowSize = { width: newWidth, height: newHeight }
-    this.currentX = newX
+  public setWindowDimensions(_width: number, height: number): void {
+    // Intentionally disabled: renderer-driven auto-resize was fighting manual resize.
+    // Keep manual OS resize behavior as the single source of truth.
+    return
   }
 
   public createWindow(): void {
@@ -84,12 +53,12 @@ export class WindowHelper {
         preload: path.join(__dirname, "preload.js")
       },
       show: false, // Start hidden, then show after setup
-      alwaysOnTop: true,
-      frame: false,
-      transparent: true,
+      alwaysOnTop: false,
+      frame: true,
+      transparent: false,
       fullscreenable: false,
-      hasShadow: false,
-      backgroundColor: "#00000000",
+      hasShadow: true,
+      backgroundColor: "#F3F6F8",
       focusable: true,
       resizable: true,
       movable: true,
@@ -102,11 +71,8 @@ export class WindowHelper {
     this.mainWindow.setContentProtection(true)
 
     if (process.platform === "darwin") {
-      this.mainWindow.setVisibleOnAllWorkspaces(true, {
-        visibleOnFullScreen: true
-      })
-      this.mainWindow.setHiddenInMissionControl(true)
-      this.mainWindow.setAlwaysOnTop(true, "floating")
+      // Use standard desktop window behavior on macOS (not overlay-style).
+      this.mainWindow.setAlwaysOnTop(false)
     }
     if (process.platform === "linux") {
       // Linux-specific optimizations for better compatibility
@@ -116,8 +82,8 @@ export class WindowHelper {
       // Keep window focusable on Linux for proper interaction
       this.mainWindow.setFocusable(true)
     } 
-    this.mainWindow.setSkipTaskbar(true)
-    this.mainWindow.setAlwaysOnTop(true)
+    this.mainWindow.setSkipTaskbar(false)
+    this.mainWindow.setAlwaysOnTop(false)
 
     this.mainWindow.loadURL(startUrl).catch((err) => {
       console.error("Failed to load URL:", err)
@@ -130,7 +96,7 @@ export class WindowHelper {
         this.centerWindow()
         this.mainWindow.show()
         this.mainWindow.focus()
-        this.mainWindow.setAlwaysOnTop(true)
+        this.mainWindow.setAlwaysOnTop(false)
         console.log("Window is now visible and centered")
       }
     })
@@ -262,7 +228,7 @@ export class WindowHelper {
     this.centerWindow()
     this.mainWindow.show()
     this.mainWindow.focus()
-    this.mainWindow.setAlwaysOnTop(true)
+    this.mainWindow.setAlwaysOnTop(false)
     this.isWindowVisible = true
     
     console.log(`Window centered and shown`)

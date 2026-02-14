@@ -41,6 +41,12 @@ interface ElectronAPI {
   switchToOllama: (model?: string, url?: string) => Promise<{ success: boolean; error?: string }>
   switchToClaude: (apiKey?: string) => Promise<{ success: boolean; error?: string }>
   testLlmConnection: () => Promise<{ success: boolean; error?: string }>
+  startClaudeChatStream: (requestId: string, message: string) => Promise<{ success: boolean; error?: string }>
+  onClaudeChatStreamChunk: (callback: (data: { requestId: string; chunk: string }) => void) => () => void
+  onClaudeChatStreamDone: (callback: (data: { requestId: string; text: string }) => void) => () => void
+  onClaudeChatStreamError: (callback: (data: { requestId: string; error: string }) => void) => () => void
+  onAgentReply: (callback: (data: { text: string }) => void) => () => void
+  setNotificationsEnabled: (enabled: boolean) => Promise<{ success: boolean }>
   
   invoke: (channel: string, ...args: any[]) => Promise<any>
 }
@@ -186,6 +192,28 @@ contextBridge.exposeInMainWorld("electronAPI", {
   switchToOllama: (model?: string, url?: string) => ipcRenderer.invoke("switch-to-ollama", model, url),
   switchToClaude: (apiKey?: string) => ipcRenderer.invoke("switch-to-claude", apiKey),
   testLlmConnection: () => ipcRenderer.invoke("test-llm-connection"),
+  startClaudeChatStream: (requestId: string, message: string) => ipcRenderer.invoke("claude-chat-stream", requestId, message),
+  onClaudeChatStreamChunk: (callback: (data: { requestId: string; chunk: string }) => void) => {
+    const subscription = (_: any, data: { requestId: string; chunk: string }) => callback(data)
+    ipcRenderer.on("claude-chat-stream-chunk", subscription)
+    return () => ipcRenderer.removeListener("claude-chat-stream-chunk", subscription)
+  },
+  onClaudeChatStreamDone: (callback: (data: { requestId: string; text: string }) => void) => {
+    const subscription = (_: any, data: { requestId: string; text: string }) => callback(data)
+    ipcRenderer.on("claude-chat-stream-done", subscription)
+    return () => ipcRenderer.removeListener("claude-chat-stream-done", subscription)
+  },
+  onClaudeChatStreamError: (callback: (data: { requestId: string; error: string }) => void) => {
+    const subscription = (_: any, data: { requestId: string; error: string }) => callback(data)
+    ipcRenderer.on("claude-chat-stream-error", subscription)
+    return () => ipcRenderer.removeListener("claude-chat-stream-error", subscription)
+  },
+  onAgentReply: (callback: (data: { text: string }) => void) => {
+    const subscription = (_: any, data: { text: string }) => callback(data)
+    ipcRenderer.on("agent-reply", subscription)
+    return () => ipcRenderer.removeListener("agent-reply", subscription)
+  },
+  setNotificationsEnabled: (enabled: boolean) => ipcRenderer.invoke("set-notifications-enabled", enabled),
   
   invoke: (channel: string, ...args: any[]) => ipcRenderer.invoke(channel, ...args)
 } as ElectronAPI)

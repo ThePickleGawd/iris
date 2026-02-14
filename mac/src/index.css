@@ -2,166 +2,328 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Liquid Glass Effect Base */
+:root {
+  --bg: #f3f6f8;
+  --panel: #ffffff;
+  --panel-muted: #f7fafc;
+  --border: #dbe4ea;
+  --text: #0f172a;
+  --muted: #5f6f82;
+  --accent: #0f766e;
+  --accent-strong: #115e59;
+  --danger: #b91c1c;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  width: 100%;
+  min-height: 100%;
+}
+
+body {
+  font-family: "SF Pro Text", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+  color: var(--text);
+  background:
+    radial-gradient(80% 90% at 0% 0%, #e5eef3 0%, transparent 60%),
+    radial-gradient(90% 90% at 100% 100%, #e9f4f2 0%, transparent 60%),
+    var(--bg);
+}
+
+.app-shell {
+  width: 100%;
+  min-height: 100%;
+  background: transparent;
+}
+
+.window-titlebar {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  border-top-left-radius: 12px;
+  border-top-right-radius: 12px;
+}
+
+.window-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  letter-spacing: 0.02em;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+}
+
 .liquid-glass {
-  background: rgba(255, 255, 255, 0.25);
-  backdrop-filter: blur(16px) saturate(180%) brightness(120%);
-  -webkit-backdrop-filter: blur(16px) saturate(180%) brightness(120%);
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-radius: 1rem;
-  box-shadow: 
-    0 8px 32px rgba(0, 0, 0, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, 0.3),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.1);
-  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
   overflow: hidden;
 }
 
-/* Enhanced liquid glass with shimmer effect */
 .liquid-glass::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: -100%;
-  width: 100%;
-  height: 100%;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(255, 255, 255, 0.1),
-    transparent
-  );
-  animation: shimmer 3s ease-in-out infinite;
-  pointer-events: none;
+  content: none;
 }
 
-@keyframes shimmer {
-  0% {
-    left: -100%;
-  }
-  50% {
-    left: 100%;
-  }
-  100% {
-    left: 100%;
-  }
+.liquid-glass-bar {
+  background: #0f172a;
+  color: #e5e7eb;
+  border: 1px solid #1f2937;
+  border-radius: 10px;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.28);
+  min-height: 38px !important;
+  height: 38px !important;
 }
 
-/* Fallback for browsers without backdrop-filter support */
-@supports not (backdrop-filter: blur()) {
-  .liquid-glass {
-    background: rgba(255, 255, 255, 0.5);
-    border: 2px solid rgba(255, 255, 255, 0.6);
-  }
-}
-
-/* Add a subtle outline to ensure visibility */
-.liquid-glass:before {
-  outline: 1px solid rgba(255, 255, 255, 0.1);
-  outline-offset: -1px;
+.liquid-glass-bar::before {
+  content: none;
 }
 
 .draggable-area {
   -webkit-app-region: drag;
-  height: 32px;
-  width: 100%;
-  background: transparent;
-  cursor: move;
-  position: relative;
-  z-index: 1000;
-  border-radius: 1rem 1rem 0 0;
 }
 
-/* Make sure buttons and interactive elements are not draggable */
-button, input, select, textarea, .interactive {
+button,
+input,
+select,
+textarea,
+.interactive {
   -webkit-app-region: no-drag;
 }
 
-/* Override for the liquid glass bar - make it draggable */
 .liquid-glass.draggable-area {
   -webkit-app-region: drag;
-  cursor: move;
 }
 
-/* But keep buttons inside clickable */
 .liquid-glass.draggable-area button {
   -webkit-app-region: no-drag;
-  cursor: pointer;
 }
 
-/* Add visual feedback for draggable area */
-.draggable-area:hover {
-  background: rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(2px);
-  -webkit-backdrop-filter: blur(2px);
+.liquid-glass-bar button {
+  border: 1px solid rgba(203, 213, 225, 0.22);
+  background: rgba(30, 41, 59, 0.75);
+  color: #e2e8f0;
 }
 
-/* Dark theme liquid glass variant */
-.liquid-glass-dark {
-  background: rgba(0, 0, 0, 0.2);
-  backdrop-filter: blur(16px) saturate(180%) brightness(80%);
-  -webkit-backdrop-filter: blur(16px) saturate(180%) brightness(80%);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow: 
-    0 8px 32px rgba(0, 0, 0, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.2);
+.liquid-glass-bar button:hover {
+  background: rgba(51, 65, 85, 0.92);
 }
 
-/* Ensure content is not blurred */
-.glass-content {
-  position: relative;
-  z-index: 1;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+.chat-container {
+  background: var(--panel);
 }
 
-/* Chat container specific styling */
-.liquid-glass.chat-container {
-  min-height: auto;
-  height: auto;
-  background: rgba(255, 255, 255, 0.15);
-  backdrop-filter: blur(20px) saturate(200%) brightness(110%);
-  -webkit-backdrop-filter: blur(20px) saturate(200%) brightness(110%);
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  box-shadow: 
-    0 12px 40px rgba(0, 0, 0, 0.15),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.05);
+.chat-log {
+  background: var(--panel-muted);
+  border: 1px solid var(--border);
+  border-radius: 10px;
 }
 
-/* Thin bar variant of liquid glass - for command bar */
-.liquid-glass-bar {
-  background: rgba(255, 255, 255, 0.25);
-  backdrop-filter: blur(16px) saturate(180%) brightness(120%);
-  -webkit-backdrop-filter: blur(16px) saturate(180%) brightness(120%);
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-radius: 1rem;
-  box-shadow: 
-    0 8px 32px rgba(0, 0, 0, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, 0.3),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.1);
-  position: relative;
-  overflow: hidden;
-  height: 32px !important;
-  min-height: 32px !important;
-  max-height: 32px !important;
+.message-user {
+  background: #0f172a;
+  color: #f8fafc;
+  border: 1px solid #1e293b;
 }
 
-/* Shimmer effect for bar variant */
-.liquid-glass-bar::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: -100%;
+.message-assistant {
+  background: #ffffff;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.message-markdown {
+  line-height: 1.5;
+  color: inherit;
+}
+
+.message-markdown p {
+  margin: 0 0 6px 0;
+}
+
+.message-markdown p:last-child {
+  margin-bottom: 0;
+}
+
+.message-markdown pre {
+  margin: 6px 0;
+  padding: 8px;
+  border-radius: 8px;
+  overflow-x: auto;
+  background: #0f172a;
+  color: #f8fafc;
+}
+
+.message-markdown code {
+  background: #e2e8f0;
+  color: #0f172a;
+  border-radius: 6px;
+  padding: 1px 4px;
+}
+
+.message-markdown pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+
+.message-markdown ul,
+.message-markdown ol {
+  margin: 0 0 0 16px;
+}
+
+.chat-input {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.chat-input::placeholder {
+  color: var(--muted);
+}
+
+.chat-send {
+  background: var(--accent);
+  border: 1px solid var(--accent-strong);
+  color: #ffffff;
+}
+
+.chat-send:hover {
+  background: var(--accent-strong);
+}
+
+.chat-mic {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.chat-mic:hover {
+  background: #f8fafc;
+}
+
+.chat-mic-recording {
+  background: #b91c1c;
+  border-color: #991b1b;
+  color: #ffffff;
+}
+
+.tooltip-card {
+  background: #0f172a;
+  border: 1px solid #1f2937;
+  color: #e5e7eb;
+}
+
+.audio-result {
+  background: #eef5ff;
+  border: 1px solid #bfd5f7;
+  color: #1e3a5f;
+}
+
+.queue-layout {
+  display: grid;
+  grid-template-columns: 132px 1fr;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.side-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 420px;
+}
+
+.side-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
-  height: 100%;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(255, 255, 255, 0.1),
-    transparent
-  );
-  animation: shimmer 3s ease-in-out infinite;
-  pointer-events: none;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #f8fafc;
+  color: #334155;
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.side-btn:hover {
+  background: #eef2f7;
+}
+
+.side-btn-active {
+  background: #0f766e;
+  border-color: #115e59;
+  color: #ffffff;
+}
+
+.side-btn-danger {
+  margin-top: auto;
+  background: #fff1f2;
+  border-color: #fecdd3;
+  color: #b91c1c;
+}
+
+.side-btn-danger:hover {
+  background: #ffe4e6;
+}
+
+.main-pane {
+  min-height: 420px;
+}
+
+.toggle {
+  width: 42px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: #e2e8f0;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  transition: all 160ms ease;
+}
+
+.toggle-knob {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.2);
+  transform: translateX(0);
+  transition: transform 160ms ease;
+}
+
+.toggle-on {
+  background: #0f766e;
+  border-color: #115e59;
+}
+
+.toggle-on .toggle-knob {
+  transform: translateX(18px);
+}
+
+@media (max-width: 720px) {
+  .queue-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .side-nav {
+    min-height: unset;
+    flex-direction: row;
+  }
+
+  .side-btn-danger {
+    margin-top: 0;
+    margin-left: auto;
+  }
 }
