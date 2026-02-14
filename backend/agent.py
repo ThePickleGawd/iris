@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import base64
+import html as html_module
 import json
 import os
+import shutil
 import struct
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -21,26 +24,42 @@ MAX_TOOL_ROUNDS = 6
 SYSTEM_PROMPT = """\
 You are Iris, a visual assistant that lives across a user's devices (iPad and Mac).
 
-You can push interactive HTML widgets to devices using the push_widget tool.
+You can push widgets to devices using the push_widget tool.
 
-## Widget Design Standards
+## Widget Types
 
-When creating widgets, produce a clean, minimal Apple-style UI — never generic utility HTML.
-Widgets exist to help the user make progress on their current task, not to rephrase what they already wrote.
+Each widget has a `type` that determines how it's rendered. Choose the right type:
 
-**Required style:**
-- Light surfaces by default: white / very light gray backgrounds with subtle separators.
-- High legibility: SF-like system typography, restrained weights, generous whitespace.
-- Minimal color: neutral palette with one soft accent (blue/teal/indigo), no loud neon.
-- Soft geometry: rounded corners (10-16px), thin borders, very subtle shadows.
-- Information density: concise and scannable; avoid dense dashboards unless explicitly requested.
-- Motion/effects: minimal; no flashy gradients, no busy animations.
-- Layout quality: clear hierarchy (title, short context, action/options) and predictable spacing.
+### `document` — Rich text, math, code
+Best for: explanations, derivations, reference material, anything with LaTeX math or code blocks.
+- Set `type: "document"` and `source` to **Markdown** text.
+- Use `$...$` for inline math, `$$...$$` for display math (LaTeX).
+- Use fenced code blocks (```lang) for syntax-highlighted code.
+- Do NOT set `html` — the backend renders it automatically.
 
-**Output constraints:**
+### `diagram` — Flowcharts, architecture, sequences
+Best for: flowcharts, system architecture, sequence diagrams, state machines, ER diagrams.
+- Set `type: "diagram"` and `source` to **D2** diagram code.
+- D2 syntax reference: nodes with `label`, edges with `->`, containers with `{ }`.
+- Do NOT set `html` — the backend renders the D2 to SVG automatically.
+- Example D2:
+  ```
+  user -> auth: Login
+  auth -> db: Query
+  db -> auth: Result
+  auth -> user: Token
+  ```
+
+### `html` — Interactive tools (default)
+Best for: timers, calculators, checklists, games, anything needing JS interactivity.
+- Set `type: "html"` (or omit — it's the default) and `html` to raw HTML.
 - HTML must be self-contained (inline CSS/JS only, no external frameworks).
-- Keep widget size practical for iPad canvas (generally 300-520w, 160-320h unless necessary).
-- Prefer simple components: cards, small lists, compact tables, checklists, next-step panels.
+
+**General style (for `html` type):**
+- Clean, minimal Apple-style UI — never generic utility HTML.
+- Light surfaces: white / very light gray backgrounds, subtle separators.
+- SF-like typography, rounded corners (10-16px), restrained color palette.
+- Keep widget size practical (generally 300-520w, 160-320h unless necessary).
 
 ## Spatial Placement Rules
 
@@ -101,9 +120,18 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "type": {
+                        "type": "string",
+                        "enum": ["html", "document", "diagram"],
+                        "description": "Widget type: 'document' for markdown/LaTeX, 'diagram' for D2, 'html' for raw interactive HTML. Default 'html'.",
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "Source content for document (Markdown with LaTeX) or diagram (D2 code) types.",
+                    },
                     "html": {
                         "type": "string",
-                        "description": "The HTML content of the widget to render.",
+                        "description": "Raw HTML content for 'html' type widgets.",
                     },
                     "widget_id": {
                         "type": "string",
@@ -134,7 +162,7 @@ TOOLS = [
                         "description": "Anchor point for x/y: top_left | center",
                     },
                 },
-                "required": ["html", "widget_id"],
+                "required": ["widget_id", "target"],
             },
         },
     },
@@ -551,10 +579,197 @@ def _normalize_anchor(value: object) -> str:
     return "top_left"
 
 
+def _render_document_html(source: str) -> str:
+    """Render Markdown + LaTeX source into a self-contained HTML document."""
+    escaped = html_module.escape(source)
+    return f"""\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
+<style>
+  :root {{ color-scheme: dark; }}
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{
+    font-family: "New York", "Iowan Old Style", Georgia, serif;
+    font-size: 15px; line-height: 1.7; color: #e4e4e7;
+    background: #18181b; padding: 24px 28px;
+    -webkit-font-smoothing: antialiased;
+  }}
+  h1, h2, h3, h4, h5, h6 {{
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
+    color: #fafafa; margin: 1.4em 0 0.5em; line-height: 1.3;
+  }}
+  h1 {{ font-size: 1.6em; font-weight: 700; }}
+  h2 {{ font-size: 1.3em; font-weight: 600; }}
+  h3 {{ font-size: 1.1em; font-weight: 600; }}
+  p {{ margin: 0.6em 0; }}
+  a {{ color: #60a5fa; text-decoration: none; }}
+  a:hover {{ text-decoration: underline; }}
+  code {{
+    font-family: "SF Mono", Menlo, monospace; font-size: 0.88em;
+    background: #27272a; padding: 2px 6px; border-radius: 4px;
+  }}
+  pre {{ margin: 1em 0; border-radius: 8px; overflow-x: auto; }}
+  pre code {{
+    display: block; padding: 14px 18px;
+    background: #1e1e22; line-height: 1.5;
+  }}
+  blockquote {{
+    border-left: 3px solid #3f3f46; padding-left: 16px;
+    color: #a1a1aa; margin: 1em 0;
+  }}
+  ul, ol {{ margin: 0.6em 0; padding-left: 1.5em; }}
+  li {{ margin: 0.25em 0; }}
+  table {{ border-collapse: collapse; margin: 1em 0; width: 100%; }}
+  th, td {{
+    border: 1px solid #3f3f46; padding: 8px 12px; text-align: left;
+  }}
+  th {{ background: #27272a; font-weight: 600; }}
+  hr {{ border: none; border-top: 1px solid #3f3f46; margin: 1.5em 0; }}
+  .katex-display {{ margin: 1em 0; overflow-x: auto; }}
+</style>
+</head>
+<body>
+<script type="text/template" id="source">{escaped}</script>
+<div id="content"></div>
+<script src="https://cdn.jsdelivr.net/npm/marked@14.0.0/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script>
+(function() {{
+  marked.setOptions({{
+    highlight: function(code, lang) {{
+      if (lang && hljs.getLanguage(lang)) {{
+        return hljs.highlight(code, {{ language: lang }}).value;
+      }}
+      return hljs.highlightAuto(code).value;
+    }}
+  }});
+  var src = document.getElementById("source").textContent;
+  var el = document.getElementById("content");
+  el.innerHTML = marked.parse(src);
+  renderMathInElement(el, {{
+    delimiters: [
+      {{ left: "$$", right: "$$", display: true }},
+      {{ left: "$", right: "$", display: false }}
+    ],
+    throwOnError: false
+  }});
+}})();
+</script>
+</body>
+</html>"""
+
+
+def _render_diagram_html(source: str) -> str:
+    """Render D2 diagram source to SVG via the d2 CLI, wrapped in dark HTML."""
+    d2_bin = shutil.which("d2")
+    if not d2_bin:
+        return _diagram_error_html("d2 binary not found in PATH. Install from https://d2lang.com")
+
+    try:
+        result = subprocess.run(
+            [d2_bin, "-", "-", "--theme=200", "--pad=20"],
+            input=source.encode("utf-8"),
+            capture_output=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return _diagram_error_html("d2 rendering timed out (30s limit)")
+    except OSError as exc:
+        return _diagram_error_html(f"Failed to run d2: {exc}")
+
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        return _diagram_error_html(f"d2 error (exit {result.returncode}):\n{stderr}")
+
+    svg = result.stdout.decode("utf-8")
+    return f"""\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {{ color-scheme: dark; }}
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{
+    background: #18181b; display: flex;
+    align-items: center; justify-content: center;
+    min-height: 100vh; padding: 16px;
+  }}
+  svg {{ max-width: 100%; height: auto; }}
+</style>
+</head>
+<body>
+{svg}
+</body>
+</html>"""
+
+
+def _diagram_error_html(message: str) -> str:
+    """Fallback HTML showing a diagram rendering error."""
+    escaped = html_module.escape(message)
+    return f"""\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  :root {{ color-scheme: dark; }}
+  body {{
+    background: #18181b; color: #fca5a5;
+    font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    font-size: 14px; padding: 24px;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh;
+  }}
+  .error-box {{
+    background: #27171a; border: 1px solid #991b1b;
+    border-radius: 10px; padding: 20px 24px; max-width: 480px;
+  }}
+  .error-box h3 {{
+    margin: 0 0 8px; font-size: 15px; font-weight: 600; color: #fecaca;
+  }}
+  .error-box pre {{
+    margin: 0; font-family: "SF Mono", Menlo, monospace;
+    font-size: 12px; white-space: pre-wrap; word-break: break-word;
+    color: #fca5a5;
+  }}
+</style>
+</head>
+<body>
+<div class="error-box">
+  <h3>Diagram Rendering Failed</h3>
+  <pre>{escaped}</pre>
+</div>
+</body>
+</html>"""
+
+
 def _normalize_widget_args(args: dict[str, Any]) -> dict[str, Any]:
+    widget_type = str(args.get("type") or "html").strip().lower()
+    if widget_type not in {"html", "document", "diagram"}:
+        widget_type = "html"
+
+    source = str(args.get("source") or "")
+
+    if widget_type == "document":
+        rendered_html = _render_document_html(source)
+    elif widget_type == "diagram":
+        rendered_html = _render_diagram_html(source)
+    else:
+        rendered_html = str(args.get("html") or "")
+
     return {
         "widget_id": str(args.get("widget_id") or "widget"),
-        "html": str(args.get("html") or ""),
+        "html": rendered_html,
+        "target": str(args.get("target") or "mac").strip().lower(),
         "width": _clamp(args.get("width"), 320),
         "height": _clamp(args.get("height"), 220),
         "x": _coerce_float(args.get("x"), 0.0),
