@@ -132,6 +132,8 @@ Best for: timers, calculators, checklists, games, anything needing JS interactiv
 - No gradients, no shadows, no hover effects. Apple widgets are flat and clean.
 - Icons: emoji or small inline text glyphs. Keep them 16–20px.
 - Keep widget size practical (generally 280–420w, 160–300h unless content demands more).
+- Disable zoom: always include `<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">` \
+and `touch-action: manipulation` on html/body. Use HTML entities (`&sup2;`, `&#x221A;`) instead of raw Unicode for special characters.
 
 **Widget Library**: Before writing complex HTML from scratch, use `read_widget` to load a \
 library widget's HTML and adapt it. This produces much higher quality than writing from scratch.

@@ -411,7 +411,7 @@ const Queue: React.FC = () => {
   }, [sessions])
 
   const claudeCodeLinkChoices = useMemo(() => {
-    const byId = new Map<string, { conversationId: string; sessionName: string }>()
+    const byId = new Map<string, { conversationId: string; sessionName: string; updatedAt: string }>()
     for (const s of sessions) {
       const conversationId = (
         s.metadata?.claude_code_conversation_id ||
@@ -420,7 +420,8 @@ const Queue: React.FC = () => {
       if (!conversationId || byId.has(conversationId)) continue
       byId.set(conversationId, {
         conversationId,
-        sessionName: s.name || "Untitled"
+        sessionName: s.name || "Untitled",
+        updatedAt: (s as any).updated_at || (s as any).created_at || ""
       })
     }
 
@@ -429,17 +430,18 @@ const Queue: React.FC = () => {
       if (!conversationId || byId.has(conversationId)) continue
       byId.set(conversationId, {
         conversationId,
-        sessionName: discovered.title || "Claude Code Session"
+        sessionName: discovered.title || "Claude Code Session",
+        updatedAt: discovered.timestamp || ""
       })
     }
 
     const choices = [...byId.values()]
-    choices.sort((a, b) => a.sessionName.localeCompare(b.sessionName))
+    choices.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     return choices
   }, [sessions, claudeCodeSessions])
 
   const codexLinkChoices = useMemo(() => {
-    const byId = new Map<string, { conversationId: string; sessionName: string; cwd?: string }>()
+    const byId = new Map<string, { conversationId: string; sessionName: string; cwd?: string; updatedAt: string }>()
     for (const s of sessions) {
       const conversationId = (
         s.metadata?.codex_conversation_id ||
@@ -449,7 +451,8 @@ const Queue: React.FC = () => {
       byId.set(conversationId, {
         conversationId,
         sessionName: s.name || "Untitled",
-        cwd: s.metadata?.codex_cwd
+        cwd: s.metadata?.codex_cwd,
+        updatedAt: (s as any).updated_at || (s as any).created_at || ""
       })
     }
 
@@ -459,12 +462,13 @@ const Queue: React.FC = () => {
       byId.set(conversationId, {
         conversationId,
         sessionName: discovered.title || "Codex Session",
-        cwd: discovered.cwd
+        cwd: discovered.cwd,
+        updatedAt: discovered.timestamp || ""
       })
     }
 
     const choices = [...byId.values()]
-    choices.sort((a, b) => a.sessionName.localeCompare(b.sessionName))
+    choices.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     return choices
   }, [sessions, codexSessions])
 
@@ -737,7 +741,7 @@ const Queue: React.FC = () => {
                   onClick={() => handlePickClaudeCodeSession(choice.conversationId)}
                 >
                   <span className="iris-agent-picker-name">{choice.sessionName}</span>
-                  <span className="iris-agent-picker-sub">{choice.conversationId}</span>
+                  <span className="iris-agent-picker-sub">{choice.conversationId.slice(0, 8)}</span>
                 </button>
               ))
             )}
@@ -763,7 +767,7 @@ const Queue: React.FC = () => {
                   onClick={() => handlePickCodexSession(choice.conversationId, choice.cwd)}
                 >
                   <span className="iris-agent-picker-name">{choice.sessionName}</span>
-                  <span className="iris-agent-picker-sub">{choice.conversationId}</span>
+                  <span className="iris-agent-picker-sub">{choice.conversationId.slice(0, 8)}</span>
                 </button>
               ))
             )}

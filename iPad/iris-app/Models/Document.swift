@@ -6,6 +6,7 @@ struct Document: Identifiable, Codable, Hashable {
     var name: String
     var model: String
     var lastOpened: Date
+    var preview: String
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -13,13 +14,15 @@ struct Document: Identifiable, Codable, Hashable {
         case model
         case agent
         case lastOpened
+        case preview
     }
 
-    init(id: UUID = UUID(), name: String, model: String = "gpt-5.2", lastOpened: Date = Date()) {
+    init(id: UUID = UUID(), name: String, model: String = "gpt-5.2", lastOpened: Date = Date(), preview: String = "") {
         self.id = id
         self.name = name
         self.model = model
         self.lastOpened = lastOpened
+        self.preview = preview
     }
 
     init(from decoder: Decoder) throws {
@@ -30,6 +33,7 @@ struct Document: Identifiable, Codable, Hashable {
             ?? (try container.decodeIfPresent(String.self, forKey: .agent))
             ?? "gpt-5.2"
         lastOpened = try container.decode(Date.self, forKey: .lastOpened)
+        preview = try container.decodeIfPresent(String.self, forKey: .preview) ?? ""
     }
 
     func encode(to encoder: Encoder) throws {
@@ -40,12 +44,14 @@ struct Document: Identifiable, Codable, Hashable {
         // Keep legacy key populated for older readers.
         try container.encode(model, forKey: .agent)
         try container.encode(lastOpened, forKey: .lastOpened)
+        try container.encode(preview, forKey: .preview)
     }
 
     /// Human-readable model display name
     var modelDisplayName: String {
         let lowered = model.lowercased()
         if lowered == "gpt-5.2" { return "GPT-5.2" }
+        if lowered == "claude_code" { return "Claude Code" }
         if lowered.hasPrefix("claude") { return "Claude" }
         if lowered.hasPrefix("gemini") { return "Gemini" }
         if lowered == "codex" { return "Codex" }
@@ -153,7 +159,8 @@ class DocumentStore: ObservableObject {
                 let rawName = ((item["name"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 let name = rawName.isEmpty ? "Untitled" : rawName
                 let model = (item["model"] as? String) ?? (item["agent"] as? String) ?? "gpt-5.2"
-                return Document(id: docID, name: name, model: model, lastOpened: Date.distantPast)
+                let preview = (item["last_message_preview"] as? String) ?? ""
+                return Document(id: docID, name: name, model: model, lastOpened: Date.distantPast, preview: preview)
             }
 
             await MainActor.run {
@@ -167,7 +174,8 @@ class DocumentStore: ObservableObject {
                         id: remote.id,
                         name: remote.name,
                         model: remote.model,
-                        lastOpened: existing.lastOpened
+                        lastOpened: existing.lastOpened,
+                        preview: remote.preview
                     )
                 }
 

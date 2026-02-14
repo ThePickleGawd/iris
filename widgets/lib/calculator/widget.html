@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body {
@@ -11,6 +11,7 @@
     font-family: -apple-system, 'SF Pro Display', 'Helvetica Neue', sans-serif;
     overflow: hidden;
     user-select: none;
+    touch-action: manipulation;
   }
   .calc {
     display: flex;
@@ -95,24 +96,24 @@
   </div>
   <div class="buttons">
     <button class="btn-fn" onclick="pressFn('AC')" id="clearBtn">AC</button>
-    <button class="btn-fn" onclick="pressFn('±')">±</button>
+    <button class="btn-fn" onclick="pressFn('neg')">&plusmn;</button>
     <button class="btn-fn" onclick="pressFn('%')">%</button>
-    <button class="btn-op" onclick="pressOp('÷')" id="op-÷">÷</button>
+    <button class="btn-op" onclick="pressOp('div')" id="op-div">&divide;</button>
 
     <button class="btn-num" onclick="pressNum('7')">7</button>
     <button class="btn-num" onclick="pressNum('8')">8</button>
     <button class="btn-num" onclick="pressNum('9')">9</button>
-    <button class="btn-op" onclick="pressOp('×')" id="op-×">×</button>
+    <button class="btn-op" onclick="pressOp('mul')" id="op-mul">&times;</button>
 
     <button class="btn-num" onclick="pressNum('4')">4</button>
     <button class="btn-num" onclick="pressNum('5')">5</button>
     <button class="btn-num" onclick="pressNum('6')">6</button>
-    <button class="btn-op" onclick="pressOp('−')" id="op-−">−</button>
+    <button class="btn-op" onclick="pressOp('sub')" id="op-sub">&minus;</button>
 
     <button class="btn-num" onclick="pressNum('1')">1</button>
     <button class="btn-num" onclick="pressNum('2')">2</button>
     <button class="btn-num" onclick="pressNum('3')">3</button>
-    <button class="btn-op" onclick="pressOp('+')" id="op-+">+</button>
+    <button class="btn-op" onclick="pressOp('add')" id="op-add">+</button>
 
     <button class="btn-num btn-zero" onclick="pressNum('0')">0</button>
     <button class="btn-num" onclick="pressNum('.')">.</button>
@@ -188,10 +189,10 @@
     const b = parseFloat(current);
     let result;
     switch (operator) {
-      case '+': result = a + b; break;
-      case '−': result = a - b; break;
-      case '×': result = a * b; break;
-      case '÷': result = b === 0 ? 'Error' : a / b; break;
+      case 'add': result = a + b; break;
+      case 'sub': result = a - b; break;
+      case 'mul': result = a * b; break;
+      case 'div': result = b === 0 ? 'Error' : a / b; break;
       default: return;
     }
     if (result === 'Error') {
@@ -219,7 +220,7 @@
         }
         resetNext = false;
         break;
-      case '±':
+      case 'neg':
         if (current !== '0' && current !== 'Error') {
           current = current.startsWith('-') ? current.slice(1) : '-' + current;
         }
