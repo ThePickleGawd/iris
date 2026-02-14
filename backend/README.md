@@ -55,6 +55,8 @@ curl -X POST http://localhost:5000/api/audio/sessions/<session_id>/finalize \
   -d '{"transcript":"Initial transcript text"}'
 ```
 
+When a session is finalized, uploaded chunk files for that session are automatically deleted.
+
 4. Update transcript later:
 
 ```bash
@@ -67,6 +69,12 @@ curl -X PUT http://localhost:5000/api/audio/sessions/<session_id>/transcript \
 
 - `GET /api/audio/sessions/<session_id>`
 
+6. Delete session (+ finalized audio file):
+
+```bash
+curl -X DELETE http://localhost:5000/api/audio/sessions/<session_id>
+```
+
 ### Screenshot ingestion
 
 1. Upload screenshot/diagram:
@@ -75,9 +83,12 @@ curl -X PUT http://localhost:5000/api/audio/sessions/<session_id>/transcript \
 curl -X POST http://localhost:5000/api/screenshots \
   -F "screenshot=@diagram.png" \
   -F "device_id=ipad-pro-1" \
+  -F "captured_at=2026-02-14T20:30:00Z" \
   -F "source=diagram" \
   -F "notes=Architecture draft"
 ```
+
+`device_id` is a free-form string and `captured_at` is optional ISO-8601. If `captured_at` is omitted, server receive time is used.
 
 2. Get metadata:
 
@@ -87,9 +98,15 @@ curl -X POST http://localhost:5000/api/screenshots \
 
 - `GET /api/screenshots/<screenshot_id>/file`
 
+4. Delete screenshot:
+
+```bash
+curl -X DELETE http://localhost:5000/api/screenshots/<screenshot_id>
+```
+
 ## Storage layout
 
 - `data/iris.db`: metadata (sessions, chunks, transcripts, screenshots)
 - `data/audio_chunks/`: chunked audio uploads
 - `data/audio_final/`: concatenated finalized audio files
-- `data/screenshots/`: screenshot blobs
+- `data/screenshots/<device-id>/`: screenshot blobs grouped by sanitized device ID (fallback: `unknown-device`)

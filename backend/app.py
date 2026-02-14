@@ -66,6 +66,7 @@ def init_db() -> None:
                 id TEXT PRIMARY KEY,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
+                captured_at TEXT,
                 device_id TEXT,
                 source TEXT,
                 mime_type TEXT,
@@ -74,6 +75,26 @@ def init_db() -> None:
             );
             """
         )
+
+
+def run_migrations() -> None:
+    with db_connect() as conn:
+        columns = conn.execute("PRAGMA table_info(screenshots)").fetchall()
+        column_names = {col["name"] for col in columns}
+        if "captured_at" not in column_names:
+            conn.execute("ALTER TABLE screenshots ADD COLUMN captured_at TEXT")
+
+
+def parse_iso8601_to_utc(ts: str) -> str:
+    normalized = ts.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed.isoformat()
 
 
 def session_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -94,6 +115,7 @@ def screenshot_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "id": row["id"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+        "captured_at": row["captured_at"],
         "device_id": row["device_id"],
         "source": row["source"],
         "mime_type": row["mime_type"],
@@ -141,9 +163,47 @@ def join_chunks(session_id: str, mime_type: str | None) -> Path:
     return output_path
 
 
+def get_chunk_paths(session_id: str) -> list[Path]:
+    with db_connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT chunk_path
+            FROM audio_chunks
+            WHERE session_id = ?
+            ORDER BY chunk_index ASC
+            """,
+            (session_id,),
+        ).fetchall()
+    return [Path(row["chunk_path"]) for row in rows]
+
+
+def delete_files(paths: list[Path]) -> dict[str, int]:
+    removed = 0
+    missing = 0
+    failed = 0
+    for path in paths:
+        try:
+            path.unlink()
+            removed += 1
+        except FileNotFoundError:
+            missing += 1
+        except OSError:
+            failed += 1
+    return {"removed": removed, "missing": missing, "failed": failed}
+
+
+def screenshot_device_dir(device_id: str | None) -> Path:
+    name = (device_id or "").strip()
+    safe_name = secure_filename(name) if name else ""
+    if not safe_name:
+        safe_name = "unknown-device"
+    return SCREENSHOTS_DIR / safe_name
+
+
 def create_app() -> Flask:
     ensure_dirs()
     init_db()
+    run_migrations()
 
     app = Flask(__name__)
 
@@ -256,6 +316,7 @@ def create_app() -> Flask:
             status = "transcribed"
 
         ts = now_iso()
+        chunk_paths = get_chunk_paths(session_id)
         with db_connect() as conn:
             conn.execute(
                 """
@@ -265,10 +326,12 @@ def create_app() -> Flask:
                 """,
                 (ts, str(final_path), transcript, status, session_id),
             )
+            conn.execute("DELETE FROM audio_chunks WHERE session_id = ?", (session_id,))
             row = conn.execute(
                 "SELECT * FROM audio_sessions WHERE id = ?", (session_id,)
             ).fetchone()
 
+        delete_files(chunk_paths)
         return jsonify(session_to_dict(row))
 
     @app.put("/api/audio/sessions/<session_id>/transcript")
@@ -310,6 +373,37 @@ def create_app() -> Flask:
             return jsonify({"error": "audio session not found"}), 404
         return jsonify(session_to_dict(row))
 
+    @app.delete("/api/audio/sessions/<session_id>")
+    def delete_audio_session(session_id: str) -> Any:
+        with db_connect() as conn:
+            session_row = conn.execute(
+                "SELECT * FROM audio_sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if not session_row:
+                return jsonify({"error": "audio session not found"}), 404
+
+            chunk_rows = conn.execute(
+                "SELECT chunk_path FROM audio_chunks WHERE session_id = ?",
+                (session_id,),
+            ).fetchall()
+            conn.execute("DELETE FROM audio_chunks WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM audio_sessions WHERE id = ?", (session_id,))
+
+        paths_to_delete = [Path(row["chunk_path"]) for row in chunk_rows]
+        if session_row["audio_path"]:
+            paths_to_delete.append(Path(session_row["audio_path"]))
+        file_stats = delete_files(paths_to_delete)
+
+        return jsonify(
+            {
+                "id": session_id,
+                "deleted": True,
+                "files_removed": file_stats["removed"],
+                "files_missing": file_stats["missing"],
+                "files_failed": file_stats["failed"],
+            }
+        )
+
     @app.post("/api/screenshots")
     def upload_screenshot() -> Any:
         if "screenshot" not in request.files:
@@ -324,24 +418,35 @@ def create_app() -> Flask:
         device_id = request.form.get("device_id")
         source = request.form.get("source")
         notes = request.form.get("notes")
+        captured_at_raw = request.form.get("captured_at")
         mime_type = shot.content_type
+
+        captured_at = created_at
+        if captured_at_raw:
+            try:
+                captured_at = parse_iso8601_to_utc(captured_at_raw)
+            except ValueError:
+                return jsonify({"error": "captured_at must be a valid ISO-8601 timestamp"}), 400
 
         safe_name = secure_filename(shot.filename)
         ext = Path(safe_name).suffix or ".png"
-        file_path = SCREENSHOTS_DIR / f"{screenshot_id}{ext}"
+        device_dir = screenshot_device_dir(device_id)
+        device_dir.mkdir(parents=True, exist_ok=True)
+        file_path = device_dir / f"{screenshot_id}{ext}"
         shot.save(file_path)
 
         with db_connect() as conn:
             conn.execute(
                 """
                 INSERT INTO screenshots (
-                    id, created_at, updated_at, device_id, source, mime_type, file_path, notes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    id, created_at, updated_at, captured_at, device_id, source, mime_type, file_path, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     screenshot_id,
                     created_at,
                     created_at,
+                    captured_at,
                     device_id,
                     source,
                     mime_type,
@@ -383,6 +488,27 @@ def create_app() -> Flask:
 
         mimetype = row["mime_type"] or "application/octet-stream"
         return send_file(file_path, mimetype=mimetype)
+
+    @app.delete("/api/screenshots/<screenshot_id>")
+    def delete_screenshot(screenshot_id: str) -> Any:
+        with db_connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM screenshots WHERE id = ?", (screenshot_id,)
+            ).fetchone()
+            if not row:
+                return jsonify({"error": "screenshot not found"}), 404
+            conn.execute("DELETE FROM screenshots WHERE id = ?", (screenshot_id,))
+
+        file_stats = delete_files([Path(row["file_path"])])
+        return jsonify(
+            {
+                "id": screenshot_id,
+                "deleted": True,
+                "files_removed": file_stats["removed"],
+                "files_missing": file_stats["missing"],
+                "files_failed": file_stats["failed"],
+            }
+        )
 
     return app
 
