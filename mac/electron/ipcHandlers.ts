@@ -2,6 +2,9 @@
 
 import { ipcMain, app, Notification } from "electron"
 import http from "http"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import { AppState } from "./main"
 import { WidgetWindowManager, WidgetSpec } from "./WidgetWindowManager"
 import { uploadScreenshotToBackend } from "./backendUploader"
@@ -42,6 +45,48 @@ export function initializeIpcHandlers(appState: AppState): void {
     } catch (error) {
       console.error("Failed to show notification:", error)
     }
+  }
+
+  const resolveChatContext = () => ({
+    chatId: currentSession?.id || `mac-${appState.deviceDiscovery.getDeviceId()}`,
+    agent: currentSession?.agent || "iris"
+  })
+
+  const uploadScreenshotForAgentContext = async (
+    screenshotPath: string,
+    source: string
+  ) => {
+    const { chatId } = resolveChatContext()
+    await uploadScreenshotToBackend(screenshotPath, {
+      deviceId: "mac",
+      sessionId: chatId,
+      source
+    }).catch(() => {})
+  }
+
+  const analyzeImageViaAgent = async (imagePath: string, userPrompt?: string) => {
+    await uploadScreenshotForAgentContext(imagePath, "image-analysis")
+    const prompt =
+      userPrompt && userPrompt.trim()
+        ? `Analyze the latest uploaded screenshot for this session and answer the user's request:\n"${userPrompt.trim()}".`
+        : "Analyze the latest uploaded screenshot for this session and provide a concise, helpful summary with next actions."
+    const text = await agentChatNonStreaming(prompt)
+    return { text, timestamp: Date.now() }
+  }
+
+  const writeBase64ImageToTempFile = async (data: string, mimeType?: string): Promise<string> => {
+    const ext =
+      mimeType === "image/jpeg"
+        ? "jpg"
+        : mimeType === "image/webp"
+          ? "webp"
+          : mimeType === "image/gif"
+            ? "gif"
+            : "png"
+    const tempPath = path.join(os.tmpdir(), `iris-image-${Date.now()}-${Math.random().toString(16).slice(2)}.${ext}`)
+    const buffer = Buffer.from(data, "base64")
+    await fs.promises.writeFile(tempPath, buffer)
+    return tempPath
   }
 
   ipcMain.handle(
@@ -133,10 +178,9 @@ export function initializeIpcHandlers(appState: AppState): void {
   })
 
   // IPC handler for analyzing image from file path
-  ipcMain.handle("analyze-image-file", async (event, path: string) => {
+  ipcMain.handle("analyze-image-file", async (_, imagePath: string) => {
     try {
-      const result = await appState.processingHelper.getLLMHelper().analyzeImageFile(path)
-      return result
+      return await analyzeImageViaAgent(imagePath)
     } catch (error: any) {
       console.error("Error in analyze-image-file handler:", error)
       throw error
@@ -145,14 +189,17 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   // IPC handler for analyzing image from base64 data
   ipcMain.handle("analyze-image-base64", async (_, data: string, mimeType: string, userPrompt?: string) => {
+    let tempPath: string | null = null
     try {
-      const result = await appState.processingHelper
-        .getLLMHelper()
-        .analyzeImageFromBase64(data, mimeType, userPrompt)
-      return result
+      tempPath = await writeBase64ImageToTempFile(data, mimeType)
+      return await analyzeImageViaAgent(tempPath, userPrompt)
     } catch (error: any) {
       console.error("Error in analyze-image-base64 handler:", error)
       throw error
+    } finally {
+      if (tempPath) {
+        fs.promises.unlink(tempPath).catch(() => {})
+      }
     }
   })
 
@@ -161,10 +208,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       // Upload latest screenshot to backend before sending chat
       const latestScreenshotPath = getLatestScreenshotPathFromQueues()
       if (latestScreenshotPath) {
-        await uploadScreenshotToBackend(latestScreenshotPath, {
-          deviceId: appState.deviceDiscovery.getDeviceId(),
-          source: "chat-context",
-        }).catch(() => {})
+        await uploadScreenshotForAgentContext(latestScreenshotPath, "chat-context")
       }
 
       // Route through Agents Server
@@ -173,15 +217,6 @@ export function initializeIpcHandlers(appState: AppState): void {
       event.sender.send("agent-reply", { text: result })
       return result
     } catch (error: any) {
-      // Fallback to local Ollama if agent server is unavailable
-      if (appState.processingHelper.getLLMHelper().isUsingOllama()) {
-        const latestScreenshotPath = getLatestScreenshotPathFromQueues()
-        const result = await appState.processingHelper.getLLMHelper()
-          .chatWithClaude(message, latestScreenshotPath || undefined)
-        notifyAgentReply(result)
-        event.sender.send("agent-reply", { text: result })
-        return result
-      }
       console.error("Error in claude-chat handler:", error)
       throw error
     }
@@ -192,10 +227,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       // Upload latest screenshot to backend before sending chat
       const latestScreenshotPath = getLatestScreenshotPathFromQueues()
       if (latestScreenshotPath) {
-        await uploadScreenshotToBackend(latestScreenshotPath, {
-          deviceId: appState.deviceDiscovery.getDeviceId(),
-          source: "chat-context",
-        }).catch(() => {})
+        await uploadScreenshotForAgentContext(latestScreenshotPath, "chat-context")
       }
 
       // Route through Agents Server SSE endpoint
@@ -207,27 +239,6 @@ export function initializeIpcHandlers(appState: AppState): void {
       event.sender.send("claude-chat-stream-done", { requestId, text: full })
       return { success: true }
     } catch (error: any) {
-      // Fallback to local Ollama if agent server is unavailable
-      if (appState.processingHelper.getLLMHelper().isUsingOllama()) {
-        try {
-          const latestScreenshotPath = getLatestScreenshotPathFromQueues()
-          const full = await appState.processingHelper.getLLMHelper()
-            .chatWithClaudeStream(message, latestScreenshotPath || undefined, (chunk) => {
-              event.sender.send("claude-chat-stream-chunk", { requestId, chunk })
-            })
-          notifyAgentReply(full)
-          event.sender.send("agent-reply", { text: full })
-          event.sender.send("claude-chat-stream-done", { requestId, text: full })
-          return { success: true }
-        } catch (fallbackError: any) {
-          event.sender.send("claude-chat-stream-error", {
-            requestId,
-            error: fallbackError?.message || String(fallbackError)
-          })
-          return { success: false, error: fallbackError?.message || String(fallbackError) }
-        }
-      }
-
       event.sender.send("claude-chat-stream-error", {
         requestId,
         error: error?.message || String(error)
@@ -405,71 +416,11 @@ export function initializeIpcHandlers(appState: AppState): void {
     appState.centerAndShowWindow()
   })
 
-  // LLM Model Management Handlers
-  ipcMain.handle("get-current-llm-config", async () => {
-    try {
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      return {
-        provider: llmHelper.getCurrentProvider(),
-        model: llmHelper.getCurrentModel(),
-        isOllama: llmHelper.isUsingOllama()
-      };
-    } catch (error: any) {
-      console.error("Error getting current LLM config:", error);
-      throw error;
-    }
-  });
-
-  ipcMain.handle("get-available-ollama-models", async () => {
-    try {
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      const models = await llmHelper.getOllamaModels();
-      return models;
-    } catch (error: any) {
-      console.error("Error getting Ollama models:", error);
-      throw error;
-    }
-  });
-
-  ipcMain.handle("switch-to-ollama", async (_, model?: string, url?: string) => {
-    try {
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      await llmHelper.switchToOllama(model, url);
-      return { success: true };
-    } catch (error: any) {
-      console.error("Error switching to Ollama:", error);
-      return { success: false, error: error.message };
-    }
-  });
-
-  ipcMain.handle("switch-to-claude", async (_, apiKey?: string) => {
-    try {
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      await llmHelper.switchToClaude(apiKey);
-      return { success: true };
-    } catch (error: any) {
-      console.error("Error switching to Claude:", error);
-      return { success: false, error: error.message };
-    }
-  });
-
-  ipcMain.handle("test-llm-connection", async () => {
-    try {
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      const result = await llmHelper.testConnection();
-      return result;
-    } catch (error: any) {
-      console.error("Error testing LLM connection:", error);
-      return { success: false, error: error.message };
-    }
-  });
-
   // ─── Agent Server Helpers ─────────────────────────────────
 
   function agentChatNonStreaming(message: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      const chatId = currentSession?.id || `mac-${appState.deviceDiscovery.getDeviceId()}`
-      const agent = currentSession?.agent || "iris"
+      const { chatId, agent } = resolveChatContext()
       const body = JSON.stringify({ agent, chat_id: chatId, message })
       const parsed = new URL(`${AGENT_SERVER_URL}/chat`)
 
@@ -507,8 +458,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   function agentChatStream(message: string, onChunk: (chunk: string) => void): Promise<string> {
     return new Promise((resolve, reject) => {
-      const chatId = currentSession?.id || `mac-${appState.deviceDiscovery.getDeviceId()}`
-      const agent = currentSession?.agent || "iris"
+      const { chatId, agent } = resolveChatContext()
       const body = JSON.stringify({ agent, chat_id: chatId, message })
       const parsed = new URL(`${AGENT_SERVER_URL}/chat/stream`)
 

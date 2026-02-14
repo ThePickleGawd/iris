@@ -27,6 +27,17 @@ export class WindowHelper {
     this.appState = appState
   }
 
+  private applyStickyBehavior(): void {
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return
+
+    this.mainWindow.setAlwaysOnTop(true, "floating")
+
+    if (process.platform === "darwin") {
+      this.mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+      this.mainWindow.setFullScreenable(false)
+    }
+  }
+
   public setWindowDimensions(_width: number, height: number): void {
     // Intentionally disabled: renderer-driven auto-resize was fighting manual resize.
     // Keep manual OS resize behavior as the single source of truth.
@@ -40,6 +51,7 @@ export class WindowHelper {
     const workArea = primaryDisplay.workAreaSize
     this.screenWidth = workArea.width
     this.screenHeight = workArea.height
+    const isMac = process.platform === "darwin"
 
     
     const windowSettings: Electron.BrowserWindowConstructorOptions = {
@@ -53,17 +65,18 @@ export class WindowHelper {
         preload: path.join(__dirname, "preload.js")
       },
       show: false, // Start hidden, then show after setup
-      alwaysOnTop: false,
-      frame: true,
-      transparent: false,
+      alwaysOnTop: true,
+      frame: !isMac,
+      transparent: isMac,
       fullscreenable: false,
       hasShadow: true,
-      backgroundColor: "#F3F6F8",
+      backgroundColor: isMac ? "#00000000" : "#F3F6F8",
       focusable: true,
       resizable: true,
       movable: true,
       x: 100, // Start at a visible position
-      y: 100
+      y: 100,
+      ...(isMac ? { titleBarStyle: "hiddenInset" as const } : {})
     }
 
     this.mainWindow = new BrowserWindow(windowSettings)
@@ -71,10 +84,12 @@ export class WindowHelper {
     this.mainWindow.setContentProtection(true)
 
     if (process.platform === "darwin") {
-      // Use standard desktop window behavior on macOS (not overlay-style).
-      this.mainWindow.setAlwaysOnTop(false)
-      // Keep window visible when swiping between macOS Spaces
       this.mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+      this.mainWindow.setVibrancy("under-window")
+      const macWindow = this.mainWindow as BrowserWindow & {
+        setVisualEffectState?: (state: "active" | "inactive" | "followWindow") => void
+      }
+      macWindow.setVisualEffectState?.("active")
     }
     if (process.platform === "linux") {
       // Linux-specific optimizations for better compatibility
@@ -85,7 +100,7 @@ export class WindowHelper {
       this.mainWindow.setFocusable(true)
     } 
     this.mainWindow.setSkipTaskbar(false)
-    this.mainWindow.setAlwaysOnTop(false)
+    this.applyStickyBehavior()
 
     this.mainWindow.loadURL(startUrl).catch((err) => {
       console.error("Failed to load URL:", err)
@@ -98,7 +113,7 @@ export class WindowHelper {
         this.centerWindow()
         this.mainWindow.show()
         this.mainWindow.focus()
-        this.mainWindow.setAlwaysOnTop(false)
+        this.applyStickyBehavior()
         console.log("Window is now visible and centered")
       }
     })
@@ -178,6 +193,7 @@ export class WindowHelper {
     }
 
     this.mainWindow.showInactive()
+    this.applyStickyBehavior()
 
     this.isWindowVisible = true
   }
@@ -231,7 +247,7 @@ export class WindowHelper {
     this.centerWindow()
     this.mainWindow.show()
     this.mainWindow.focus()
-    this.mainWindow.setAlwaysOnTop(false)
+    this.applyStickyBehavior()
     this.isWindowVisible = true
     
     console.log(`Window centered and shown`)

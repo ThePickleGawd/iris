@@ -26,15 +26,6 @@ export interface ElectronAPI {
   analyzeAudioFile: (path: string) => Promise<{ text: string; timestamp: number }>
   analyzeImageFile: (path: string) => Promise<void>
   quitApp: () => Promise<void>
-  getCurrentLlmConfig: () => Promise<{ provider: "ollama" | "claude"; model: string; isOllama: boolean }>
-  getAvailableOllamaModels: () => Promise<string[]>
-  switchToOllama: (model?: string, url?: string) => Promise<{ success: boolean; error?: string }>
-  switchToClaude: (apiKey?: string) => Promise<{ success: boolean; error?: string }>
-  testLlmConnection: () => Promise<{ success: boolean; error?: string }>
-  startClaudeChatStream: (requestId: string, message: string) => Promise<{ success: boolean; error?: string }>
-  onClaudeChatStreamChunk: (callback: (data: { requestId: string; chunk: string }) => void) => () => void
-  onClaudeChatStreamDone: (callback: (data: { requestId: string; text: string }) => void) => () => void
-  onClaudeChatStreamError: (callback: (data: { requestId: string; error: string }) => void) => () => void
   onAgentReply: (callback: (data: { text: string }) => void) => () => void
   setNotificationsEnabled: (enabled: boolean) => Promise<{ success: boolean }>
   openWidget: (spec: {

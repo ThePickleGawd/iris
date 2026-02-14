@@ -1,6 +1,6 @@
 import { normalizeWidgetSpec, type WidgetSpec } from "./widgetProtocol"
 
-export type AgentTransportMode = "direct" | "backend"
+export type AgentTransportMode = "backend"
 
 export interface AgentTransportSettings {
   mode: AgentTransportMode

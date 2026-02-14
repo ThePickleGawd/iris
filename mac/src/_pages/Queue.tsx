@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react"
 import { useQuery } from "react-query"
-import { MessageSquare, Settings, X, Mic, SendHorizontal, ListTodo, ImagePlus, Wifi, Monitor, Tablet, Plus, ChevronDown } from "lucide-react"
+import { X, Mic, SendHorizontal, ListTodo, ImagePlus, Wifi, Monitor, Tablet, Plus } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"
@@ -13,10 +13,9 @@ import {
   ToastVariant,
   ToastMessage
 } from "../components/ui/toast"
-import ModelSelector from "../components/ui/ModelSelector"
 import ScreenshotQueue from "../components/Queue/ScreenshotQueue"
 import { createRequestId } from "../lib/agentProtocol"
-import type { AgentTransportMode, AgentTransportSettings } from "../lib/agentProtocol"
+import type { AgentTransportSettings } from "../lib/agentProtocol"
 import { streamAgentResponse } from "../lib/agentTransport"
 import { extractWidgetBlocks, normalizeWidgetSpec } from "../lib/widgetProtocol"
 
@@ -93,13 +92,19 @@ function playReplyPing() {
   }
 }
 
-type Panel = "chat" | "config"
-
 interface PendingImage {
   name: string
   mimeType: string
   base64Data: string
   dataUrl: string
+}
+
+interface DiagramWidget {
+  id: string
+  title: string
+  from: string
+  to: string
+  note: string
 }
 
 const Queue: React.FC = () => {
@@ -109,7 +114,9 @@ const Queue: React.FC = () => {
     description: "",
     variant: "neutral"
   })
-  const [activePanel, setActivePanel] = useState<Panel>("chat")
+  const [isExpanded, setIsExpanded] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
+  const [diagramWidgets, setDiagramWidgets] = useState<DiagramWidget[]>([])
 
   const [chatInput, setChatInput] = useState("")
   const [chatMessages, setChatMessages] = useState<{ role: "user" | "assistant"; text: string }[]>([])
@@ -118,17 +125,12 @@ const Queue: React.FC = () => {
   const [isVoiceTranscribing, setIsVoiceTranscribing] = useState(false)
   const [notificationsEnabled, setNotificationsEnabled] = useState(true)
   const [soundPingEnabled, setSoundPingEnabled] = useState(true)
-  const [transportMode, setTransportMode] = useState<AgentTransportMode>("direct")
-  const [backendBaseUrl, setBackendBaseUrl] = useState("http://localhost:8787")
+  const [backendBaseUrl, setBackendBaseUrl] = useState("http://localhost:8000")
   const [backendStreamPath, setBackendStreamPath] = useState("/v1/agent/stream")
   const [workspaceId, setWorkspaceId] = useState("default-workspace")
   const [sessionId, setSessionId] = useState("default-session")
   const [backendAuthToken, setBackendAuthToken] = useState("")
   const [pendingImage, setPendingImage] = useState<PendingImage | null>(null)
-  const [currentModel, setCurrentModel] = useState<{ provider: string; model: string }>({
-    provider: "claude",
-    model: "claude-sonnet-4-5"
-  })
   const [macIp, setMacIp] = useState("")
   const [ipadIpInput, setIpadIpInput] = useState("")
   const [ipadPortInput, setIpadPortInput] = useState("8935")
@@ -137,7 +139,6 @@ const Queue: React.FC = () => {
   const [ipadConnectError, setIpadConnectError] = useState("")
   const [sessions, setSessions] = useState<any[]>([])
   const [currentSession, setCurrentSession] = useState<{ id: string; agent: string; name: string } | null>(null)
-  const [sessionDropdownOpen, setSessionDropdownOpen] = useState(false)
 
   const contentRef = useRef<HTMLDivElement>(null)
   const chatInputRef = useRef<HTMLInputElement>(null)
@@ -173,12 +174,37 @@ const Queue: React.FC = () => {
     setToastOpen(true)
   }
 
-  const chatHint = useMemo(() => {
-    const source = transportMode === "direct" ? "Direct local transport" : `Backend transport (${backendBaseUrl})`
-    return currentModel.provider === "ollama"
-      ? `Local model: ${currentModel.model} • ${source}`
-      : `Cloud model: ${currentModel.model} • ${source}`
-  }, [currentModel, transportMode, backendBaseUrl])
+  const chatHint = useMemo(
+    () => `Backend agent transport: ${backendBaseUrl}${backendStreamPath || "/v1/agent/stream"}`,
+    [backendBaseUrl, backendStreamPath]
+  )
+
+  const handleAddDiagramWidget = useCallback(() => {
+    setDiagramWidgets((prev) => [
+      ...prev,
+      {
+        id: `diagram-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        title: `Diagram ${prev.length + 1}`,
+        from: "Input",
+        to: "Output",
+        note: ""
+      }
+    ])
+    setIsExpanded(true)
+  }, [])
+
+  const handleUpdateDiagramWidget = useCallback(
+    (id: string, field: keyof Omit<DiagramWidget, "id">, value: string) => {
+      setDiagramWidgets((prev) =>
+        prev.map((widget) => (widget.id === id ? { ...widget, [field]: value } : widget))
+      )
+    },
+    []
+  )
+
+  const handleRemoveDiagramWidget = useCallback((id: string) => {
+    setDiagramWidgets((prev) => prev.filter((widget) => widget.id !== id))
+  }, [])
 
   const handleDeleteScreenshot = async (index: number) => {
     const screenshotToDelete = screenshots[index]
@@ -260,7 +286,7 @@ const Queue: React.FC = () => {
     }
 
     const settings: AgentTransportSettings = {
-      mode: transportMode,
+      mode: "backend",
       backendBaseUrl: backendBaseUrl.trim(),
       backendStreamPath: backendStreamPath.trim() || "/v1/agent/stream",
       workspaceId: currentSession?.id || workspaceId.trim(),
@@ -307,8 +333,8 @@ const Queue: React.FC = () => {
         return
       }
 
-      if (settings.mode === "backend" && !settings.backendBaseUrl) {
-        throw new Error("Backend URL is required when Backend mode is enabled")
+      if (!settings.backendBaseUrl) {
+        throw new Error("Backend URL is required")
       }
 
       await streamAgentResponse({
@@ -380,7 +406,7 @@ const Queue: React.FC = () => {
     }
 
     const settings: AgentTransportSettings = {
-      mode: transportMode,
+      mode: "backend",
       backendBaseUrl: backendBaseUrl.trim(),
       backendStreamPath: backendStreamPath.trim() || "/v1/agent/stream",
       workspaceId: currentSession?.id || workspaceId.trim(),
@@ -570,18 +596,6 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
     }
   }
 
-  useEffect(() => {
-    const loadCurrentModel = async () => {
-      try {
-        const config = await window.electronAPI.getCurrentLlmConfig()
-        setCurrentModel({ provider: config.provider, model: config.model })
-      } catch (error) {
-        console.error("Error loading current model config:", error)
-      }
-    }
-    loadCurrentModel()
-  }, [])
-
   // Load network info and connected devices
   useEffect(() => {
     const loadNetworkInfo = async () => {
@@ -643,7 +657,6 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
   const handleSelectSession = useCallback(async (session: any) => {
     const info = { id: session.id, agent: session.agent, name: session.name }
     setCurrentSession(info)
-    setSessionDropdownOpen(false)
     setChatMessages([])
     setChatLoading(true)
     try {
@@ -670,7 +683,6 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
       await window.electronAPI.createSession({ id, name, agent })
       setCurrentSession({ id, agent, name })
       setChatMessages([])
-      setSessionDropdownOpen(false)
       await refreshSessions()
     } catch {
       // Non-fatal
@@ -714,7 +726,6 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
     try {
       const savedNotifications = localStorage.getItem("iris_notifications_enabled")
       const savedSound = localStorage.getItem("iris_sound_ping_enabled")
-      const savedTransportMode = localStorage.getItem("iris_transport_mode")
       const savedBackendBaseUrl = localStorage.getItem("iris_backend_base_url")
       const savedBackendStreamPath = localStorage.getItem("iris_backend_stream_path")
       const savedWorkspaceId = localStorage.getItem("iris_workspace_id")
@@ -725,9 +736,6 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
       }
       if (savedSound !== null) {
         setSoundPingEnabled(savedSound === "true")
-      }
-      if (savedTransportMode === "direct" || savedTransportMode === "backend") {
-        setTransportMode(savedTransportMode)
       }
       if (savedBackendBaseUrl !== null) setBackendBaseUrl(savedBackendBaseUrl)
       if (savedBackendStreamPath !== null) setBackendStreamPath(savedBackendStreamPath)
@@ -758,7 +766,6 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
 
   useEffect(() => {
     try {
-      localStorage.setItem("iris_transport_mode", transportMode)
       localStorage.setItem("iris_backend_base_url", backendBaseUrl)
       localStorage.setItem("iris_backend_stream_path", backendStreamPath)
       localStorage.setItem("iris_workspace_id", workspaceId)
@@ -767,7 +774,7 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
     } catch {
       // ignore storage errors
     }
-  }, [transportMode, backendBaseUrl, backendStreamPath, workspaceId, sessionId, backendAuthToken])
+  }, [backendBaseUrl, backendStreamPath, workspaceId, sessionId, backendAuthToken])
 
   useEffect(() => {
     if (!messageListRef.current) return
@@ -796,7 +803,7 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
           if (latest) {
             const response = await window.electronAPI.invoke("analyze-image-file", latest)
             setChatMessages((msgs) => [...msgs, { role: "assistant", text: response.text }])
-            setActivePanel("chat")
+            setIsExpanded(true)
           }
         } catch (err) {
           setChatMessages((msgs) => [...msgs, { role: "assistant", text: "Error: " + String(err) }])
@@ -834,111 +841,90 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
     }
   }, [])
 
-  const handleModelChange = (provider: "ollama" | "claude", model: string) => {
-    setCurrentModel({ provider, model })
-    setChatMessages((msgs) => [
-      ...msgs,
-      {
-        role: "assistant",
-        text: `Switched to ${provider === "ollama" ? "local" : "cloud"} model: ${model}`
-      }
-    ])
-  }
-
   return (
-    <div ref={contentRef} className="app-shell select-none">
+    <div ref={contentRef} className="assistant-surface select-none">
       <Toast open={toastOpen} onOpenChange={setToastOpen} variant={toastMessage.variant} duration={3000}>
         <ToastTitle>{toastMessage.title}</ToastTitle>
         <ToastDescription>{toastMessage.description}</ToastDescription>
       </Toast>
 
-      <div className="queue-layout p-3">
-        <aside className="side-nav panel p-2">
+      <div className={`compact-shell liquid-glass ${isExpanded ? "shell-expanded" : "shell-collapsed"}`}>
+        <header className="compact-header draggable-area">
+          <div className="header-row interactive">
+            <div className="brand-chip">Iris</div>
+            <div className="header-meta">{currentSession ? currentSession.agent : "No active chat"}</div>
+            <button
+              type="button"
+              className="header-quit"
+              onClick={() => window.electronAPI.quitApp()}
+              title="Exit"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          <div className="session-tabs interactive">
+            {sessions.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                className={`session-tab ${currentSession?.id === s.id ? "session-tab-active" : ""}`}
+                onClick={() => handleSelectSession(s)}
+                title={s.name}
+              >
+                {s.name}
+              </button>
+            ))}
+            <button
+              type="button"
+              className="session-tab session-tab-new"
+              onClick={handleNewChat}
+              title="New chat session"
+            >
+              <Plus size={12} />
+              New
+            </button>
+          </div>
           <button
-            className={`side-btn ${activePanel === "chat" ? "side-btn-active" : ""}`}
-            onClick={() => setActivePanel("chat")}
-            title="Chat"
-            aria-label="Chat"
+            type="button"
+            className="expand-toggle interactive"
+            onClick={() => setIsExpanded((value) => !value)}
           >
-            <MessageSquare size={16} />
-            <span>Chat</span>
+            {isExpanded ? "Collapse chat" : "Expand chat"}
           </button>
-          <button
-            className={`side-btn ${activePanel === "config" ? "side-btn-active" : ""}`}
-            onClick={() => setActivePanel("config")}
-            title="Config"
-            aria-label="Config"
-          >
-            <Settings size={16} />
-            <span>Config</span>
-          </button>
-          <button
-            className="side-btn side-btn-danger"
-            onClick={() => window.electronAPI.quitApp()}
-            title="Exit"
-            aria-label="Exit"
-          >
-            <X size={16} />
-            <span>Exit</span>
-          </button>
-        </aside>
+        </header>
 
-        <main className="panel main-pane p-4">
-          {activePanel === "chat" ? (
-            <div className="space-y-3">
-              {/* Session selector bar */}
-              <div className="flex items-center gap-2">
-                <div className="relative flex-1">
+        {isExpanded ? (
+          <div className={`workspace-grid ${diagramWidgets.length > 0 ? "workspace-grid-widgets" : ""}`}>
+            <section className="chat-panel">
+              <div className="chat-toolbar">
+                <div className="chat-hint">{chatHint}</div>
+                <div className="chat-toolbar-actions">
                   <button
                     type="button"
-                    className="w-full flex items-center justify-between px-2 py-1.5 text-xs rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                    onClick={() => setSessionDropdownOpen((v) => !v)}
+                    className="toolbar-btn"
+                    onClick={() => setShowSettings((value) => !value)}
                   >
-                    <span className="truncate">
-                      {currentSession ? `${currentSession.name} (${currentSession.agent})` : "No session selected"}
-                    </span>
-                    <ChevronDown size={12} className="ml-1 flex-shrink-0" />
+                    {showSettings ? "Hide Settings" : "Settings"}
                   </button>
-                  {sessionDropdownOpen && (
-                    <div className="absolute z-50 top-full left-0 right-0 mt-1 max-h-48 overflow-y-auto bg-white border border-slate-200 rounded shadow-lg">
-                      {sessions.map((s) => (
-                        <button
-                          key={s.id}
-                          type="button"
-                          className={`w-full text-left px-3 py-1.5 text-xs hover:bg-slate-50 ${currentSession?.id === s.id ? "bg-teal-50 text-teal-800" : "text-slate-700"}`}
-                          onClick={() => handleSelectSession(s)}
-                        >
-                          <span className="font-medium">{s.name}</span>
-                          <span className="ml-1 text-slate-400">({s.agent})</span>
-                        </button>
-                      ))}
-                      {sessions.length === 0 && (
-                        <div className="px-3 py-2 text-xs text-slate-400">No sessions yet</div>
-                      )}
-                    </div>
-                  )}
+                  <button
+                    type="button"
+                    className="toolbar-btn"
+                    onClick={handleAddDiagramWidget}
+                  >
+                    Diagram
+                  </button>
+                  <button
+                    type="button"
+                    className="toolbar-btn"
+                    onClick={handleGenerateTodoPopup}
+                    disabled={chatLoading || isVoiceRecording || isVoiceTranscribing}
+                    title="Generate TODO popup from conversation"
+                  >
+                    <ListTodo size={12} />
+                    TODO
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  className="px-2 py-1.5 text-[11px] rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 flex items-center gap-1"
-                  onClick={handleNewChat}
-                  title="New chat session"
-                >
-                  <Plus size={12} />
-                  <span>New</span>
-                </button>
-                <button
-                  type="button"
-                  className="px-2 py-1 text-[11px] rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 flex items-center gap-1"
-                  onClick={handleGenerateTodoPopup}
-                  disabled={chatLoading || isVoiceRecording || isVoiceTranscribing}
-                  title="Generate TODO popup from conversation"
-                >
-                  <ListTodo size={12} />
-                  <span>TODO</span>
-                </button>
               </div>
-              <div className="text-xs text-slate-500">{chatHint}</div>
 
               {screenshots.length > 0 && (
                 <ScreenshotQueue
@@ -948,15 +934,18 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
                 />
               )}
 
-              <div ref={messageListRef} className="chat-log h-[300px] overflow-y-auto p-3">
+              <div ref={messageListRef} className="chat-log">
                 {chatMessages.length === 0 ? (
-                  <div className="text-sm text-slate-500 text-center mt-10">
+                  <div className="chat-empty">
                     Start chatting, or use mic/image to draft input and press Send.
                   </div>
                 ) : (
                   chatMessages.map((msg, idx) => (
-                    <div key={idx} className={`w-full flex ${msg.role === "user" ? "justify-end" : "justify-start"} mb-3`}>
-                      <div className={`max-w-[82%] px-3 py-2 rounded-2xl text-xs border ${msg.role === "user" ? "message-user" : "message-assistant"}`}>
+                    <div
+                      key={idx}
+                      className={`chat-row ${msg.role === "user" ? "chat-row-user" : "chat-row-assistant"}`}
+                    >
+                      <div className={`chat-bubble ${msg.role === "user" ? "message-user" : "message-assistant"}`}>
                         {msg.role === "assistant" ? (
                           <ReactMarkdown
                             className="message-markdown"
@@ -974,14 +963,14 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
                 )}
 
                 {chatLoading && (
-                  <div className="w-full flex justify-start mb-3">
-                    <div className="message-assistant px-3 py-2 rounded-2xl text-xs border">Thinking...</div>
+                  <div className="chat-row chat-row-assistant">
+                    <div className="chat-bubble message-assistant">Thinking...</div>
                   </div>
                 )}
               </div>
 
               <form
-                className="flex gap-2 items-center"
+                className="chat-compose"
                 onSubmit={(e) => {
                   e.preventDefault()
                   handleChatSend()
@@ -996,7 +985,7 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
                 />
                 <input
                   ref={chatInputRef}
-                  className="chat-input flex-1 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-teal-700/30"
+                  className="chat-input"
                   placeholder={pendingImage ? `Image attached: ${pendingImage.name}` : "Type a message..."}
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
@@ -1005,7 +994,7 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
                 {pendingImage && (
                   <button
                     type="button"
-                    className="px-2 py-2 text-[11px] rounded border border-slate-300 bg-white text-slate-700"
+                    className="toolbar-btn toolbar-btn-subtle"
                     onClick={() => setPendingImage(null)}
                     title="Remove attached image"
                   >
@@ -1014,7 +1003,7 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
                 )}
                 <button
                   type="button"
-                  className="chat-mic p-2 rounded-xl flex items-center justify-center"
+                  className="chat-icon-btn"
                   onClick={handleImagePickerClick}
                   disabled={chatLoading || isVoiceRecording || isVoiceTranscribing}
                   aria-label="Upload image"
@@ -1024,7 +1013,7 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
                 </button>
                 <button
                   type="button"
-                  className={`chat-mic p-2 rounded-xl flex items-center justify-center ${isVoiceRecording ? "chat-mic-recording" : ""}`}
+                  className={`chat-icon-btn ${isVoiceRecording ? "chat-mic-recording" : ""}`}
                   onClick={handleVoiceTranscription}
                   disabled={chatLoading || isVoiceTranscribing}
                   aria-label={isVoiceRecording ? "Stop voice recording" : "Start voice recording"}
@@ -1034,183 +1023,209 @@ ${transcript || "No prior messages. Build a practical starter TODO for Iris Mac.
                 </button>
                 <button
                   type="submit"
-                  className="chat-send p-2 rounded-xl flex items-center justify-center disabled:opacity-50"
+                  className="chat-send"
                   disabled={chatLoading || isVoiceRecording || isVoiceTranscribing || (!chatInput.trim() && !pendingImage)}
                   aria-label="Send"
                 >
                   <SendHorizontal size={16} />
                 </button>
               </form>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <h2 className="text-sm font-semibold text-slate-800">Configuration</h2>
-              <p className="text-xs text-slate-500">Choose your provider and model.</p>
-              <div className="panel p-3 space-y-3">
-                <div className="text-xs font-semibold text-slate-700">Agent Transport</div>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    className={`px-3 py-2 text-xs rounded border ${transportMode === "direct" ? "bg-teal-700 text-white border-teal-800" : "bg-slate-100 text-slate-700 border-slate-300"}`}
-                    onClick={() => setTransportMode("direct")}
-                  >
-                    Direct Claude
-                  </button>
-                  <button
-                    type="button"
-                    className={`px-3 py-2 text-xs rounded border ${transportMode === "backend" ? "bg-teal-700 text-white border-teal-800" : "bg-slate-100 text-slate-700 border-slate-300"}`}
-                    onClick={() => setTransportMode("backend")}
-                  >
-                    Backend Agent
-                  </button>
-                </div>
 
-                <div className="text-[11px] text-slate-500">
-                  Contract: POST {`{backendBaseUrl}`}{backendStreamPath || "/v1/agent/stream"} with `agent.request` envelope, return stream events (`message.delta`, `message.final`, `status`, `tool.call`, `tool.result`, `widget.open`, `error`).
-                </div>
-
-                <div className="grid grid-cols-1 gap-2">
-                  <label className="text-xs text-slate-700">
-                    Backend URL
-                    <input
-                      className="mt-1 w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-700/20"
-                      value={backendBaseUrl}
-                      onChange={(e) => setBackendBaseUrl(e.target.value)}
-                      placeholder="http://localhost:8787"
-                      disabled={transportMode !== "backend"}
-                    />
-                  </label>
-                  <label className="text-xs text-slate-700">
-                    Stream Endpoint Path
-                    <input
-                      className="mt-1 w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-700/20"
-                      value={backendStreamPath}
-                      onChange={(e) => setBackendStreamPath(e.target.value)}
-                      placeholder="/v1/agent/stream"
-                      disabled={transportMode !== "backend"}
-                    />
-                  </label>
-                  <label className="text-xs text-slate-700">
-                    Workspace ID
-                    <input
-                      className="mt-1 w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-700/20"
-                      value={workspaceId}
-                      onChange={(e) => setWorkspaceId(e.target.value)}
-                      placeholder="default-workspace"
-                      disabled={transportMode !== "backend"}
-                    />
-                  </label>
-                  <label className="text-xs text-slate-700">
-                    Session ID
-                    <input
-                      className="mt-1 w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-700/20"
-                      value={sessionId}
-                      onChange={(e) => setSessionId(e.target.value)}
-                      placeholder="default-session"
-                      disabled={transportMode !== "backend"}
-                    />
-                  </label>
-                  <label className="text-xs text-slate-700">
-                    Backend Auth Token (optional)
-                    <input
-                      type="password"
-                      className="mt-1 w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-700/20"
-                      value={backendAuthToken}
-                      onChange={(e) => setBackendAuthToken(e.target.value)}
-                      placeholder="Bearer token"
-                      disabled={transportMode !== "backend"}
-                    />
-                  </label>
-                </div>
-              </div>
-              <div className="panel p-3 space-y-3">
-                <label className="flex items-center justify-between text-xs text-slate-700">
-                  <span>Desktop notifications</span>
-                  <button
-                    type="button"
-                    onClick={() => setNotificationsEnabled((v) => !v)}
-                    className={`toggle ${notificationsEnabled ? "toggle-on" : ""}`}
-                    aria-pressed={notificationsEnabled}
-                  >
-                    <span className="toggle-knob" />
-                  </button>
-                </label>
-                <label className="flex items-center justify-between text-xs text-slate-700">
-                  <span>Sound ping on reply</span>
-                  <button
-                    type="button"
-                    onClick={() => setSoundPingEnabled((v) => !v)}
-                    className={`toggle ${soundPingEnabled ? "toggle-on" : ""}`}
-                    aria-pressed={soundPingEnabled}
-                  >
-                    <span className="toggle-knob" />
-                  </button>
-                </label>
-              </div>
-              <div className="panel p-3 space-y-3">
-                <div className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-                  <Wifi size={14} />
-                  <span>Devices</span>
-                </div>
-                <div className="flex items-center gap-2 text-xs text-slate-600">
-                  <Monitor size={12} />
-                  <span>This Mac:</span>
-                  <code className="bg-slate-100 px-1.5 py-0.5 rounded text-[11px] font-mono">{macIp || "..."}</code>
-                </div>
-
-                {connectedDevices.length > 0 && (
-                  <div className="space-y-1">
-                    {connectedDevices.map((d: any) => (
-                      <div key={d.id} className="flex items-center gap-2 text-xs text-green-700 bg-green-50 rounded px-2 py-1.5">
-                        <Tablet size={12} />
-                        <span>{d.name}</span>
-                        <code className="text-[11px] font-mono">{d.host}:{d.port}</code>
-                        {d.linked && <span className="text-[10px] bg-green-200 rounded px-1">linked</span>}
-                      </div>
-                    ))}
+              {showSettings && (
+                <div className="settings-sheet">
+                  <div className="config-card">
+                    <div className="config-label">Agent Transport</div>
+                    <div className="config-grid">
+                      <label className="field-label">
+                        Backend URL
+                        <input
+                          className="field-input"
+                          value={backendBaseUrl}
+                          onChange={(e) => setBackendBaseUrl(e.target.value)}
+                          placeholder="http://localhost:8000"
+                        />
+                      </label>
+                      <label className="field-label">
+                        Stream Path
+                        <input
+                          className="field-input"
+                          value={backendStreamPath}
+                          onChange={(e) => setBackendStreamPath(e.target.value)}
+                          placeholder="/v1/agent/stream"
+                        />
+                      </label>
+                      <label className="field-label">
+                        Workspace ID
+                        <input
+                          className="field-input"
+                          value={workspaceId}
+                          onChange={(e) => setWorkspaceId(e.target.value)}
+                          placeholder="default-workspace"
+                        />
+                      </label>
+                      <label className="field-label">
+                        Session ID
+                        <input
+                          className="field-input"
+                          value={sessionId}
+                          onChange={(e) => setSessionId(e.target.value)}
+                          placeholder="default-session"
+                        />
+                      </label>
+                      <label className="field-label">
+                        Backend Auth Token
+                        <input
+                          type="password"
+                          className="field-input"
+                          value={backendAuthToken}
+                          onChange={(e) => setBackendAuthToken(e.target.value)}
+                          placeholder="Bearer token"
+                        />
+                      </label>
+                    </div>
                   </div>
-                )}
-
-                <div className="flex items-center gap-2 text-xs text-slate-600">
-                  <Tablet size={12} />
-                  <span>iPad IP:</span>
-                </div>
-                <div className="flex gap-2">
-                  <input
-                    className="flex-1 px-3 py-2 text-xs bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-700/20 font-mono"
-                    value={ipadIpInput}
-                    onChange={(e) => setIpadIpInput(e.target.value)}
-                    placeholder="192.168.x.x"
-                  />
-                  <input
-                    className="w-16 px-2 py-2 text-xs bg-white border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-700/20 font-mono"
-                    value={ipadPortInput}
-                    onChange={(e) => setIpadPortInput(e.target.value)}
-                    placeholder="8935"
-                  />
-                  <button
-                    type="button"
-                    className="px-3 py-2 text-xs rounded border bg-teal-700 text-white border-teal-800 hover:bg-teal-600 disabled:opacity-50"
-                    onClick={handleConnectIpad}
-                    disabled={ipadConnecting || !ipadIpInput.trim()}
-                  >
-                    {ipadConnecting ? "..." : "Connect"}
-                  </button>
-                </div>
-                {ipadConnectError && (
-                  <div className="text-[11px] text-red-600">{ipadConnectError}</div>
-                )}
-              </div>
-              {transportMode === "direct" ? (
-                <ModelSelector onModelChange={handleModelChange} onChatOpen={() => setActivePanel("chat")} />
-              ) : (
-                <div className="panel p-3 text-xs text-slate-600">
-                  Local model controls are disabled in Backend Agent mode. Model selection should be handled by the backend session.
+                  <div className="config-card">
+                    <label className="toggle-row">
+                      <span>Desktop notifications</span>
+                      <button
+                        type="button"
+                        onClick={() => setNotificationsEnabled((v) => !v)}
+                        className={`toggle ${notificationsEnabled ? "toggle-on" : ""}`}
+                        aria-pressed={notificationsEnabled}
+                      >
+                        <span className="toggle-knob" />
+                      </button>
+                    </label>
+                    <label className="toggle-row">
+                      <span>Sound ping on reply</span>
+                      <button
+                        type="button"
+                        onClick={() => setSoundPingEnabled((v) => !v)}
+                        className={`toggle ${soundPingEnabled ? "toggle-on" : ""}`}
+                        aria-pressed={soundPingEnabled}
+                      >
+                        <span className="toggle-knob" />
+                      </button>
+                    </label>
+                  </div>
+                  <div className="config-card">
+                    <div className="config-label config-label-inline">
+                      <Wifi size={14} />
+                      <span>Devices</span>
+                    </div>
+                    <div className="device-line">
+                      <Monitor size={12} />
+                      <span>This Mac:</span>
+                      <code className="device-code">{macIp || "..."}</code>
+                    </div>
+                    {connectedDevices.length > 0 && (
+                      <div className="device-list">
+                        {connectedDevices.map((d: any) => (
+                          <div key={d.id} className="device-chip">
+                            <Tablet size={12} />
+                            <span>{d.name}</span>
+                            <code className="device-chip-code">
+                              {d.host}:{d.port}
+                            </code>
+                            {d.linked && <span className="device-chip-state">linked</span>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="device-connect">
+                      <input
+                        className="field-input font-mono"
+                        value={ipadIpInput}
+                        onChange={(e) => setIpadIpInput(e.target.value)}
+                        placeholder="192.168.x.x"
+                      />
+                      <input
+                        className="field-input field-input-port font-mono"
+                        value={ipadPortInput}
+                        onChange={(e) => setIpadPortInput(e.target.value)}
+                        placeholder="8935"
+                      />
+                      <button
+                        type="button"
+                        className="toolbar-btn toolbar-btn-primary"
+                        onClick={handleConnectIpad}
+                        disabled={ipadConnecting || !ipadIpInput.trim()}
+                      >
+                        {ipadConnecting ? "..." : "Connect"}
+                      </button>
+                    </div>
+                    {ipadConnectError && <div className="field-error">{ipadConnectError}</div>}
+                  </div>
                 </div>
               )}
+            </section>
+
+            {diagramWidgets.length > 0 && (
+              <aside className="widget-rail">
+                {diagramWidgets.map((widget) => {
+                  const arrowId = `${widget.id}-arrow`
+                  return (
+                    <article key={widget.id} className="widget-card">
+                      <div className="widget-card-header">
+                        <input
+                          className="widget-title"
+                          value={widget.title}
+                          onChange={(e) => handleUpdateDiagramWidget(widget.id, "title", e.target.value)}
+                        />
+                        <button
+                          type="button"
+                          className="widget-remove"
+                          onClick={() => handleRemoveDiagramWidget(widget.id)}
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                      <svg className="diagram-preview" viewBox="0 0 320 120" role="img" aria-label="diagram preview">
+                        <defs>
+                          <marker id={arrowId} markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto">
+                            <polygon points="0 0, 8 3.5, 0 7" />
+                          </marker>
+                        </defs>
+                        <rect x="18" y="24" width="106" height="54" rx="12" />
+                        <rect x="196" y="24" width="106" height="54" rx="12" />
+                        <text x="71" y="56">{widget.from || "From"}</text>
+                        <text x="249" y="56">{widget.to || "To"}</text>
+                        <line x1="124" y1="51" x2="196" y2="51" markerEnd={`url(#${arrowId})`} />
+                      </svg>
+                      <div className="diagram-inputs">
+                        <input
+                          className="field-input"
+                          value={widget.from}
+                          onChange={(e) => handleUpdateDiagramWidget(widget.id, "from", e.target.value)}
+                          placeholder="From"
+                        />
+                        <input
+                          className="field-input"
+                          value={widget.to}
+                          onChange={(e) => handleUpdateDiagramWidget(widget.id, "to", e.target.value)}
+                          placeholder="To"
+                        />
+                      </div>
+                      <textarea
+                        className="field-input widget-note"
+                        value={widget.note}
+                        onChange={(e) => handleUpdateDiagramWidget(widget.id, "note", e.target.value)}
+                        placeholder="Diagram notes"
+                      />
+                    </article>
+                  )
+                })}
+              </aside>
+            )}
+          </div>
+        ) : (
+          <div className="collapsed-note interactive">
+            <div className="collapsed-title">
+              {currentSession ? currentSession.name : "No active chat"}
             </div>
-          )}
-        </main>
+            <div className="collapsed-subtitle">Tap expand to open chat and widgets.</div>
+          </div>
+        )}
       </div>
     </div>
   )
