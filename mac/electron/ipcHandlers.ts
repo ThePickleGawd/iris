@@ -2,9 +2,11 @@
 
 import { ipcMain, app, Notification } from "electron"
 import { AppState } from "./main"
+import { WidgetWindowManager, WidgetSpec } from "./WidgetWindowManager"
 
 export function initializeIpcHandlers(appState: AppState): void {
   let notificationsEnabled = true
+  const widgetManager = new WidgetWindowManager()
 
   const notifyAgentReply = (text: string) => {
     if (!notificationsEnabled) return
@@ -121,6 +123,19 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   })
 
+  // IPC handler for analyzing image from base64 data
+  ipcMain.handle("analyze-image-base64", async (_, data: string, mimeType: string, userPrompt?: string) => {
+    try {
+      const result = await appState.processingHelper
+        .getLLMHelper()
+        .analyzeImageFromBase64(data, mimeType, userPrompt)
+      return result
+    } catch (error: any) {
+      console.error("Error in analyze-image-base64 handler:", error)
+      throw error
+    }
+  })
+
   ipcMain.handle("claude-chat", async (event, message: string) => {
     try {
       const result = await appState.processingHelper.getLLMHelper().chatWithClaude(message);
@@ -159,6 +174,10 @@ export function initializeIpcHandlers(appState: AppState): void {
   ipcMain.handle("set-notifications-enabled", async (_, enabled: boolean) => {
     notificationsEnabled = Boolean(enabled)
     return { success: true }
+  })
+
+  ipcMain.handle("open-widget", async (_, spec: WidgetSpec) => {
+    return widgetManager.openWidget(spec)
   })
 
   // Window movement handlers

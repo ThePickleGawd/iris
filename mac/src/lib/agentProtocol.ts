@@ -1,3 +1,5 @@
+import { normalizeWidgetSpec, type WidgetSpec } from "./widgetProtocol"
+
 export type AgentTransportMode = "direct" | "backend"
 
 export interface AgentTransportSettings {
@@ -42,6 +44,7 @@ export type AgentStreamEvent =
   | { kind: "message.final"; text: string }
   | { kind: "tool.call"; name: string; input?: unknown }
   | { kind: "tool.result"; name: string; output?: unknown }
+  | { kind: "widget.open"; widget: WidgetSpec }
   | { kind: "error"; message: string }
 
 export function createRequestId(): string {
@@ -128,6 +131,15 @@ export function normalizeIncomingEvent(raw: unknown): AgentStreamEvent | null {
       kind: "tool.result",
       name: String(obj.name || "unknown"),
       output: obj.output
+    }
+  }
+
+  if (kind === "widget.open") {
+    const normalized = normalizeWidgetSpec(obj.widget ?? obj.spec ?? obj.payload ?? obj)
+    if (!normalized) return null
+    return {
+      kind: "widget.open",
+      widget: normalized
     }
   }
 

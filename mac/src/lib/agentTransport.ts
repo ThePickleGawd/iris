@@ -7,6 +7,7 @@ import {
   normalizeIncomingEvent,
   splitPotentialJsonFrames
 } from "./agentProtocol"
+import type { WidgetSpec } from "./widgetProtocol"
 
 export interface AgentStreamCallbacks {
   onDelta: (chunk: string) => void
@@ -14,6 +15,7 @@ export interface AgentStreamCallbacks {
   onStatus?: (state: string, detail?: string) => void
   onToolCall?: (name: string, input?: unknown) => void
   onToolResult?: (name: string, output?: unknown) => void
+  onWidgetOpen?: (widget: WidgetSpec) => void
   onError: (message: string) => void
 }
 
@@ -218,6 +220,9 @@ function handleAgentEvent(
       break
     case "tool.result":
       callbacks.onToolResult?.(event.name, event.output)
+      break
+    case "widget.open":
+      callbacks.onWidgetOpen?.(event.widget)
       break
     case "error":
       callbacks.onError(event.message)

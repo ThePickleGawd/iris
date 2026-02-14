@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react"
 import { useQuery } from "react-query"
-import { MessageSquare, Settings, X, Mic, SendHorizontal } from "lucide-react"
+import { MessageSquare, Settings, X, Mic, SendHorizontal, ListTodo, ImagePlus } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"
@@ -18,6 +18,7 @@ import ScreenshotQueue from "../components/Queue/ScreenshotQueue"
 import { createRequestId } from "../lib/agentProtocol"
 import type { AgentTransportMode, AgentTransportSettings } from "../lib/agentProtocol"
 import { streamAgentResponse } from "../lib/agentTransport"
+import { extractWidgetBlocks, normalizeWidgetSpec } from "../lib/widgetProtocol"
 
 let localTranscriberPromise: Promise<any> | null = null
 
@@ -98,6 +99,13 @@ interface QueueProps {
 
 type Panel = "chat" | "config"
 
+interface PendingImage {
+  name: string
+  mimeType: string
+  base64Data: string
+  dataUrl: string
+}
+
 const Queue: React.FC<QueueProps> = ({ setView }) => {
   const [toastOpen, setToastOpen] = useState(false)
   const [toastMessage, setToastMessage] = useState<ToastMessage>({
@@ -120,6 +128,7 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
   const [workspaceId, setWorkspaceId] = useState("default-workspace")
   const [sessionId, setSessionId] = useState("default-session")
   const [backendAuthToken, setBackendAuthToken] = useState("")
+  const [pendingImage, setPendingImage] = useState<PendingImage | null>(null)
   const [currentModel, setCurrentModel] = useState<{ provider: string; model: string }>({
     provider: "claude",
     model: "claude-sonnet-4-5"
@@ -128,6 +137,7 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
   const contentRef = useRef<HTMLDivElement>(null)
   const chatInputRef = useRef<HTMLInputElement>(null)
   const messageListRef = useRef<HTMLDivElement>(null)
+  const imageInputRef = useRef<HTMLInputElement>(null)
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
@@ -180,13 +190,43 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
     }
   }
 
-  const sendChatMessage = async (message: string) => {
+  const openWidget = async (rawSpec: unknown) => {
+    const spec = normalizeWidgetSpec(rawSpec)
+    if (!spec) return false
+    try {
+      const result = await window.electronAPI.openWidget(spec)
+      if (!result.success && result.error) {
+        console.warn("Failed to open widget:", result.error)
+      }
+      return result.success
+    } catch (error) {
+      console.warn("Failed to open widget:", error)
+      return false
+    }
+  }
+
+  const applyFinalAssistantOutput = async (text: string, onText?: (clean: string) => void) => {
+    const { cleanText, widgets } = extractWidgetBlocks(text || "")
+    if (cleanText) {
+      if (onText) onText(cleanText)
+    } else if (widgets.length > 0) {
+      if (onText) onText("Opened widget output.")
+    } else {
+      if (onText) onText(text)
+    }
+    for (const widget of widgets) {
+      await openWidget(widget)
+    }
+  }
+
+  const sendChatMessage = async (message: string, image: PendingImage | null = null) => {
     const trimmed = message.trim()
-    if (!trimmed) return
+    if (!trimmed && !image) return
 
     const requestId = createRequestId()
     activeStreamRequestRef.current = requestId
-    setChatMessages((msgs) => [...msgs, { role: "user", text: trimmed }, { role: "assistant", text: "" }])
+    const userText = image ? `[Image] ${image.name}${trimmed ? `\n${trimmed}` : ""}` : trimmed
+    setChatMessages((msgs) => [...msgs, { role: "user", text: userText }, { role: "assistant", text: "" }])
     setChatLoading(true)
 
     const appendChunk = (chunk: string) => {
@@ -219,6 +259,44 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
     }
 
     try {
+      if (image) {
+        const response = await window.electronAPI.invoke(
+          "analyze-image-base64",
+          image.base64Data,
+          image.mimeType,
+          trimmed
+        )
+        const analysisText = String(response?.text || "").trim() || "No analysis text returned."
+
+        const html = `
+          <div class="img-wrap">
+            <img src="${image.dataUrl}" alt="${image.name.replace(/"/g, "&quot;")}" />
+          </div>
+          <div class="analysis">
+            <h3>Image Analysis</h3>
+            <p>${analysisText.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br/>")}</p>
+          </div>
+        `
+
+        await openWidget({
+          id: `image-analysis-${Date.now()}`,
+          title: `Image: ${image.name}`,
+          kind: "html",
+          width: 760,
+          height: 620,
+          css: `
+            .img-wrap { margin-bottom: 12px; border:1px solid #e2e8f0; border-radius: 10px; overflow: hidden; background:#fff; }
+            .img-wrap img { width: 100%; height: auto; max-height: 320px; object-fit: contain; display: block; background: #f8fafc; }
+            .analysis h3 { margin: 0 0 8px 0; font-size: 14px; color:#0f172a; }
+            .analysis p { margin: 0; font-size: 13px; line-height: 1.5; color:#334155; }
+          `,
+          payload: { html }
+        })
+
+        setAssistantText("Opened image analysis in a separate window.")
+        return
+      }
+
       if (settings.mode === "backend" && !settings.backendBaseUrl) {
         throw new Error("Backend URL is required when Backend mode is enabled")
       }
@@ -235,7 +313,9 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
           },
           onFinal: (text) => {
             if (activeStreamRequestRef.current !== requestId) return
-            if (text) setAssistantText(text)
+            if (text) {
+              void applyFinalAssistantOutput(text, (clean) => setAssistantText(clean))
+            }
           },
           onStatus: () => {},
           onToolCall: (name) => {
@@ -243,6 +323,10 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
           },
           onToolResult: (name) => {
             console.log(`[AgentTool] result: ${name}`)
+          },
+          onWidgetOpen: (widget) => {
+            if (activeStreamRequestRef.current !== requestId) return
+            void openWidget(widget)
           },
           onError: (msg) => {
             if (activeStreamRequestRef.current !== requestId) return
@@ -253,6 +337,7 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
     } catch (error: any) {
       setAssistantText(`Error: ${error?.message || String(error)}`)
     } finally {
+      if (image) setPendingImage(null)
       activeStreamRequestRef.current = null
       setChatLoading(false)
       chatInputRef.current?.focus()
@@ -260,10 +345,136 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
   }
 
   const handleChatSend = async () => {
-    if (!chatInput.trim()) return
+    if (!chatInput.trim() && !pendingImage) return
     const message = chatInput
     setChatInput("")
-    await sendChatMessage(message)
+    await sendChatMessage(message, pendingImage)
+  }
+
+  const handleGenerateTodoPopup = async () => {
+    if (chatLoading) return
+
+    const requestId = createRequestId()
+    activeStreamRequestRef.current = requestId
+    setChatLoading(true)
+    setChatMessages((msgs) => [...msgs, { role: "assistant", text: "Generating TODO popup..." }])
+
+    const setAssistantText = (text: string) => {
+      setChatMessages((msgs) => {
+        if (msgs.length === 0) return msgs
+        const updated = [...msgs]
+        const idx = updated.length - 1
+        updated[idx] = { ...updated[idx], text }
+        return updated
+      })
+    }
+
+    const settings: AgentTransportSettings = {
+      mode: transportMode,
+      backendBaseUrl: backendBaseUrl.trim(),
+      backendStreamPath: backendStreamPath.trim() || "/v1/agent/stream",
+      workspaceId: workspaceId.trim(),
+      sessionId: sessionId.trim(),
+      authToken: backendAuthToken.trim()
+    }
+
+    const transcript = chatMessages
+      .slice(-80)
+      .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.text}`)
+      .join("\n")
+
+    const todoPrompt = `Create a polished TODO list from this Iris conversation transcript.
+
+Output rules (strict):
+- Return exactly ONE fenced block with language iris-widget.
+- That block must contain valid JSON only.
+- JSON must describe a popup widget with:
+  - "kind": "html"
+  - "title": "Iris TODO"
+  - "width": 760
+  - "height": 620
+  - "css": modern minimalist style
+  - "payload.html": structured TODO with sections: Done, Next, Later, Blocked / Needs Decision
+- Use priorities (P0/P1/P2), owner/status/estimate.
+- Do not output markdown outside the single iris-widget block.
+
+Transcript:
+${transcript || "No prior messages. Build a practical starter TODO for Iris Mac."}`
+
+    try {
+      await streamAgentResponse({
+        settings,
+        requestId,
+        message: todoPrompt,
+        history: chatMessages,
+        callbacks: {
+          onDelta: () => {},
+          onFinal: (text) => {
+            if (activeStreamRequestRef.current !== requestId) return
+            if (text) {
+              void applyFinalAssistantOutput(text, (clean) => setAssistantText(clean))
+            }
+          },
+          onStatus: () => {},
+          onToolCall: () => {},
+          onToolResult: () => {},
+          onWidgetOpen: (widget) => {
+            if (activeStreamRequestRef.current !== requestId) return
+            void openWidget(widget)
+          },
+          onError: (msg) => {
+            if (activeStreamRequestRef.current !== requestId) return
+            setAssistantText(`Error generating TODO popup: ${msg}`)
+          }
+        }
+      })
+    } catch (error: any) {
+      setAssistantText(`Error generating TODO popup: ${error?.message || String(error)}`)
+    } finally {
+      activeStreamRequestRef.current = null
+      setChatLoading(false)
+      chatInputRef.current?.focus()
+    }
+  }
+
+  const handleImagePickerClick = () => {
+    if (chatLoading || isVoiceRecording || isVoiceTranscribing) return
+    imageInputRef.current?.click()
+  }
+
+  const handleImageSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ""
+    if (!file) return
+
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result || ""))
+        reader.onerror = () => reject(new Error("Failed to read image file"))
+        reader.readAsDataURL(file)
+      })
+
+      const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/)
+      if (!match) {
+        throw new Error("Unsupported image encoding")
+      }
+      const mimeType = match[1]
+      const base64Data = match[2]
+      setPendingImage({
+        name: file.name,
+        mimeType,
+        base64Data,
+        dataUrl
+      })
+      if (!chatInput.trim()) {
+        setChatInput("What should I do based on this image?")
+      }
+      showToast("Image Attached", "Add/edit your prompt, then press Send.", "neutral")
+    } catch (error: any) {
+      showToast("Image Upload Error", error?.message || "Failed to load image.", "error")
+    }
+    chatInputRef.current?.focus()
   }
 
   const transcribeBlobLocally = async (blob: Blob): Promise<string> => {
@@ -326,7 +537,8 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
           if (!transcript) {
             showToast("No Speech Detected", "Could not detect speech in recording.", "neutral")
           } else {
-            await sendChatMessage(transcript)
+            setChatInput(transcript)
+            showToast("Transcript Ready", "Review/edit transcript, then press Send.", "neutral")
           }
         } catch (error) {
           showToast("Voice Error", "Transcription failed. Please try again.", "error")
@@ -541,7 +753,19 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
         <main className="panel main-pane p-4">
           {activePanel === "chat" ? (
             <div className="space-y-3">
-              <div className="text-xs text-slate-500">{chatHint}</div>
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs text-slate-500">{chatHint}</div>
+                <button
+                  type="button"
+                  className="px-2 py-1 text-[11px] rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 flex items-center gap-1"
+                  onClick={handleGenerateTodoPopup}
+                  disabled={chatLoading || isVoiceRecording || isVoiceTranscribing}
+                  title="Generate TODO popup from conversation"
+                >
+                  <ListTodo size={12} />
+                  <span>TODO Popup</span>
+                </button>
+              </div>
 
               {screenshots.length > 0 && (
                 <ScreenshotQueue
@@ -554,7 +778,7 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
               <div ref={messageListRef} className="chat-log h-[300px] overflow-y-auto p-3">
                 {chatMessages.length === 0 ? (
                   <div className="text-sm text-slate-500 text-center mt-10">
-                    Start chatting, or use the mic button to transcribe and send.
+                    Start chatting, or use mic/image to draft input and press Send.
                   </div>
                 ) : (
                   chatMessages.map((msg, idx) => (
@@ -591,13 +815,40 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
                 }}
               >
                 <input
+                  ref={imageInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleImageSelected}
+                />
+                <input
                   ref={chatInputRef}
                   className="chat-input flex-1 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-teal-700/30"
-                  placeholder="Type a message..."
+                  placeholder={pendingImage ? `Image attached: ${pendingImage.name}` : "Type a message..."}
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
                   disabled={chatLoading || isVoiceRecording || isVoiceTranscribing}
                 />
+                {pendingImage && (
+                  <button
+                    type="button"
+                    className="px-2 py-2 text-[11px] rounded border border-slate-300 bg-white text-slate-700"
+                    onClick={() => setPendingImage(null)}
+                    title="Remove attached image"
+                  >
+                    Remove
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="chat-mic p-2 rounded-xl flex items-center justify-center"
+                  onClick={handleImagePickerClick}
+                  disabled={chatLoading || isVoiceRecording || isVoiceTranscribing}
+                  aria-label="Upload image"
+                  title="Upload image"
+                >
+                  <ImagePlus size={16} />
+                </button>
                 <button
                   type="button"
                   className={`chat-mic p-2 rounded-xl flex items-center justify-center ${isVoiceRecording ? "chat-mic-recording" : ""}`}
@@ -611,7 +862,7 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
                 <button
                   type="submit"
                   className="chat-send p-2 rounded-xl flex items-center justify-center disabled:opacity-50"
-                  disabled={chatLoading || isVoiceRecording || isVoiceTranscribing || !chatInput.trim()}
+                  disabled={chatLoading || isVoiceRecording || isVoiceTranscribing || (!chatInput.trim() && !pendingImage)}
                   aria-label="Send"
                 >
                   <SendHorizontal size={16} />
@@ -642,7 +893,7 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
                 </div>
 
                 <div className="text-[11px] text-slate-500">
-                  Contract: POST {`{backendBaseUrl}`}{backendStreamPath || "/v1/agent/stream"} with `agent.request` envelope, return stream events (`message.delta`, `message.final`, `status`, `tool.call`, `tool.result`, `error`).
+                  Contract: POST {`{backendBaseUrl}`}{backendStreamPath || "/v1/agent/stream"} with `agent.request` envelope, return stream events (`message.delta`, `message.final`, `status`, `tool.call`, `tool.result`, `widget.open`, `error`).
                 </div>
 
                 <div className="grid grid-cols-1 gap-2">

@@ -325,6 +325,34 @@ export class LLMHelper {
     }
   }
 
+  public async analyzeImageFromBase64(data: string, mimeType: string, userPrompt?: string) {
+    try {
+      const prompt =
+        userPrompt && userPrompt.trim()
+          ? `You are Iris.\n\nThe user shared an image and asked:\n"${userPrompt.trim()}"\n\nRespond directly to the user's request using the image context. Keep it concise and helpful.`
+          : `You are Iris.\n\nDescribe the content of this image in a short, concise answer. In addition to your main answer, suggest several possible actions or responses the user could take next based on the image. Do not return a structured JSON object, just answer naturally as you would to a user. Be concise and brief.`
+
+      const text = this.useOllama
+        ? await this.callOllama(prompt)
+        : await this.callClaude([
+            { type: "text", text: prompt },
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: mimeType || "image/png",
+                data
+              }
+            }
+          ])
+
+      return { text, timestamp: Date.now() }
+    } catch (error) {
+      console.error("Error analyzing base64 image:", error)
+      throw error
+    }
+  }
+
   public async chatWithClaude(message: string): Promise<string> {
     try {
       if (/(who are you|what(?:'s| is) your name|what are you called|who am i talking to|your name)/i.test(message)) {

@@ -47,6 +47,21 @@ interface ElectronAPI {
   onClaudeChatStreamError: (callback: (data: { requestId: string; error: string }) => void) => () => void
   onAgentReply: (callback: (data: { text: string }) => void) => () => void
   setNotificationsEnabled: (enabled: boolean) => Promise<{ success: boolean }>
+  openWidget: (spec: {
+    id?: string
+    title?: string
+    kind: "html" | "markdown" | "text" | "image" | "chart"
+    width?: number
+    height?: number
+    css?: string
+    payload: {
+      html?: string
+      markdown?: string
+      text?: string
+      imageUrl?: string
+      chartConfig?: unknown
+    }
+  }) => Promise<{ success: boolean; id: string; error?: string }>
   
   invoke: (channel: string, ...args: any[]) => Promise<any>
 }
@@ -214,6 +229,21 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return () => ipcRenderer.removeListener("agent-reply", subscription)
   },
   setNotificationsEnabled: (enabled: boolean) => ipcRenderer.invoke("set-notifications-enabled", enabled),
+  openWidget: (spec: {
+    id?: string
+    title?: string
+    kind: "html" | "markdown" | "text" | "image" | "chart"
+    width?: number
+    height?: number
+    css?: string
+    payload: {
+      html?: string
+      markdown?: string
+      text?: string
+      imageUrl?: string
+      chartConfig?: unknown
+    }
+  }) => ipcRenderer.invoke("open-widget", spec),
   
   invoke: (channel: string, ...args: any[]) => ipcRenderer.invoke(channel, ...args)
 } as ElectronAPI)
