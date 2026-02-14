@@ -605,6 +605,7 @@ body {
 
 .iris-agent-picker {
   width: 260px;
+  max-height: 420px;
   padding: 14px;
   border-radius: var(--r-lg);
   border: 1px solid var(--edge);
@@ -612,6 +613,20 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  overflow-y: auto;
+}
+
+.iris-agent-picker::-webkit-scrollbar {
+  width: 3px;
+}
+
+.iris-agent-picker::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.iris-agent-picker::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: var(--r-pill);
 }
 
 .iris-agent-picker-title {
@@ -626,13 +641,15 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 9px 10px;
+  padding: 9px 12px 9px 10px;
   border-radius: var(--r-md);
   border: 1px solid var(--edge);
   background: var(--glass);
   cursor: pointer;
   transition: all 130ms ease;
   text-align: left;
+  overflow: hidden;
+  min-width: 0;
 }
 
 .iris-agent-picker-option:hover {
@@ -644,11 +661,17 @@ body {
   font-size: 12px;
   font-weight: 600;
   color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .iris-agent-picker-sub {
   font-size: 10px;
   color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ─── Session Toggle (header control) ─── */
