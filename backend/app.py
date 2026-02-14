@@ -1191,7 +1191,33 @@ def proactive_describe_screenshot() -> Any:
             previous_description=previous_description,
         )
     except Exception as exc:
-        return jsonify({"error": f"description failed: {exc}"}), 500
+        app.logger.error(
+            "proactive_describe failed screenshot_id=%s device_id=%s session_id=%s error=%s\n%s",
+            screenshot_id,
+            row.get("device_id"),
+            row.get("session_id"),
+            str(exc),
+            traceback.format_exc(),
+        )
+        fallback_raw = previous_description or {
+            "schema_version": "1.0",
+            "scene_summary": "",
+            "problem_to_solve": "",
+            "task_objective": "",
+            "success_criteria": [],
+            "canvas_state": {
+                "is_blank": False,
+                "density": "low",
+                "primary_mode": "unknown",
+            },
+            "regions": [],
+            "suggestion_candidates": [],
+            "change_assessment": {
+                "novelty_vs_previous": 0.0,
+                "notable_changes": [],
+            },
+        }
+        description = agent_module._normalize_proactive_description(fallback_raw)
 
     result = {
         "screenshot_id": screenshot_id,
