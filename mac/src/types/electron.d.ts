@@ -53,6 +53,7 @@ export interface ElectronAPI {
     name: string
     metadata?: {
       claude_code_conversation_id?: string
+      claude_code_cwd?: string
       codex_conversation_id?: string
       codex_cwd?: string
     }
@@ -63,6 +64,7 @@ export interface ElectronAPI {
     name: string
     metadata?: {
       claude_code_conversation_id?: string
+      claude_code_cwd?: string
       codex_conversation_id?: string
       codex_cwd?: string
     }
@@ -73,6 +75,7 @@ export interface ElectronAPI {
     model: string
     metadata?: {
       claude_code_conversation_id?: string
+      claude_code_cwd?: string
       codex_conversation_id?: string
       codex_cwd?: string
     }
@@ -80,6 +83,7 @@ export interface ElectronAPI {
   getCodexSessions: () => Promise<Array<{ id: string; title: string; timestamp?: string; cwd?: string }>>
   getClaudeCodeSessions: () => Promise<Array<{ id: string; title: string; timestamp?: string; cwd?: string }>>
   sendCodexMessage: (params: { conversationId: string; prompt: string; cwd?: string }) => Promise<{ text: string }>
+  sendClaudeCodeMessage: (params: { conversationId: string; prompt: string; cwd?: string }) => Promise<{ text: string }>
   createSessionMessage: (params: {
     sessionId: string
     role: "user" | "assistant"

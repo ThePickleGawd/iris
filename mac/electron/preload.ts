@@ -63,6 +63,7 @@ interface ElectronAPI {
     name: string
     metadata?: {
       claude_code_conversation_id?: string
+      claude_code_cwd?: string
       codex_conversation_id?: string
       codex_cwd?: string
     }
@@ -73,6 +74,7 @@ interface ElectronAPI {
     name: string
     metadata?: {
       claude_code_conversation_id?: string
+      claude_code_cwd?: string
       codex_conversation_id?: string
       codex_cwd?: string
     }
@@ -83,6 +85,7 @@ interface ElectronAPI {
     model: string
     metadata?: {
       claude_code_conversation_id?: string
+      claude_code_cwd?: string
       codex_conversation_id?: string
       codex_cwd?: string
     }
@@ -90,6 +93,7 @@ interface ElectronAPI {
   getCodexSessions: () => Promise<Array<{ id: string; title: string; timestamp?: string; cwd?: string }>>
   getClaudeCodeSessions: () => Promise<Array<{ id: string; title: string; timestamp?: string; cwd?: string }>>
   sendCodexMessage: (params: { conversationId: string; prompt: string; cwd?: string }) => Promise<{ text: string }>
+  sendClaudeCodeMessage: (params: { conversationId: string; prompt: string; cwd?: string }) => Promise<{ text: string }>
   createSessionMessage: (params: {
     sessionId: string
     role: "user" | "assistant"
@@ -279,6 +283,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     name: string
     metadata?: {
       claude_code_conversation_id?: string
+      claude_code_cwd?: string
       codex_conversation_id?: string
       codex_cwd?: string
     }
@@ -290,6 +295,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     model: string
     metadata?: {
       claude_code_conversation_id?: string
+      claude_code_cwd?: string
       codex_conversation_id?: string
       codex_cwd?: string
     }
@@ -299,6 +305,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getClaudeCodeSessions: () => ipcRenderer.invoke("get-claude-code-sessions"),
   sendCodexMessage: (params: { conversationId: string; prompt: string; cwd?: string }) =>
     ipcRenderer.invoke("send-codex-message", params),
+  sendClaudeCodeMessage: (params: { conversationId: string; prompt: string; cwd?: string }) =>
+    ipcRenderer.invoke("send-claude-code-message", params),
   createSessionMessage: (params: {
     sessionId: string
     role: "user" | "assistant"
