@@ -255,7 +255,7 @@
 					"@executable_path/Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "$(IRIS_BUNDLE_ID)";
-				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = "$(IRIS_BUNDLE_ID_DEVICE)";
+				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = com.ishan.iris;
 				SDKROOT = iphoneos;
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				TARGETED_DEVICE_FAMILY = 2;
@@ -395,7 +395,7 @@
 					"@executable_path/Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "$(IRIS_BUNDLE_ID)";
-				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = "$(IRIS_BUNDLE_ID_DEVICE)";
+				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = com.ishan.iris;
 				SDKROOT = iphoneos;
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				TARGETED_DEVICE_FAMILY = 2;

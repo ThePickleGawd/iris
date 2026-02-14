@@ -14,7 +14,7 @@ uv sync
 uv run python app.py
 ```
 
-Service starts at `http://localhost:5000`.
+Service starts at `http://localhost:8000`.
 
 Optional env:
 
@@ -31,7 +31,7 @@ Optional env:
 1. Create session:
 
 ```bash
-curl -X POST http://localhost:5000/api/sessions \
+curl -X POST http://localhost:8000/api/sessions \
   -H "Content-Type: application/json" \
   -d '{
     "name":"Interview Diagram Iteration",
@@ -50,7 +50,7 @@ curl -X POST http://localhost:5000/api/sessions \
 4. Update session (rename/archive):
 
 ```bash
-curl -X PUT http://localhost:5000/api/sessions/<session_id> \
+curl -X PUT http://localhost:8000/api/sessions/<session_id> \
   -H "Content-Type: application/json" \
   -d '{"status":"archived"}'
 ```
@@ -60,7 +60,7 @@ curl -X PUT http://localhost:5000/api/sessions/<session_id> \
 1. Ingest transcript text:
 
 ```bash
-curl -X POST http://localhost:5000/api/transcripts \
+curl -X POST http://localhost:8000/api/transcripts \
   -H "Content-Type: application/json" \
   -d '{
     "session_id":"<session_id>",
@@ -78,7 +78,7 @@ curl -X POST http://localhost:5000/api/transcripts \
 3. Update transcript text:
 
 ```bash
-curl -X PUT http://localhost:5000/api/transcripts/<transcript_id> \
+curl -X PUT http://localhost:8000/api/transcripts/<transcript_id> \
   -H "Content-Type: application/json" \
   -d '{
     "text":"Updated transcript after local correction.",
@@ -89,19 +89,19 @@ curl -X PUT http://localhost:5000/api/transcripts/<transcript_id> \
 4. Delete transcript:
 
 ```bash
-curl -X DELETE http://localhost:5000/api/transcripts/<transcript_id>
+curl -X DELETE http://localhost:8000/api/transcripts/<transcript_id>
 ```
 
 5. List transcripts for sync (supports `cursor`, `since`, `session_id`, `device_id`, `limit`):
 
 ```bash
-curl "http://localhost:5000/api/transcripts?since=2026-02-14T20:00:00Z&limit=100"
+curl "http://localhost:8000/api/transcripts?since=2026-02-14T20:00:00Z&limit=100"
 ```
 
 Preferred paging (stable for same-timestamp events):
 
 ```bash
-curl "http://localhost:5000/api/transcripts?cursor=2026-02-14T20:00:00Z|<last_id>&limit=100"
+curl "http://localhost:8000/api/transcripts?cursor=2026-02-14T20:00:00Z|<last_id>&limit=100"
 ```
 
 ### Screenshot ingestion
@@ -109,7 +109,7 @@ curl "http://localhost:5000/api/transcripts?cursor=2026-02-14T20:00:00Z|<last_id
 1. Upload screenshot/diagram:
 
 ```bash
-curl -X POST http://localhost:5000/api/screenshots \
+curl -X POST http://localhost:8000/api/screenshots \
   -F "screenshot=@diagram.png" \
   -F "session_id=<session_id>" \
   -F "device_id=ipad-pro-1" \
@@ -133,13 +133,13 @@ Screenshot metadata now includes `file_url` for cross-device fetches (instead of
 4. Delete screenshot:
 
 ```bash
-curl -X DELETE http://localhost:5000/api/screenshots/<screenshot_id>
+curl -X DELETE http://localhost:8000/api/screenshots/<screenshot_id>
 ```
 
 5. List screenshot metadata for sync (supports `cursor`, `since`, `session_id`, `device_id`, `limit`):
 
 ```bash
-curl "http://localhost:5000/api/screenshots?since=2026-02-14T20:00:00Z&limit=100"
+curl "http://localhost:8000/api/screenshots?since=2026-02-14T20:00:00Z&limit=100"
 ```
 
 ### Unified event feed
@@ -147,7 +147,7 @@ curl "http://localhost:5000/api/screenshots?since=2026-02-14T20:00:00Z&limit=100
 Poll both modalities from one endpoint:
 
 ```bash
-curl "http://localhost:5000/api/events?since=2026-02-14T20:00:00Z&limit=100"
+curl "http://localhost:8000/api/events?since=2026-02-14T20:00:00Z&limit=100"
 ```
 
 Optional query params:
@@ -168,7 +168,7 @@ Peripherals can consume derived commands without reading raw screenshots/transcr
 1. Create command (usually from agent/mac orchestrator):
 
 ```bash
-curl -X POST http://localhost:5000/api/device-commands \
+curl -X POST http://localhost:8000/api/device-commands \
   -H "Content-Type: application/json" \
   -d '{
     "session_id":"<session_id>",
@@ -182,7 +182,7 @@ curl -X POST http://localhost:5000/api/device-commands \
 2. Peripheral polls commands:
 
 ```bash
-curl "http://localhost:5000/api/device-commands?target_device_id=iPad%20Diagram&limit=50"
+curl "http://localhost:8000/api/device-commands?target_device_id=iPad%20Diagram&limit=50"
 ```
 
 Optional query params:
@@ -194,7 +194,7 @@ Optional query params:
 3. Peripheral ack/updates status:
 
 ```bash
-curl -X POST http://localhost:5000/api/device-commands/<command_id>/ack \
+curl -X POST http://localhost:8000/api/device-commands/<command_id>/ack \
   -H "Content-Type: application/json" \
   -d '{
     "status":"completed",
@@ -211,7 +211,7 @@ curl -X POST http://localhost:5000/api/device-commands/<command_id>/ack \
 1. Publish latest high-level status (from agent/mac orchestrator):
 
 ```bash
-curl -X POST http://localhost:5000/api/agent-status \
+curl -X POST http://localhost:8000/api/agent-status \
   -H "Content-Type: application/json" \
   -d '{
     "session_id":"<session_id>",
@@ -231,7 +231,7 @@ curl -X POST http://localhost:5000/api/agent-status \
 
 1. Start Flask (already binds to all interfaces in `app.py`): `uv run python app.py`
 2. Find Mac LAN IP (example): `ipconfig getifaddr en0`
-3. Use `http://<mac-lan-ip>:5000` from iPad/widget clients (not `localhost`)
+3. Use `http://<mac-lan-ip>:8000` from iPad/widget clients (not `localhost`)
 4. If needed, set CORS for your client origin:
    - `CORS_ALLOW_ORIGIN=http://<client-origin> uv run python app.py`
 5. Allow incoming connections for Python/Terminal in macOS Firewall when prompted

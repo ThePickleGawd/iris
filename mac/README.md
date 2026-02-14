@@ -16,7 +16,7 @@ cp .env.example .env
 
 3. Configure backend endpoints in `.env` (or use defaults):
 - `IRIS_AGENT_URL` for the agent server (default `http://localhost:8000`)
-- `IRIS_BACKEND_URL` for backend storage APIs (default `http://localhost:5000`)
+- `IRIS_BACKEND_URL` for backend storage APIs (default `http://localhost:8000`)
 
 4. Run in development:
 ```bash
@@ -32,7 +32,7 @@ npm run dist
 
 ```env
 IRIS_AGENT_URL=http://localhost:8000
-IRIS_BACKEND_URL=http://localhost:5000
+IRIS_BACKEND_URL=http://localhost:8000
 IRIS_AGENT_NAME=iris
 ```
 

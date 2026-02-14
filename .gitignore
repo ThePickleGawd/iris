@@ -8,6 +8,7 @@ mac/release/
 mac/.env
 mac/.env.local
 mac/.env.*.local
+.env
 
 
 # logs and caches

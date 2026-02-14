@@ -24,7 +24,7 @@ iPhone session controller for Iris.
    - `cd backend`
    - `uv run python app.py`
 4. In app Settings, set backend URL to your Mac LAN address:
-   - Example: `http://192.168.1.42:5000`
+   - Example: `http://192.168.1.42:8000`
    - Do not use `localhost` on physical iPhone.
 
 ## Notes
