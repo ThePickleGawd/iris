@@ -87,3 +87,104 @@ enum AgentClientError: LocalizedError {
         }
     }
 }
+
+/// Uploads iPad canvas screenshots to the Iris backend.
+enum BackendClient {
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 20
+        config.timeoutIntervalForResource = 25
+        return URLSession(configuration: config)
+    }()
+
+    static func uploadScreenshot(
+        pngData: Data,
+        deviceID: String,
+        backendURL: URL,
+        notes: String? = nil
+    ) async throws -> String {
+        let endpoint = backendURL.appendingPathComponent("api/screenshots")
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+
+        let boundary = "Boundary-\(UUID().uuidString)"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        let body = makeMultipartBody(
+            pngData: pngData,
+            boundary: boundary,
+            deviceID: deviceID,
+            notes: notes
+        )
+        request.httpBody = body
+        request.setValue(String(body.count), forHTTPHeaderField: "Content-Length")
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw BackendClientError.invalidResponse
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let text = String(data: data, encoding: .utf8) ?? ""
+            throw BackendClientError.serverError(statusCode: http.statusCode, body: text)
+        }
+
+        guard
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let screenshotID = json["id"] as? String
+        else {
+            throw BackendClientError.invalidResponse
+        }
+
+        return screenshotID
+    }
+
+    private static func makeMultipartBody(
+        pngData: Data,
+        boundary: String,
+        deviceID: String,
+        notes: String?
+    ) -> Data {
+        var body = Data()
+
+        func append(_ value: String) {
+            body.append(Data(value.utf8))
+        }
+
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"device_id\"\r\n\r\n")
+        append("\(deviceID)\r\n")
+
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"source\"\r\n\r\n")
+        append("ipad-canvas\r\n")
+
+        if let notes, !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"notes\"\r\n\r\n")
+            append("\(notes)\r\n")
+        }
+
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"screenshot\"; filename=\"canvas.png\"\r\n")
+        append("Content-Type: image/png\r\n\r\n")
+        body.append(pngData)
+        append("\r\n")
+        append("--\(boundary)--\r\n")
+
+        return body
+    }
+}
+
+enum BackendClientError: LocalizedError {
+    case invalidResponse
+    case serverError(statusCode: Int, body: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidResponse:
+            return "Invalid response from backend"
+        case .serverError(let statusCode, let body):
+            return "Backend error \(statusCode): \(body)"
+        }
+    }
+}

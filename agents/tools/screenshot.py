@@ -40,10 +40,12 @@ def handle_read_screenshot(
     device = arguments["device"]
     session_id = context.get("session_id")
 
-    # Try session-scoped first, then fall back to device-scoped
+    # Try session-scoped first, then fall back to device-scoped.
     params: dict[str, str] = {}
+    used_session_scope = False
     if session_id:
         params["session_id"] = session_id
+        used_session_scope = True
     else:
         params["device_id"] = device
 
@@ -59,6 +61,19 @@ def handle_read_screenshot(
         data = resp.json()
         # Backend returns either a list (session query) or {"items": [...]} (paginated)
         screenshots = data if isinstance(data, list) else data.get("items", [])
+        if not screenshots and used_session_scope:
+            fallback_resp = httpx.get(
+                f"{BACKEND_URL}/api/screenshots",
+                params={"device_id": device},
+                timeout=5,
+            )
+            if fallback_resp.status_code == 200:
+                fallback_data = fallback_resp.json()
+                screenshots = (
+                    fallback_data if isinstance(fallback_data, list)
+                    else fallback_data.get("items", [])
+                )
+
         if not screenshots:
             return f"No screenshots available for {device}.", None
 
