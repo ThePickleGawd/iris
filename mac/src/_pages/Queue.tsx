@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react"
-import { ChevronDown, ChevronUp, Plus, SendHorizontal } from "lucide-react"
+import { ChevronDown, ChevronUp, Plus, SendHorizontal, X } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"
@@ -29,6 +29,12 @@ interface SessionInfo {
   name: string
 }
 
+const agentChoices = [
+  { id: "iris", name: "Iris", subtitle: "Widget + screenshot workflows" },
+  { id: "codex", name: "Codex", subtitle: "Coding-focused model" },
+  { id: "claude_code", name: "Claude Code", subtitle: "Claude coding agent" },
+] as const
+
 const Queue: React.FC = () => {
   const [toastOpen, setToastOpen] = useState(false)
   const [toastMessage, setToastMessage] = useState<ToastMessage>({
@@ -40,6 +46,7 @@ const Queue: React.FC = () => {
   const [chatInput, setChatInput] = useState("")
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatLoading, setChatLoading] = useState(false)
+  const [showAgentPicker, setShowAgentPicker] = useState(false)
 
   const [backendBaseUrl] = useState("http://localhost:8000")
   const [backendStreamPath] = useState("/v1/agent/stream")
@@ -121,10 +128,9 @@ const Queue: React.FC = () => {
     }
   }, [])
 
-  const handleNewChat = useCallback(async () => {
+  const handleNewChat = useCallback(async (agent = "iris") => {
     const id = `mac-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     const name = `Chat ${new Date().toLocaleTimeString()}`
-    const agent = "iris"
 
     try {
       await window.electronAPI.createSession({ id, name, agent })
@@ -137,6 +143,11 @@ const Queue: React.FC = () => {
       return null
     }
   }, [refreshSessions])
+
+  const handleAgentPick = useCallback(async (agentId: string) => {
+    setShowAgentPicker(false)
+    await handleNewChat(agentId)
+  }, [handleNewChat])
 
   const sendChatMessage = async (message: string) => {
     const trimmed = message.trim()
@@ -294,31 +305,39 @@ const Queue: React.FC = () => {
         <ToastDescription>{toastMessage.description}</ToastDescription>
       </Toast>
 
-      {!isExpanded ? (
-        /* Collapsed: simple flex bar — no shell wrapper, no overflow:hidden,
-           no border-radius clipping that kills backgrounds on transparent windows */
-        <div className="iris-floating-bar draggable-area">
-          <div className="iris-tabs">
-            {sessions.map((s) => (
+      {showAgentPicker && (
+        <div className="iris-agent-picker-backdrop interactive" onClick={() => setShowAgentPicker(false)}>
+          <div className="iris-agent-picker" onClick={(e) => e.stopPropagation()}>
+            <div className="iris-agent-picker-title">New Chat</div>
+            {agentChoices.map((choice) => (
               <button
-                key={s.id}
+                key={choice.id}
                 type="button"
-                className={`iris-tab ${currentSession?.id === s.id ? "active" : ""}`}
-                onClick={() => handleSelectSession(s)}
-                title={s.name}
+                className="iris-agent-picker-option interactive"
+                onClick={() => handleAgentPick(choice.id)}
               >
-                {s.name}
+                <span className="iris-agent-picker-name">{choice.name}</span>
+                <span className="iris-agent-picker-sub">{choice.subtitle}</span>
               </button>
             ))}
-            <button
-              type="button"
-              className="iris-tab iris-tab-new"
-              onClick={handleNewChat}
-              title="New chat"
-            >
-              <Plus size={11} />
-            </button>
           </div>
+        </div>
+      )}
+
+      {!isExpanded ? (
+        /* Collapsed: compact bar with convo name and close */
+        <div className="iris-floating-bar draggable-area">
+          <button
+            type="button"
+            className="iris-toggle interactive"
+            onClick={() => window.electronAPI.toggleWindow()}
+            aria-label="Close"
+          >
+            <X size={13} />
+          </button>
+          <span className="iris-bar-title interactive" onClick={() => setIsExpanded(true)}>
+            {currentSession?.name || "Iris"}
+          </span>
           <button
             type="button"
             className="iris-toggle interactive"
@@ -347,7 +366,7 @@ const Queue: React.FC = () => {
               <button
                 type="button"
                 className="iris-tab iris-tab-new"
-                onClick={handleNewChat}
+                onClick={() => setShowAgentPicker(true)}
                 title="New chat"
               >
                 <Plus size={11} />

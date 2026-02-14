@@ -158,6 +158,26 @@ body {
   padding: 5px 8px;
 }
 
+/* ─── Bar Title (collapsed) ─── */
+
+.iris-bar-title {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  padding: 0 4px;
+  transition: color 130ms ease;
+}
+
+.iris-bar-title:hover {
+  color: var(--text);
+}
+
 /* ─── Tabs ─── */
 
 .iris-tabs {
@@ -529,6 +549,67 @@ body {
 .toast-error {
   background: rgba(120, 30, 36, 0.88);
   color: #fecaca;
+}
+
+/* ─── Agent Picker ─── */
+
+.iris-agent-picker-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  animation: content-in 120ms ease-out;
+}
+
+.iris-agent-picker {
+  width: 260px;
+  padding: 14px;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--edge);
+  background: var(--void-deep);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.iris-agent-picker-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.04em;
+  padding: 0 2px 4px;
+}
+
+.iris-agent-picker-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 10px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--edge);
+  background: var(--glass);
+  cursor: pointer;
+  transition: all 130ms ease;
+  text-align: left;
+}
+
+.iris-agent-picker-option:hover {
+  background: var(--accent-ghost);
+  border-color: var(--edge-accent);
+}
+
+.iris-agent-picker-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.iris-agent-picker-sub {
+  font-size: 10px;
+  color: var(--text-dim);
 }
 
 /* ─── Electron Window Drag ─── */

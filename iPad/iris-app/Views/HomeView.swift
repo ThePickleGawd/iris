@@ -7,6 +7,8 @@ struct HomeView: View {
 
     private let columns = [GridItem(.adaptive(minimum: 210, maximum: 280), spacing: 18)]
 
+    @State private var syncTimer: Timer?
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -65,8 +67,24 @@ struct HomeView: View {
                     }
                 }
             }
+            .onAppear { startSessionSync() }
+            .onDisappear { syncTimer?.invalidate() }
         }
         .preferredColorScheme(.dark)
+    }
+
+    private func startSessionSync() {
+        syncSessionsNow()
+        syncTimer?.invalidate()
+        syncTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { _ in
+            syncSessionsNow()
+        }
+    }
+
+    private func syncSessionsNow() {
+        guard let urlStr = UserDefaults.standard.string(forKey: "iris_agent_server_url"),
+              let url = URL(string: urlStr) else { return }
+        documentStore.syncSessions(agentServerURL: url)
     }
 }
 

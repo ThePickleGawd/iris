@@ -577,6 +577,11 @@ class AgentHTTPServer {
         )
         linkedDevices[remoteID] = linked
 
+        // Persist the agent server URL so HomeView can sync sessions
+        if let ip, !ip.isEmpty {
+            UserDefaults.standard.set("http://\(ip):8000", forKey: "iris_agent_server_url")
+        }
+
         print("[iris] Device linked: \(remoteName) (\(platform)) id=\(remoteID)")
 
         Task { @MainActor [weak self] in
