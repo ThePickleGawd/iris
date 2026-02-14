@@ -288,7 +288,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   }
 
   function requestAgentServer(
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "DELETE",
     path: string,
     body?: unknown,
     timeoutMs: number = AGENT_GET_TIMEOUT_MS
@@ -303,7 +303,7 @@ export function initializeIpcHandlers(appState: AppState): void {
           path: parsed.pathname + parsed.search,
           method,
           headers:
-            method === "POST"
+            (method === "POST" || method === "DELETE") && body !== undefined
               ? {
                   "Content-Type": "application/json",
                   "Content-Length": Buffer.byteLength(bodyStr),
@@ -331,7 +331,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       req.on("timeout", () => {
         req.destroy(new Error(`Agent server timeout (${timeoutMs}ms)`))
       })
-      if (method === "POST") req.write(bodyStr)
+      if ((method === "POST" || method === "DELETE") && body !== undefined) req.write(bodyStr)
       req.end()
     })
   }
