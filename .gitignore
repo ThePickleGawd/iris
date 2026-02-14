@@ -28,6 +28,23 @@ agents/tools/__pycache__/
 .DS_Store
 *.swp
 
+# Xcode local/user-specific artifacts (safe to ignore for team repos)
+**/DerivedData/
+**/.DerivedData/
+**/.xcode-derived/
+**/xcuserdata/
+**/*.xcworkspace/xcuserdata/
+**/*.xcodeproj/xcuserdata/
+**/*.xcuserstate
+**/*.xccheckout
+**/*.xcscmblueprint
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+!default.perspectivev3
+
 # iPhone app - local Xcode artifacts
 iPhone/.DerivedData/
 iPhone/**/*.xcuserdatad/
@@ -35,6 +52,8 @@ iPhone/**/*.xcworkspace/xcuserdata/
 
 # iPad app - local Xcode artifacts
 iPad/.derived
+iPad/.xcode-derived/
 iPad/**/*.xcuserdatad/
 iPad/**/*.xcworkspace/xcuserdata/
+iPad/**/*.xcuserstate
 iPad/iris-app/Configs/App.local.xcconfig
