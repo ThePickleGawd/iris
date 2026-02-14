@@ -71,7 +71,38 @@ body {
   background: transparent;
 }
 
-/* ─── Shell ─── */
+/* ─── Floating Bar (collapsed) ─── */
+/* Keep overflow visible (no clipping) for transparent macOS windows,
+   but render a dedicated panel background behind the controls. */
+
+.iris-floating-bar {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  align-items: center;
+  padding: 4px 6px;
+  gap: 4px;
+  min-height: 44px;
+  animation: shell-in 260ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.iris-floating-bar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--edge);
+  background: var(--void);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.iris-floating-bar > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* ─── Shell (expanded only) ─── */
 
 .iris-shell {
   position: relative;
@@ -79,29 +110,13 @@ body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  transition:
-    min-height 220ms cubic-bezier(0.16, 1, 0.3, 1),
-    background 200ms ease,
-    border-color 200ms ease;
-  animation: shell-in 260ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-/* Collapsed: fully transparent container, floating pills */
-.iris-shell.collapsed {
-  min-height: 48px;
-  background: transparent;
-  border: 1px solid transparent;
-}
-
-/* Expanded: dark translucent panel */
-.iris-shell.expanded {
   min-height: 460px;
   background: var(--void);
   border: 1px solid var(--edge);
+  animation: shell-in 260ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-/* Decorative gradients only when expanded */
-.iris-shell.expanded::before {
+.iris-shell::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -112,7 +127,7 @@ body {
   z-index: 0;
 }
 
-.iris-shell.expanded::after {
+.iris-shell::after {
   content: "";
   position: absolute;
   top: 0;
@@ -138,7 +153,7 @@ body {
   animation: content-in 180ms ease-out;
 }
 
-.iris-shell.expanded .iris-bar {
+.iris-shell .iris-bar {
   border-bottom: 1px solid var(--edge);
   padding: 5px 8px;
 }
@@ -171,36 +186,36 @@ body {
   cursor: pointer;
 }
 
-/* Collapsed: tabs are standalone pills with their own background */
-.iris-shell.collapsed .iris-tab {
+/* Floating bar: pills have their own solid dark background */
+.iris-floating-bar .iris-tab {
   background: var(--pill);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
-.iris-shell.collapsed .iris-tab:hover {
+.iris-floating-bar .iris-tab:hover {
   background: var(--pill-hover);
   color: var(--text);
   border-color: var(--edge-hover);
 }
 
-.iris-shell.collapsed .iris-tab.active {
+.iris-floating-bar .iris-tab.active {
   background: rgba(139, 92, 246, 0.28);
   color: #c4b5fd;
   border-color: var(--edge-accent);
 }
 
-/* Expanded: tabs are lighter since they're on a dark panel */
-.iris-shell.expanded .iris-tab {
+/* Shell: tabs are lighter since they sit on a dark panel */
+.iris-shell .iris-tab {
   background: var(--glass);
 }
 
-.iris-shell.expanded .iris-tab:hover {
+.iris-shell .iris-tab:hover {
   background: var(--glass-hover);
   color: var(--text);
   border-color: var(--edge-hover);
 }
 
-.iris-shell.expanded .iris-tab.active {
+.iris-shell .iris-tab.active {
   background: var(--accent-dim);
   color: #c4b5fd;
   border-color: var(--edge-accent);
@@ -217,12 +232,12 @@ body {
   border-radius: var(--r-sm);
 }
 
-.iris-shell.collapsed .iris-tab-new {
+.iris-floating-bar .iris-tab-new {
   background: var(--pill);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
-.iris-shell.expanded .iris-tab-new {
+.iris-shell .iris-tab-new {
   background: var(--glass);
 }
 
@@ -248,12 +263,12 @@ body {
   flex-shrink: 0;
 }
 
-.iris-shell.collapsed .iris-toggle {
+.iris-floating-bar .iris-toggle {
   background: var(--pill);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
-.iris-shell.expanded .iris-toggle {
+.iris-shell .iris-toggle {
   background: transparent;
   border-color: transparent;
 }
