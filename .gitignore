@@ -21,3 +21,8 @@ mac/.turbo/
 # OS/editor noise
 .DS_Store
 *.swp
+
+# iPhone app - local Xcode artifacts
+iPhone/.DerivedData/
+iPhone/**/*.xcuserdatad/
+iPhone/**/*.xcworkspace/xcuserdata/
