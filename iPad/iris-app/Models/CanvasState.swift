@@ -9,6 +9,9 @@ enum DrawingTool: String, CaseIterable {
 }
 
 class CanvasState: ObservableObject {
+    static let canvasSize: CGFloat = 100_000
+    static let canvasCenter = CGPoint(x: canvasSize / 2, y: canvasSize / 2)
+
     var drawing = PKDrawing()
 
     @Published var currentTool: DrawingTool = .pen
@@ -16,9 +19,6 @@ class CanvasState: ObservableObject {
     @Published var strokeWidth: CGFloat = 3
     @Published var canUndo: Bool = false
     @Published var canRedo: Bool = false
-
-    @Published var pageCount: Int = 1
-    let pageGap: CGFloat = 12
 
     @Published var isRecording: Bool = false
 
@@ -34,38 +34,13 @@ class CanvasState: ObservableObject {
     var needsDrawingReset = false
     weak var undoManager: UndoManager?
 
-    func pageHeight(for screenWidth: CGFloat) -> CGFloat {
-        screenWidth * 1.414
-    }
-
-    func totalContentHeight(for screenWidth: CGFloat) -> CGFloat {
-        let ph = pageHeight(for: screenWidth)
-        return CGFloat(pageCount) * ph + CGFloat(pageCount - 1) * pageGap
-    }
-
     func undo() { undoManager?.undo() }
     func redo() { undoManager?.redo() }
 
     func clearCanvas() {
         needsDrawingReset = true
         drawing = PKDrawing()
-        pageCount = 1
         canUndo = false
         canRedo = false
-    }
-
-    func checkAndSpawnPage(screenWidth: CGFloat) {
-        let ph = pageHeight(for: screenWidth)
-        let lastPageTop = CGFloat(pageCount - 1) * (ph + pageGap)
-        let lastPageBottom = lastPageTop + ph
-
-        let hasStrokesInLastPage = drawing.strokes.contains { stroke in
-            let bounds = stroke.renderBounds
-            return bounds.maxY > lastPageTop && bounds.minY < lastPageBottom
-        }
-
-        if hasStrokesInLastPage {
-            pageCount += 1
-        }
     }
 }

@@ -5,36 +5,30 @@ import UIKit
 struct CanvasView: UIViewRepresentable {
     @EnvironmentObject var canvasState: CanvasState
     let document: Document
+    let objectManager: CanvasObjectManager
+    let cursor: AgentCursorController
 
     func makeUIView(context: Context) -> NoteCanvasView {
         let canvasView = NoteCanvasView()
         canvasView.delegate = context.coordinator
-        canvasView.backgroundColor = UIColor(white: 0.92, alpha: 1)
+        canvasView.backgroundColor = InfiniteCanvasBackgroundView.baseColor
         canvasView.isOpaque = true
         canvasView.drawingPolicy = .pencilOnly
         canvasView.overrideUserInterfaceStyle = .light
-        canvasView.minimumZoomScale = 0.5
-        canvasView.maximumZoomScale = 3.0
+        canvasView.minimumZoomScale = 0.25
+        canvasView.maximumZoomScale = 4.0
         canvasView.alwaysBounceVertical = true
-        canvasView.alwaysBounceHorizontal = false
+        canvasView.alwaysBounceHorizontal = true
         canvasView.showsHorizontalScrollIndicator = false
+        canvasView.showsVerticalScrollIndicator = false
         canvasView.contentInsetAdjustmentBehavior = .never
         canvasView.undoManager?.levelsOfUndo = 50
 
         canvasView.drawing = document.loadDrawing()
         canvasState.drawing = canvasView.drawing
 
-        let initialWidth = max(UIScreen.main.bounds.width, 1)
-        let initialPageHeight = canvasState.pageHeight(for: initialWidth)
-        let initialTotalHeight = canvasState.totalContentHeight(for: initialWidth)
-        canvasView.contentSize = CGSize(width: initialWidth, height: initialTotalHeight)
-        canvasView.updatePages(
-            count: canvasState.pageCount,
-            height: initialPageHeight,
-            gap: canvasState.pageGap,
-            contentWidth: initialWidth,
-            contentHeight: initialTotalHeight
-        )
+        canvasView.configureForInfiniteCanvas()
+        canvasView.objectManager = objectManager
 
         applyTool(to: canvasView)
 
@@ -56,7 +50,13 @@ struct CanvasView: UIViewRepresentable {
 
         twoFingerTap.require(toFail: threeFingerTap)
 
-        context.coordinator.needsInitialLayout = true
+        objectManager.attach(to: canvasView, cursor: cursor)
+
+        // Center viewport after layout
+        DispatchQueue.main.async {
+            canvasView.centerViewport()
+        }
+
         return canvasView
     }
 
@@ -64,40 +64,9 @@ struct CanvasView: UIViewRepresentable {
         context.coordinator.parent = self
         applyTool(to: canvasView)
 
-        let screenWidth = canvasView.bounds.width
-        guard screenWidth > 0 else { return }
-
-        let pageHeight = canvasState.pageHeight(for: screenWidth)
-        let totalHeight = canvasState.totalContentHeight(for: screenWidth)
-        let newSize = CGSize(width: screenWidth, height: totalHeight)
-
-        if canvasView.contentSize != newSize {
-            canvasView.contentSize = newSize
-        }
-
-        canvasView.updatePages(
-            count: canvasState.pageCount,
-            height: pageHeight,
-            gap: canvasState.pageGap,
-            contentWidth: screenWidth,
-            contentHeight: totalHeight
-        )
-
         if canvasState.needsDrawingReset {
             canvasState.needsDrawingReset = false
             canvasView.drawing = canvasState.drawing
-        }
-
-        if context.coordinator.needsInitialLayout {
-            context.coordinator.needsInitialLayout = false
-            if !canvasView.drawing.strokes.isEmpty {
-                var needed = 1
-                for stroke in canvasView.drawing.strokes {
-                    let pageIndex = Int(stroke.renderBounds.maxY / (pageHeight + canvasState.pageGap)) + 1
-                    needed = max(needed, pageIndex)
-                }
-                canvasState.pageCount = max(canvasState.pageCount, needed + 1)
-            }
         }
     }
 
@@ -120,7 +89,6 @@ struct CanvasView: UIViewRepresentable {
 
     class Coordinator: NSObject, PKCanvasViewDelegate, UIPencilInteractionDelegate {
         var parent: CanvasView
-        var needsInitialLayout = false
         private var previousTool: DrawingTool = .pen
         private var squeezePreviousTool: DrawingTool?
         private var saveTimer: Timer?
@@ -142,9 +110,7 @@ struct CanvasView: UIViewRepresentable {
         // MARK: - Scroll
 
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
-            let offsetX = max((scrollView.bounds.width - scrollView.contentSize.width * scrollView.zoomScale) / 2, 0)
-            let offsetY = max((scrollView.bounds.height - scrollView.contentSize.height * scrollView.zoomScale) / 2, 0)
-            scrollView.contentInset = UIEdgeInsets(top: offsetY, left: offsetX, bottom: offsetY, right: offsetX)
+            parent.objectManager.updateZoomScale(scrollView.zoomScale)
         }
 
         // MARK: - PKCanvasViewDelegate
@@ -163,11 +129,6 @@ struct CanvasView: UIViewRepresentable {
             parent.canvasState.canUndo = canvasView.undoManager?.canUndo ?? false
             parent.canvasState.canRedo = canvasView.undoManager?.canRedo ?? false
             parent.canvasState.undoManager = canvasView.undoManager
-
-            let screenWidth = canvasView.bounds.width
-            if screenWidth > 0 {
-                parent.canvasState.checkAndSpawnPage(screenWidth: screenWidth)
-            }
         }
 
         // MARK: - UIPencilInteractionDelegate
@@ -241,7 +202,8 @@ struct CanvasView: UIViewRepresentable {
 // MARK: - NoteCanvasView
 
 class NoteCanvasView: PKCanvasView {
-    private let pageBackgroundView = PageBackgroundView()
+    private let infiniteBackground = InfiniteCanvasBackgroundView()
+    weak var objectManager: CanvasObjectManager?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -254,26 +216,52 @@ class NoteCanvasView: PKCanvasView {
     }
 
     private func setup() {
-        pageBackgroundView.isUserInteractionEnabled = false
-        pageBackgroundView.backgroundColor = .clear
-        pageBackgroundView.layer.zPosition = -1
-        insertSubview(pageBackgroundView, at: 0)
+        infiniteBackground.isUserInteractionEnabled = false
+        infiniteBackground.backgroundColor = .clear
+        infiniteBackground.layer.zPosition = -2
+        insertSubview(infiniteBackground, at: 0)
     }
 
-    func updatePages(count: Int, height: CGFloat, gap: CGFloat, contentWidth: CGFloat, contentHeight: CGFloat) {
-        let newFrame = CGRect(x: 0, y: 0, width: contentWidth, height: contentHeight)
-        if pageBackgroundView.frame != newFrame {
-            pageBackgroundView.frame = newFrame
+    func configureForInfiniteCanvas() {
+        let size = CanvasState.canvasSize
+        contentSize = CGSize(width: size, height: size)
+        infiniteBackground.frame = CGRect(x: 0, y: 0, width: size, height: size)
+    }
+
+    func centerViewport() {
+        let center = CanvasState.canvasCenter
+        let offsetX = center.x - bounds.width / 2
+        let offsetY = center.y - bounds.height / 2
+        setContentOffset(CGPoint(x: offsetX, y: offsetY), animated: false)
+    }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        // Pencil always goes to PencilKit for drawing
+        if let event = event, let touch = event.allTouches?.first, touch.type == .pencil {
+            return super.hitTest(point, with: event)
         }
-        let needsRedraw = pageBackgroundView.pageCount != count
-            || pageBackgroundView.pageHeight != height
-            || pageBackgroundView.pageGap != gap
-        pageBackgroundView.pageCount = count
-        pageBackgroundView.pageHeight = height
-        pageBackgroundView.pageGap = gap
-        if needsRedraw {
-            pageBackgroundView.setNeedsDisplay()
+
+        // For finger touches, check if a widget is under the point — return it
+        // so its pan gesture recognizer handles the drag instead of canvas scroll
+        if let manager = objectManager {
+            for (_, widgetView) in manager.objectViews {
+                let localPoint = widgetView.convert(point, from: self)
+                if widgetView.bounds.contains(localPoint) {
+                    return widgetView
+                }
+            }
         }
+
+        // Fallback to default (scroll/zoom)
+        return super.hitTest(point, with: event)
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        for touch in touches where touch.type == .pencil {
+            setContentOffset(contentOffset, animated: false)
+            break
+        }
+        super.touchesBegan(touches, with: event)
     }
 
     // MARK: - Duplicate menu item
@@ -303,43 +291,42 @@ class NoteCanvasView: PKCanvasView {
     }
 }
 
-// MARK: - Page Background View
+// MARK: - Infinite Canvas Background (pattern-based dot grid)
 
-class PageBackgroundView: UIView {
-    var pageCount: Int = 1
-    var pageHeight: CGFloat = 0
-    var pageGap: CGFloat = 20
+class InfiniteCanvasBackgroundView: UIView {
+    static let baseColor = UIColor(red: 0.96, green: 0.96, blue: 0.97, alpha: 1)
 
-    override func draw(_ rect: CGRect) {
-        guard let ctx = UIGraphicsGetCurrentContext(), pageHeight > 0 else { return }
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = Self.makeDotPatternColor()
+    }
 
-        for i in 0..<pageCount {
-            let y = CGFloat(i) * (pageHeight + pageGap)
-            let pageRect = CGRect(x: 0, y: y, width: bounds.width, height: pageHeight)
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        backgroundColor = Self.makeDotPatternColor()
+    }
 
-            guard pageRect.intersects(rect) else { continue }
+    private static func makeDotPatternColor() -> UIColor {
+        let spacing: CGFloat = 24
+        let dotRadius: CGFloat = 1.0
+        let tileSize = CGSize(width: spacing, height: spacing)
 
-            // Page shadow + fill
-            ctx.saveGState()
-            ctx.setShadow(offset: CGSize(width: 0, height: 2), blur: 6, color: UIColor.black.withAlphaComponent(0.15).cgColor)
-            ctx.setFillColor(UIColor.white.cgColor)
-            ctx.fill(pageRect)
-            ctx.restoreGState()
+        let renderer = UIGraphicsImageRenderer(size: tileSize)
+        let image = renderer.image { ctx in
+            // Fill tile with base color
+            baseColor.setFill()
+            ctx.fill(CGRect(origin: .zero, size: tileSize))
 
-            // Page border
-            ctx.setStrokeColor(UIColor(white: 0.82, alpha: 1).cgColor)
-            ctx.setLineWidth(0.5)
-            ctx.stroke(pageRect)
-
-            // Separator between pages
-            if i < pageCount - 1 {
-                let separatorY = y + pageHeight + pageGap / 2
-                ctx.setStrokeColor(UIColor(red: 0.68, green: 0.72, blue: 0.82, alpha: 0.5).cgColor)
-                ctx.setLineWidth(0.5)
-                ctx.move(to: CGPoint(x: 0, y: separatorY))
-                ctx.addLine(to: CGPoint(x: bounds.width, y: separatorY))
-                ctx.strokePath()
-            }
+            // Draw dot at center of tile
+            UIColor(white: 0.78, alpha: 1).setFill()
+            ctx.cgContext.fillEllipse(in: CGRect(
+                x: spacing / 2 - dotRadius,
+                y: spacing / 2 - dotRadius,
+                width: dotRadius * 2,
+                height: dotRadius * 2
+            ))
         }
+
+        return UIColor(patternImage: image)
     }
 }

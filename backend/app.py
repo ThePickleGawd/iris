@@ -68,6 +68,7 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL,
                 captured_at TEXT,
                 device_id TEXT,
+                session_id TEXT,
                 source TEXT,
                 mime_type TEXT,
                 file_path TEXT NOT NULL,
@@ -83,6 +84,8 @@ def run_migrations() -> None:
         column_names = {col["name"] for col in columns}
         if "captured_at" not in column_names:
             conn.execute("ALTER TABLE screenshots ADD COLUMN captured_at TEXT")
+        if "session_id" not in column_names:
+            conn.execute("ALTER TABLE screenshots ADD COLUMN session_id TEXT")
 
 
 def parse_iso8601_to_utc(ts: str) -> str:
@@ -117,6 +120,7 @@ def screenshot_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "updated_at": row["updated_at"],
         "captured_at": row["captured_at"],
         "device_id": row["device_id"],
+        "session_id": row["session_id"],
         "source": row["source"],
         "mime_type": row["mime_type"],
         "file_path": row["file_path"],
@@ -416,6 +420,7 @@ def create_app() -> Flask:
         screenshot_id = str(uuid.uuid4())
         created_at = now_iso()
         device_id = request.form.get("device_id")
+        session_id = request.form.get("session_id")
         source = request.form.get("source")
         notes = request.form.get("notes")
         captured_at_raw = request.form.get("captured_at")
@@ -439,8 +444,9 @@ def create_app() -> Flask:
             conn.execute(
                 """
                 INSERT INTO screenshots (
-                    id, created_at, updated_at, captured_at, device_id, source, mime_type, file_path, notes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, created_at, updated_at, captured_at, device_id, session_id,
+                    source, mime_type, file_path, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     screenshot_id,
@@ -448,6 +454,7 @@ def create_app() -> Flask:
                     created_at,
                     captured_at,
                     device_id,
+                    session_id,
                     source,
                     mime_type,
                     str(file_path),
@@ -459,6 +466,29 @@ def create_app() -> Flask:
             ).fetchone()
 
         return jsonify(screenshot_to_dict(row)), 201
+
+    @app.get("/api/screenshots")
+    def list_screenshots() -> Any:
+        session_id = request.args.get("session_id")
+        device_id = request.args.get("device_id")
+
+        with db_connect() as conn:
+            if session_id:
+                rows = conn.execute(
+                    "SELECT * FROM screenshots WHERE session_id = ? ORDER BY created_at DESC",
+                    (session_id,),
+                ).fetchall()
+            elif device_id:
+                rows = conn.execute(
+                    "SELECT * FROM screenshots WHERE device_id = ? ORDER BY created_at DESC",
+                    (device_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM screenshots ORDER BY created_at DESC"
+                ).fetchall()
+
+        return jsonify([screenshot_to_dict(r) for r in rows])
 
     @app.get("/api/screenshots/<screenshot_id>")
     def get_screenshot_meta(screenshot_id: str) -> Any:

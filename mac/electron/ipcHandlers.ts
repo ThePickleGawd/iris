@@ -259,4 +259,37 @@ export function initializeIpcHandlers(appState: AppState): void {
       return { success: false, error: error.message };
     }
   });
+
+  // ─── Device Discovery (Iris iPad) ─────────────────────────
+
+  ipcMain.handle("get-iris-devices", async () => {
+    return appState.deviceDiscovery.getDevices()
+  })
+
+  ipcMain.handle("get-iris-device", async (_, id: string) => {
+    return appState.deviceDiscovery.getDevice(id) || null
+  })
+
+  ipcMain.handle("get-primary-iris-device", async () => {
+    return appState.deviceDiscovery.getPrimaryDevice() || null
+  })
+
+  ipcMain.handle("get-mac-device-id", async () => {
+    return appState.deviceDiscovery.getDeviceId()
+  })
+
+  // Forward discovery events to renderer
+  const discovery = appState.deviceDiscovery
+  discovery.on("device-found", (device) => {
+    const mainWindow = appState.getMainWindow()
+    mainWindow?.webContents.send("iris-device-found", device)
+  })
+  discovery.on("device-lost", (deviceId) => {
+    const mainWindow = appState.getMainWindow()
+    mainWindow?.webContents.send("iris-device-lost", deviceId)
+  })
+  discovery.on("device-updated", (device) => {
+    const mainWindow = appState.getMainWindow()
+    mainWindow?.webContents.send("iris-device-updated", device)
+  })
 }

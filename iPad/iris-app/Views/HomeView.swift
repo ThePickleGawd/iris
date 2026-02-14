@@ -59,10 +59,19 @@ struct HomeView: View {
                 CanvasScreen(document: document)
             }
             .sheet(isPresented: $showingAddDocument) {
-                AddDocumentSheet(documentStore: documentStore)
+                AgentPickerSheet(documentStore: documentStore) { doc in
+                    selectedDocument = doc
+                }
             }
         }
         .preferredColorScheme(.dark)
+        .onAppear {
+            if ProcessInfo.processInfo.arguments.contains("-autoOpenFirst"),
+               selectedDocument == nil,
+               let doc = documentStore.documents.first {
+                selectedDocument = doc
+            }
+        }
     }
 }
 
@@ -95,9 +104,19 @@ struct DocumentCard: View {
                     .foregroundColor(.white)
                     .lineLimit(1)
 
-                Text(document.lastOpened, style: .relative)
-                    .font(.system(size: 11))
-                    .foregroundColor(.white.opacity(0.4))
+                HStack(spacing: 6) {
+                    Text(document.lastOpened, style: .relative)
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.4))
+
+                    Text("·")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.3))
+
+                    Text(document.agentDisplayName)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.5))
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 8)
@@ -111,31 +130,59 @@ struct DocumentCard: View {
     }
 }
 
-// MARK: - Add Document Sheet
+// MARK: - Agent Picker Sheet
 
-struct AddDocumentSheet: View {
+struct AgentPickerSheet: View {
     @ObservedObject var documentStore: DocumentStore
     @Environment(\.dismiss) var dismiss
-    @State private var name = ""
+    var onCreated: (Document) -> Void
+
+    private let agents: [(id: String, name: String, subtitle: String)] = [
+        ("iris", "Iris", "Visual assistant across your devices"),
+        ("codex", "Codex", "Autonomous coding agent"),
+        ("claude_code", "Claude Code", "Interactive coding assistant"),
+    ]
 
     var body: some View {
         NavigationView {
-            Form {
-                Section("Document Name") {
-                    TextField("My Notes", text: $name)
+            ZStack {
+                Color(red: 0.08, green: 0.08, blue: 0.1)
+                    .ignoresSafeArea()
+
+                VStack(spacing: 16) {
+                    ForEach(agents, id: \.id) { agent in
+                        Button {
+                            let doc = documentStore.addDocument(name: "Untitled", agent: agent.id)
+                            dismiss()
+                            onCreated(doc)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(agent.name)
+                                    .font(.system(size: 20, weight: .semibold))
+                                    .foregroundColor(.white)
+
+                                Text(agent.subtitle)
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.white.opacity(0.5))
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 20)
+                            .background(
+                                RoundedRectangle(cornerRadius: 16)
+                                    .fill(Color(white: 0.15))
+                            )
+                        }
+                    }
                 }
+                .padding(.horizontal, 24)
+                .padding(.top, 8)
             }
-            .navigationTitle("New Document")
+            .navigationTitle("Choose Agent")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") {
-                        documentStore.addDocument(name: name)
-                        dismiss()
-                    }
                 }
             }
         }
