@@ -141,6 +141,13 @@ def _make_session(
 
 def _session_summary(session: dict) -> dict:
     """Return session metadata without the full messages array (for listings)."""
+    # Build a short preview from the last non-empty message.
+    preview = ""
+    for msg in reversed(session.get("messages") or []):
+        text = str(msg.get("content") or "").strip()
+        if text:
+            preview = text[:120]
+            break
     return {
         "id": session["id"],
         "name": session.get("name", "Untitled"),
@@ -149,6 +156,7 @@ def _session_summary(session: dict) -> dict:
         "metadata": session.get("metadata", {}),
         "created_at": session.get("created_at", ""),
         "updated_at": session.get("updated_at", ""),
+        "last_message_preview": preview,
     }
 
 
@@ -910,6 +918,21 @@ def delete_session(session_id: str) -> Any:
         return jsonify({"error": "session not found"}), 404
     _delete_session(session_id)
     return jsonify({"id": session_id, "deleted": True})
+
+
+@app.delete("/api/sessions/<session_id>/widgets/<widget_id>")
+@app.delete("/sessions/<session_id>/widgets/<widget_id>")
+def delete_widget(session_id: str, widget_id: str) -> Any:
+    session = _load_session(session_id)
+    if not session:
+        return jsonify({"error": "session not found"}), 404
+    widgets = session.get("widgets", [])
+    before = len(widgets)
+    session["widgets"] = [w for w in widgets if w.get("id") != widget_id]
+    if len(session["widgets"]) == before:
+        return jsonify({"error": "widget not found"}), 404
+    _save_session(session)
+    return jsonify({"id": widget_id, "deleted": True})
 
 
 # ---------------------------------------------------------------------------
