@@ -1,12 +1,13 @@
 import UIKit
 import WebKit
 
-final class CanvasObjectWebView: UIView {
+final class CanvasObjectWebView: UIView, WKNavigationDelegate {
     let objectID: UUID
     private let webView: WKWebView
 
     var onDragEnded: ((UUID, CGPoint) -> Void)?
     var onResizeEnded: ((UUID, CGRect) -> Void)?
+    var onAutoResize: ((UUID, CGRect) -> Void)?
     var onCloseRequested: ((UUID) -> Void)?
 
     private let minSize = CGSize(width: 220, height: 150)
@@ -19,6 +20,7 @@ final class CanvasObjectWebView: UIView {
     private let bottomRightLabel = UILabel()
     private var startFrame: CGRect = .zero
     private var zoomScale: CGFloat = 1.0
+    private var hasAppliedInitialContentFit = false
 
     init(id: UUID, size: CGSize, htmlContent: String) {
         self.objectID = id
@@ -37,10 +39,11 @@ final class CanvasObjectWebView: UIView {
 
         webView.isOpaque = false
         webView.backgroundColor = .clear
-        webView.scrollView.isScrollEnabled = true
-        webView.scrollView.bounces = true
+        webView.scrollView.isScrollEnabled = false
+        webView.scrollView.bounces = false
         webView.layer.cornerRadius = 14
         webView.layer.masksToBounds = true
+        webView.navigationDelegate = self
         addSubview(webView)
 
         topBar.backgroundColor = UIColor(white: 1.0, alpha: 0.01)
@@ -123,6 +126,61 @@ final class CanvasObjectWebView: UIView {
         webView.loadHTMLString(html, baseURL: nil)
     }
 
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        fitToContentIfNeeded(force: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            self?.fitToContentIfNeeded(force: false)
+        }
+    }
+
+    private func fitToContentIfNeeded(force: Bool) {
+        let script = """
+        (function() {
+          const b = document.body;
+          const e = document.documentElement;
+          const w = Math.max(
+            b ? b.scrollWidth : 0,
+            e ? e.scrollWidth : 0,
+            b ? b.offsetWidth : 0,
+            e ? e.offsetWidth : 0
+          );
+          const h = Math.max(
+            b ? b.scrollHeight : 0,
+            e ? e.scrollHeight : 0,
+            b ? b.offsetHeight : 0,
+            e ? e.offsetHeight : 0
+          );
+          return { width: w, height: h };
+        })();
+        """
+
+        webView.evaluateJavaScript(script) { [weak self] value, _ in
+            guard let self else { return }
+            guard let metrics = value as? [String: Any] else { return }
+            guard
+                let width = metrics["width"] as? Double,
+                let height = metrics["height"] as? Double
+            else { return }
+
+            let measured = CGSize(
+                width: max(self.minSize.width, CGFloat(width)),
+                height: max(self.minSize.height, CGFloat(height))
+            )
+
+            if !force && self.hasAppliedInitialContentFit {
+                let deltaW = abs(self.bounds.width - measured.width)
+                let deltaH = abs(self.bounds.height - measured.height)
+                if deltaW < 2 && deltaH < 2 { return }
+            }
+
+            var next = self.frame
+            next.size = measured
+            self.frame = next
+            self.hasAppliedInitialContentFit = true
+            self.onAutoResize?(self.objectID, self.frame)
+        }
+    }
+
     @objc private func handleDrag(_ g: UIPanGestureRecognizer) {
         guard let host = superview else { return }
         let t = g.translation(in: host)
@@ -149,6 +207,7 @@ final class CanvasObjectWebView: UIView {
         switch g.state {
         case .began:
             startFrame = frame
+            hasAppliedInitialContentFit = true
         case .changed:
             var f = startFrame
             f.size.width = max(minSize.width, startFrame.size.width + t.x * inv)

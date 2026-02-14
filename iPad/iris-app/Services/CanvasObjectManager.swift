@@ -154,10 +154,12 @@ final class CanvasObjectManager: ObservableObject {
             self?.objects[id]?.position = origin
         }
 
-        widget.onResizeEnded = { [weak self] id, frame in
+        let syncObjectFrame: (UUID, CGRect) -> Void = { [weak self] id, frame in
             self?.objects[id]?.position = frame.origin
             self?.objects[id]?.size = frame.size
         }
+        widget.onResizeEnded = syncObjectFrame
+        widget.onAutoResize = syncObjectFrame
 
         widget.onCloseRequested = { [weak self] id in
             self?.remove(id: id)
