@@ -140,20 +140,7 @@ struct DocumentCard: View {
     }
 }
 
-private struct ModelChoice: Identifiable {
-    let id: String
-    let name: String
-    let subtitle: String
-    let isSessionLinked: Bool
-}
-
-private let choices: [ModelChoice] = [
-    ModelChoice(id: "gpt-5.2-mini", name: "General", subtitle: "Start a new chat (GPT-5.2 Mini default)", isSessionLinked: false),
-    ModelChoice(id: "claude_code", name: "Claude Code", subtitle: "Link to a Claude Code conversation", isSessionLinked: true),
-    ModelChoice(id: "codex", name: "Codex", subtitle: "Link to a Codex conversation", isSessionLinked: true),
-]
-
-/// A remote session discovered from the backend for Claude Code / Codex linking.
+/// A remote session discovered from the backend for Codex linking.
 private struct RemoteSession: Identifiable {
     let id: String
     let sessionID: String
@@ -165,296 +152,355 @@ private struct RemoteSession: Identifiable {
     let cwd: String?
 }
 
+// MARK: - Agent Picker Overlay
+
 private struct AgentPickerOverlay: View {
     let documentStore: DocumentStore
     @Binding var isPresented: Bool
     let onCreated: (Document) -> Void
 
-    @State private var showSessionPicker = false
-    @State private var sessionPickerModelID: String = ""
-    @State private var remoteSessions: [RemoteSession] = []
-    @State private var loadingSessions = false
-    @State private var creatingLinkedSession = false
-    @State private var sessionPickerError: String?
-    @State private var checkingLiveSession = false
+    @State private var phase = Phase.choosing
+    @State private var codexSessions: [RemoteSession] = []
+    @State private var errorText: String?
+
+    private enum Phase: Equatable {
+        case choosing
+        case checkingLive
+        case loadingCodex
+        case codexReady
+        case creatingCodex
+    }
+
+    private var activeMode: String? {
+        switch phase {
+        case .choosing: return nil
+        case .checkingLive: return "claude_code"
+        case .loadingCodex, .codexReady, .creatingCodex: return "codex"
+        }
+    }
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.46)
+            Color.black.opacity(0.5)
                 .ignoresSafeArea()
-                .onTapGesture { isPresented = false }
+                .onTapGesture {
+                    guard phase == .choosing || phase == .codexReady else { return }
+                    withAnimation(.easeOut(duration: 0.18)) { isPresented = false }
+                }
 
-            if showSessionPicker {
-                sessionPickerCard
-            } else {
-                modelPickerCard
-            }
+            card
         }
+        .animation(.spring(response: 0.35, dampingFraction: 0.88), value: phase)
     }
 
-    // MARK: - Model Picker
+    // MARK: - Card
 
-    private var modelPickerCard: some View {
-        VStack(alignment: .leading, spacing: 18) {
+    private var card: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Handle
             Capsule()
-                .fill(Color.white.opacity(0.28))
-                .frame(width: 42, height: 5)
+                .fill(Color.white.opacity(0.18))
+                .frame(width: 36, height: 4)
                 .frame(maxWidth: .infinity)
-                .padding(.top, 2)
+                .padding(.top, 12)
+                .padding(.bottom, 22)
 
+            // Title
             Text("New Note")
-                .font(.system(size: 28, weight: .semibold, design: .rounded))
-                .foregroundColor(.white)
+                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 2)
+                .padding(.bottom, 22)
 
-            Text("Choose a model to start. The note will be named after your first prompt.")
-                .font(.system(size: 14, weight: .regular))
-                .foregroundColor(.white.opacity(0.72))
-                .fixedSize(horizontal: false, vertical: true)
+            // Mode cards
+            HStack(spacing: 10) {
+                modeCard(
+                    id: "general",
+                    icon: "plus.message.fill",
+                    title: "Chat",
+                    subtitle: "New conversation",
+                    accent: Color(red: 0.38, green: 0.6, blue: 1.0)
+                )
+                modeCard(
+                    id: "claude_code",
+                    icon: "terminal.fill",
+                    title: "Claude Code",
+                    subtitle: "Live session",
+                    accent: Color(red: 0.92, green: 0.6, blue: 0.3)
+                )
+                modeCard(
+                    id: "codex",
+                    icon: "cube.fill",
+                    title: "Codex",
+                    subtitle: "Link session",
+                    accent: Color(red: 0.6, green: 0.55, blue: 1.0)
+                )
+            }
 
+            // Expandable detail area
+            if phase != .choosing || errorText != nil {
+                Divider()
+                    .overlay(Color.white.opacity(0.06))
+                    .padding(.top, 18)
+                    .padding(.bottom, 14)
+
+                detailSection
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(.horizontal, 22)
+        .padding(.bottom, 22)
+        .frame(maxWidth: 480)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .environment(\.colorScheme, .dark)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [.white.opacity(0.15), .white.opacity(0.03)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.5
+                )
+        )
+        .shadow(color: .black.opacity(0.5), radius: 40, y: 20)
+        .padding(28)
+    }
+
+    // MARK: - Mode Card
+
+    private func modeCard(
+        id: String,
+        icon: String,
+        title: String,
+        subtitle: String,
+        accent: Color
+    ) -> some View {
+        let isActive = activeMode == id
+        let dimmed = activeMode != nil && !isActive
+
+        return Button {
+            handleModeTap(id)
+        } label: {
             VStack(spacing: 10) {
-                ForEach(Array(choices.enumerated()), id: \.element.id) { index, choice in
+                ZStack {
+                    Circle()
+                        .fill(accent.opacity(isActive ? 0.22 : 0.1))
+                        .frame(width: 46, height: 46)
+                    Image(systemName: icon)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(accent)
+                }
+
+                VStack(spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text(subtitle)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.4))
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 18)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(isActive ? accent.opacity(0.08) : Color.white.opacity(0.03))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(
+                        isActive ? accent.opacity(0.5) : Color.white.opacity(0.06),
+                        lineWidth: isActive ? 1.2 : 0.5
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(dimmed && phase != .codexReady)
+        .opacity(dimmed ? 0.35 : 1.0)
+    }
+
+    // MARK: - Detail Section
+
+    @ViewBuilder
+    private var detailSection: some View {
+        VStack(spacing: 10) {
+            switch phase {
+            case .choosing:
+                EmptyView()
+
+            case .checkingLive:
+                statusRow(text: "Connecting to live session...", showSpinner: true)
+
+            case .loadingCodex:
+                statusRow(text: "Loading sessions...", showSpinner: true)
+
+            case .creatingCodex:
+                statusRow(text: "Starting new session...", showSpinner: true)
+
+            case .codexReady:
+                codexSessionsList
+            }
+
+            if let errorText {
+                Text(errorText)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color(red: 1.0, green: 0.55, blue: 0.55))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 2)
+            }
+
+            if phase != .choosing {
+                HStack {
                     Button {
-                        if choice.id == "claude_code" {
-                            checkClaudeCodeLiveSession()
-                        } else if choice.isSessionLinked {
-                            sessionPickerModelID = choice.id
-                            fetchRemoteSessions(for: choice.id)
-                        } else {
-                            let doc = documentStore.addDocument(
-                                name: "",
-                                model: choice.id
-                            )
-                            isPresented = false
-                            onCreated(doc)
-                            registerSessionOnBackend(doc)
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            phase = .choosing
+                            errorText = nil
+                            codexSessions = []
                         }
                     } label: {
-                        HStack(spacing: 12) {
-                            ZStack {
-                                Circle()
-                                    .fill(modelAccent(for: index).opacity(0.18))
-                                    .frame(width: 34, height: 34)
-                                Image(systemName: modelSymbol(for: index))
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundColor(modelAccent(for: index))
-                            }
-
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(choice.name)
-                                    .font(.system(size: 15, weight: .semibold))
-                                    .foregroundColor(.white)
-                                Text(choice.subtitle)
-                                    .font(.system(size: 12, weight: .regular))
-                                    .foregroundColor(.white.opacity(0.66))
-                                    .lineLimit(1)
-                            }
-
-                            Spacer(minLength: 0)
-
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.32))
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 10, weight: .bold))
+                            Text("Back")
+                                .font(.system(size: 13, weight: .medium))
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(Color.white.opacity(0.08))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(Color.white.opacity(0.1), lineWidth: 1)
-                        )
+                        .foregroundStyle(.white.opacity(0.5))
                     }
                     .buttonStyle(.plain)
-                }
-            }
 
-        }
-        .padding(22)
-        .frame(maxWidth: 430)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(Color.white.opacity(0.15), lineWidth: 1)
-        )
-        .shadow(color: Color.black.opacity(0.3), radius: 22, x: 0, y: 12)
-        .padding(24)
-    }
-
-    // MARK: - Session Picker
-
-    private var sessionPickerTitle: String {
-        sessionPickerModelID == "claude_code" ? "Claude Code Sessions" : "Codex Sessions"
-    }
-
-    private var sessionPickerCard: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Capsule()
-                .fill(Color.white.opacity(0.28))
-                .frame(width: 42, height: 5)
-                .frame(maxWidth: .infinity)
-                .padding(.top, 2)
-
-            Text(sessionPickerTitle)
-                .font(.system(size: 28, weight: .semibold, design: .rounded))
-                .foregroundColor(.white)
-
-            if sessionPickerModelID == "claude_code" {
-                Text("Checking for a live Claude Code session...")
-                    .font(.system(size: 14, weight: .regular))
-                    .foregroundColor(.white.opacity(0.72))
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                Text("Select a session to link to this note.")
-                    .font(.system(size: 14, weight: .regular))
-                    .foregroundColor(.white.opacity(0.72))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if sessionPickerModelID == "claude_code" {
-                // Claude Code: just show spinner while checking live status
-                if checkingLiveSession {
-                    HStack {
-                        Spacer()
-                        ProgressView()
-                            .tint(.white)
-                        Spacer()
-                    }
-                    .padding(.vertical, 20)
-                }
-            } else if loadingSessions {
-                HStack {
                     Spacer()
-                    ProgressView()
-                        .tint(.white)
-                    Spacer()
-                }
-                .padding(.vertical, 20)
-            } else if remoteSessions.isEmpty {
-                Text("No sessions found. Start a session on your Mac first.")
-                    .font(.system(size: 14))
-                    .foregroundColor(.white.opacity(0.5))
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 20)
-            } else {
-                List {
-                    ForEach(remoteSessions) { session in
-                        Button {
-                            selectRemoteSession(session)
-                        } label: {
-                            HStack(spacing: 12) {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(session.name)
-                                        .font(.system(size: 15, weight: .semibold))
-                                        .foregroundColor(.white)
-                                        .lineLimit(1)
-                                    if !session.preview.isEmpty {
-                                        Text(session.preview)
-                                            .font(.system(size: 12))
-                                            .foregroundColor(.white.opacity(0.5))
-                                            .lineLimit(2)
-                                    }
-                                }
 
-                                Spacer(minLength: 0)
-
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(.white.opacity(0.32))
-                            }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 12)
-                            .background(
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .fill(Color.white.opacity(0.08))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .stroke(Color.white.opacity(0.1), lineWidth: 1)
-                            )
+                    if phase == .codexReady {
+                        Button("New Session") {
+                            startNewCodexSession()
                         }
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color(red: 0.6, green: 0.55, blue: 1.0))
                         .buttonStyle(.plain)
-                        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
                     }
                 }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .frame(minHeight: 220, maxHeight: 340)
+                .padding(.top, 6)
             }
-
-            if creatingLinkedSession {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .tint(.white)
-                    Text("Starting new \(sessionPickerModelID == "claude_code" ? "Claude Code" : "Codex") session...")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(.white.opacity(0.72))
-                }
-            }
-
-            if let sessionPickerError, !sessionPickerError.isEmpty {
-                Text(sessionPickerError)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(Color(red: 1.0, green: 0.62, blue: 0.62))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            HStack(spacing: 16) {
-                Button("Back") {
-                    showSessionPicker = false
-                    remoteSessions = []
-                    sessionPickerError = nil
-                }
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(.white.opacity(0.9))
-                .disabled(creatingLinkedSession)
-
-                Spacer()
-
-                if sessionPickerModelID != "claude_code" {
-                    Button(creatingLinkedSession ? "Starting..." : "New Session") {
-                        startNewLinkedSession()
-                    }
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.white.opacity(creatingLinkedSession ? 0.4 : 0.9))
-                    .disabled(creatingLinkedSession || loadingSessions)
-                }
-            }
-            .padding(.top, 2)
         }
-        .padding(22)
-        .frame(maxWidth: 430)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(Color.white.opacity(0.15), lineWidth: 1)
-        )
-        .shadow(color: Color.black.opacity(0.3), radius: 22, x: 0, y: 12)
-        .padding(24)
     }
 
-    // MARK: - Networking
+    private func statusRow(text: String, showSpinner: Bool) -> some View {
+        HStack(spacing: 10) {
+            if showSpinner {
+                ProgressView()
+                    .tint(.white.opacity(0.6))
+                    .scaleEffect(0.8)
+            }
+            Text(text)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white.opacity(0.45))
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.vertical, 14)
+    }
+
+    private var codexSessionsList: some View {
+        VStack(spacing: 6) {
+            if codexSessions.isEmpty {
+                Text("No sessions found")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.white.opacity(0.3))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 18)
+            } else {
+                ScrollView {
+                    VStack(spacing: 6) {
+                        ForEach(codexSessions.prefix(6)) { session in
+                            sessionRow(session)
+                        }
+                    }
+                }
+                .frame(maxHeight: 200)
+            }
+        }
+    }
+
+    private func sessionRow(_ session: RemoteSession) -> some View {
+        Button {
+            selectRemoteSession(session, modelID: "codex")
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(session.name)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .lineLimit(1)
+                    if !session.preview.isEmpty {
+                        Text(session.preview)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.3))
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.18))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.white.opacity(0.04))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.05), lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Actions
+
+    private func handleModeTap(_ id: String) {
+        switch id {
+        case "general":
+            let doc = documentStore.addDocument(name: "", model: "gpt-5.2-mini")
+            isPresented = false
+            onCreated(doc)
+            registerSessionOnBackend(doc)
+
+        case "claude_code":
+            checkClaudeCodeLiveSession()
+
+        case "codex":
+            fetchCodexSessionsList()
+
+        default:
+            break
+        }
+    }
+
+    // MARK: - Claude Code
 
     private func checkClaudeCodeLiveSession() {
         guard let urlStr = UserDefaults.standard.string(forKey: "iris_agent_server_url"),
               let serverURL = URL(string: urlStr) else {
-            sessionPickerError = "No linked server URL found."
-            sessionPickerModelID = "claude_code"
-            showSessionPicker = true
+            errorText = "No server URL configured."
             return
         }
 
-        checkingLiveSession = true
-        sessionPickerError = nil
-        remoteSessions = []
-        sessionPickerModelID = "claude_code"
-        showSessionPicker = true
+        withAnimation(.easeInOut(duration: 0.25)) {
+            phase = .checkingLive
+            errorText = nil
+        }
 
         Task {
-            let endpoint = serverURL.appendingPathComponent("claude-code").appendingPathComponent("live-status")
+            let endpoint = serverURL
+                .appendingPathComponent("claude-code")
+                .appendingPathComponent("live-status")
             var request = URLRequest(url: endpoint)
             request.timeoutInterval = 5
 
@@ -470,7 +516,6 @@ private struct AgentPickerOverlay: View {
             }
 
             await MainActor.run {
-                checkingLiveSession = false
                 if isLive {
                     let sessionName = liveCWD.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Claude Code"
                     let doc = documentStore.addDocument(name: sessionName, model: "claude_code")
@@ -478,56 +523,132 @@ private struct AgentPickerOverlay: View {
                     isPresented = false
                     onCreated(doc)
                 } else {
-                    sessionPickerError = "Start a live session on your Mac first:\n\n  claudei"
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        phase = .choosing
+                        errorText = "No live session. Run claudei on your Mac first."
+                    }
                 }
             }
         }
     }
 
-    private func fetchRemoteSessions(for modelID: String) {
+    // MARK: - Codex
+
+    private func fetchCodexSessionsList() {
         guard let urlStr = UserDefaults.standard.string(forKey: "iris_agent_server_url"),
               let serverURL = URL(string: urlStr) else {
-            showSessionPicker = true
+            errorText = "No server URL configured."
             return
         }
 
-        loadingSessions = true
-        sessionPickerError = nil
-        creatingLinkedSession = false
-        showSessionPicker = true
+        withAnimation(.easeInOut(duration: 0.25)) {
+            phase = .loadingCodex
+            errorText = nil
+        }
 
         Task {
-            let fetched = await Self.fetchLinkedSessions(modelID: modelID, serverURL: serverURL)
+            let fetched = await Self.fetchLinkedSessions(modelID: "codex", serverURL: serverURL)
             await MainActor.run {
-                remoteSessions = fetched
-                loadingSessions = false
+                codexSessions = fetched
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    phase = .codexReady
+                }
             }
         }
     }
 
-    private func startNewLinkedSession() {
-        guard sessionPickerModelID == "codex" else { return }
+    private func startNewCodexSession() {
         guard let urlStr = UserDefaults.standard.string(forKey: "iris_agent_server_url"),
               let serverURL = URL(string: urlStr) else {
-            sessionPickerError = "No linked server URL found."
+            errorText = "No server URL configured."
             return
         }
 
-        creatingLinkedSession = true
-        sessionPickerError = nil
+        withAnimation(.easeInOut(duration: 0.25)) {
+            phase = .creatingCodex
+            errorText = nil
+        }
 
         Task {
-            let created = await Self.startLinkedSession(modelID: sessionPickerModelID, serverURL: serverURL)
+            let created = await Self.startLinkedSession(modelID: "codex", serverURL: serverURL)
             await MainActor.run {
-                creatingLinkedSession = false
                 guard let created else {
-                    sessionPickerError = "Could not start a new session. Check backend/CLI auth and try again."
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        phase = .codexReady
+                        errorText = "Could not start session. Check backend."
+                    }
                     return
                 }
-                selectRemoteSession(created)
+                selectRemoteSession(created, modelID: "codex")
             }
         }
     }
+
+    // MARK: - Shared
+
+    private func selectRemoteSession(_ session: RemoteSession, modelID: String) {
+        let docID = Self.stableDocumentID(from: session.sessionID)
+
+        let linkedDoc = Document(
+            id: docID,
+            name: session.name,
+            model: modelID,
+            lastOpened: Date(),
+            preview: session.preview,
+            backendSessionID: session.sessionID,
+            codexConversationID: modelID == "codex"
+                ? ((session.conversationID?.isEmpty == false) ? session.conversationID : session.sessionID)
+                : nil,
+            codexCWD: modelID == "codex" ? session.cwd : nil,
+            claudeCodeConversationID: nil,
+            claudeCodeCWD: nil
+        )
+
+        if let index = documentStore.documents.firstIndex(where: { $0.id == docID }) {
+            documentStore.documents[index] = linkedDoc
+            documentStore.updateLastOpened(linkedDoc)
+        } else {
+            documentStore.documents.insert(linkedDoc, at: 0)
+            documentStore.updateLastOpened(linkedDoc)
+        }
+        registerSessionOnBackend(linkedDoc)
+        isPresented = false
+        onCreated(linkedDoc)
+    }
+
+    private func registerSessionOnBackend(_ doc: Document) {
+        guard let urlStr = UserDefaults.standard.string(forKey: "iris_agent_server_url"),
+              let serverURL = URL(string: urlStr) else { return }
+        let model = doc.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "gpt-5.2-mini" : doc.model
+        var metadata: [String: Any] = [:]
+        if let codexConversationID = doc.codexConversationID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !codexConversationID.isEmpty {
+            metadata["codex_conversation_id"] = codexConversationID
+        }
+        if let codexCWD = doc.codexCWD?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !codexCWD.isEmpty {
+            metadata["codex_cwd"] = codexCWD
+        }
+        if let claudeCodeConversationID = doc.claudeCodeConversationID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !claudeCodeConversationID.isEmpty {
+            metadata["claude_code_conversation_id"] = claudeCodeConversationID
+        }
+        if let claudeCodeCWD = doc.claudeCodeCWD?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !claudeCodeCWD.isEmpty {
+            metadata["claude_code_cwd"] = claudeCodeCWD
+        }
+        Task {
+            await AgentClient.registerSession(
+                id: doc.resolvedSessionID,
+                name: doc.name.isEmpty ? "Untitled" : doc.name,
+                model: model,
+                metadata: metadata,
+                serverURL: serverURL
+            )
+        }
+    }
+
+    // MARK: - Networking Helpers
 
     private static func startLinkedSession(modelID: String, serverURL: URL) async -> RemoteSession? {
         let endpoint = serverURL.appendingPathComponent("linked-sessions").appendingPathComponent("start")
@@ -536,10 +657,7 @@ private struct AgentPickerOverlay: View {
         request.timeoutInterval = 25
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let payload: [String: Any] = [
-            "provider": modelID,
-            "name": ""
-        ]
+        let payload: [String: Any] = ["provider": modelID, "name": ""]
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
 
         guard let (data, response) = try? await URLSession.shared.data(for: request),
@@ -552,14 +670,12 @@ private struct AgentPickerOverlay: View {
         let sessionID = ((item["id"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !sessionID.isEmpty else { return nil }
         let metadata = item["metadata"] as? [String: Any] ?? [:]
-        let conversationIDKey = modelID == "claude_code" ? "claude_code_conversation_id" : "codex_conversation_id"
-        let cwdKey = modelID == "claude_code" ? "claude_code_cwd" : "codex_cwd"
-        let conversationID = ((item["conversation_id"] as? String) ?? (metadata[conversationIDKey] as? String) ?? "")
+        let conversationID = ((item["conversation_id"] as? String) ?? (metadata["codex_conversation_id"] as? String) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let cwd = ((item["cwd"] as? String) ?? (metadata[cwdKey] as? String) ?? "")
+        let cwd = ((item["cwd"] as? String) ?? (metadata["codex_cwd"] as? String) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let titleRaw = ((item["name"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let title = titleRaw.isEmpty ? (modelID == "claude_code" ? "Claude Code Session" : "Codex Session") : titleRaw
+        let title = titleRaw.isEmpty ? "Codex Session" : titleRaw
         let updatedAt = ((item["updated_at"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let preview = ((item["last_message_preview"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -578,12 +694,9 @@ private struct AgentPickerOverlay: View {
     private static func fetchLinkedSessions(modelID: String, serverURL: URL) async -> [RemoteSession] {
         if modelID == "codex" {
             let discovered = await fetchCodexSessions(serverURL: serverURL)
-            if !discovered.isEmpty {
-                return discovered
-            }
+            if !discovered.isEmpty { return discovered }
         }
-
-        return await fetchSessionBackedLinkedSessions(modelID: modelID, serverURL: serverURL)
+        return await fetchSessionBackedSessions(modelID: modelID, serverURL: serverURL)
     }
 
     private static func fetchCodexSessions(serverURL: URL) async -> [RemoteSession] {
@@ -632,7 +745,7 @@ private struct AgentPickerOverlay: View {
         }
     }
 
-    private static func fetchSessionBackedLinkedSessions(modelID: String, serverURL: URL) async -> [RemoteSession] {
+    private static func fetchSessionBackedSessions(modelID: String, serverURL: URL) async -> [RemoteSession] {
         let url = serverURL.appendingPathComponent("sessions")
         var request = URLRequest(url: url)
         request.timeoutInterval = 5
@@ -645,8 +758,7 @@ private struct AgentPickerOverlay: View {
             return []
         }
 
-        let isClaudeCode = modelID == "claude_code"
-        let metadataKey = isClaudeCode ? "claude_code_conversation_id" : "codex_conversation_id"
+        let metadataKey = "codex_conversation_id"
 
         let matches: [RemoteSession] = items.compactMap { item -> RemoteSession? in
             let model = (item["model"] as? String ?? "").lowercased()
@@ -658,13 +770,7 @@ private struct AgentPickerOverlay: View {
                 return false
             }()
 
-            let matches: Bool
-            if isClaudeCode {
-                matches = model == "claude_code" || hasConversationID
-            } else {
-                matches = model == "codex" || hasConversationID
-            }
-            guard matches else { return nil }
+            guard model == "codex" || hasConversationID else { return nil }
 
             let id = item["id"] as? String ?? UUID().uuidString
             let rawName = ((item["name"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -673,8 +779,7 @@ private struct AgentPickerOverlay: View {
             let preview = (item["last_message_preview"] as? String) ?? ""
             let conversationID = (metadata[metadataKey] as? String)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            let cwdKey = isClaudeCode ? "claude_code_cwd" : "codex_cwd"
-            let cwd = (metadata[cwdKey] as? String)?
+            let cwd = (metadata["codex_cwd"] as? String)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
 
             return RemoteSession(
@@ -689,10 +794,10 @@ private struct AgentPickerOverlay: View {
             )
         }
 
-        let sorted = matches.sorted {
-            sessionTimestamp($0.updatedAt) > sessionTimestamp($1.updatedAt)
-        }
-        return Array(sorted.prefix(10))
+        return matches
+            .sorted { sessionTimestamp($0.updatedAt) > sessionTimestamp($1.updatedAt) }
+            .prefix(6)
+            .map { $0 }
     }
 
     private static let timestampFormatterWithFractional: ISO8601DateFormatter = {
@@ -708,93 +813,13 @@ private struct AgentPickerOverlay: View {
     }()
 
     private static func sessionTimestamp(_ value: String) -> Date {
-        if let parsed = timestampFormatterWithFractional.date(from: value) {
-            return parsed
-        }
-        if let parsed = timestampFormatter.date(from: value) {
-            return parsed
-        }
-        return .distantPast
-    }
-
-    private func createNewClaudeSession() {
-        let doc = documentStore.addDocument(name: "", model: "claude_code")
-        isPresented = false
-        onCreated(doc)
-        registerSessionOnBackend(doc)
-    }
-
-    private func selectRemoteSession(_ session: RemoteSession) {
-        // Keep local document IDs deterministic even when backend session IDs are not UUIDs.
-        let docID = Self.stableDocumentID(from: session.sessionID)
-        let isCodex = sessionPickerModelID == "codex"
-        let isClaudeCode = sessionPickerModelID == "claude_code"
-
-        let linkedDoc = Document(
-            id: docID,
-            name: session.name,
-            model: sessionPickerModelID,
-            lastOpened: Date(),
-            preview: session.preview,
-            backendSessionID: session.sessionID,
-            codexConversationID: isCodex
-                ? ((session.conversationID?.isEmpty == false) ? session.conversationID : session.sessionID)
-                : nil,
-            codexCWD: isCodex ? session.cwd : nil,
-            claudeCodeConversationID: isClaudeCode
-                ? ((session.conversationID?.isEmpty == false) ? session.conversationID : session.sessionID)
-                : nil,
-            claudeCodeCWD: isClaudeCode ? session.cwd : nil
-        )
-
-        if let index = documentStore.documents.firstIndex(where: { $0.id == docID }) {
-            documentStore.documents[index] = linkedDoc
-            documentStore.updateLastOpened(linkedDoc)
-        } else {
-            documentStore.documents.insert(linkedDoc, at: 0)
-            documentStore.updateLastOpened(linkedDoc)
-        }
-        registerSessionOnBackend(linkedDoc)
-        isPresented = false
-        onCreated(linkedDoc)
-    }
-
-    private func registerSessionOnBackend(_ doc: Document) {
-        guard let urlStr = UserDefaults.standard.string(forKey: "iris_agent_server_url"),
-              let serverURL = URL(string: urlStr) else { return }
-        let model = doc.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "gpt-5.2-mini" : doc.model
-        var metadata: [String: Any] = [:]
-        if let codexConversationID = doc.codexConversationID?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !codexConversationID.isEmpty {
-            metadata["codex_conversation_id"] = codexConversationID
-        }
-        if let codexCWD = doc.codexCWD?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !codexCWD.isEmpty {
-            metadata["codex_cwd"] = codexCWD
-        }
-        if let claudeCodeConversationID = doc.claudeCodeConversationID?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !claudeCodeConversationID.isEmpty {
-            metadata["claude_code_conversation_id"] = claudeCodeConversationID
-        }
-        if let claudeCodeCWD = doc.claudeCodeCWD?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !claudeCodeCWD.isEmpty {
-            metadata["claude_code_cwd"] = claudeCodeCWD
-        }
-        Task {
-            await AgentClient.registerSession(
-                id: doc.resolvedSessionID,
-                name: doc.name.isEmpty ? "Untitled" : doc.name,
-                model: model,
-                metadata: metadata,
-                serverURL: serverURL
-            )
-        }
+        timestampFormatterWithFractional.date(from: value)
+            ?? timestampFormatter.date(from: value)
+            ?? .distantPast
     }
 
     private static func stableDocumentID(from raw: String) -> UUID {
-        if let existing = UUID(uuidString: raw) {
-            return existing
-        }
+        if let existing = UUID(uuidString: raw) { return existing }
         var bytes = [UInt8](repeating: 0, count: 16)
         for (index, byte) in Array(raw.utf8).enumerated() {
             bytes[index % 16] ^= byte
@@ -807,26 +832,7 @@ private struct AgentPickerOverlay: View {
         let p3 = String(hex.dropFirst(12).prefix(4))
         let p4 = String(hex.dropFirst(16).prefix(4))
         let p5 = String(hex.dropFirst(20).prefix(12))
-        let uuidString = "\(p1)-\(p2)-\(p3)-\(p4)-\(p5)"
-        return UUID(uuidString: uuidString) ?? UUID()
-    }
-
-    private func modelAccent(for index: Int) -> Color {
-        switch index {
-        case 0: return Color(red: 0.39, green: 0.62, blue: 1.0)    // General - blue
-        case 1: return Color(red: 0.85, green: 0.55, blue: 0.35)    // Claude Code - orange
-        case 2: return Color(red: 0.62, green: 0.64, blue: 1.0)     // Codex - purple
-        default: return Color(red: 0.39, green: 0.62, blue: 1.0)
-        }
-    }
-
-    private func modelSymbol(for index: Int) -> String {
-        switch index {
-        case 0: return "circle.grid.2x2.fill"         // General
-        case 1: return "terminal.fill"                 // Claude Code
-        case 2: return "square.stack.3d.down.forward.fill"  // Codex
-        default: return "circle.grid.2x2.fill"
-        }
+        return UUID(uuidString: "\(p1)-\(p2)-\(p3)-\(p4)-\(p5)") ?? UUID()
     }
 }
 

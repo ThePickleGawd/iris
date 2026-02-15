@@ -101,7 +101,7 @@ def get_status(socket_path: str = DEFAULT_SOCKET_PATH) -> dict[str, Any]:
 
 
 def get_meta() -> dict[str, Any] | None:
-    """Read the session meta file written by tools/iris-session."""
+    """Read the session meta file written by tools/claudei."""
     try:
         return json.loads(Path(META_FILE).read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
@@ -194,7 +194,7 @@ _live_session: dict[str, Any] = {}
 
 
 def register_session(socket_path: str, cwd: str | None = None, pid: int | None = None) -> None:
-    """Register a live claude-commander session (called by tools/iris-session)."""
+    """Register a live claude-commander session (called by tools/claudei)."""
     _live_session.update({
         "socket_path": socket_path,
         "cwd": cwd,

@@ -13,6 +13,7 @@ import {
   Terminal,
   Search,
   Mic,
+  ScrollText,
 } from "lucide-react";
 
 interface Props {
@@ -37,6 +38,8 @@ function getStepColor(step: TrajectoryStep) {
       return { border: "border-violet-500/60", bg: "bg-violet-500", text: "text-violet-400" };
     case "final_response":
       return { border: "border-emerald-500/60", bg: "bg-emerald-500", text: "text-emerald-400" };
+    case "session_message":
+      return { border: "border-amber-500/60", bg: "bg-amber-500", text: "text-amber-400" };
   }
 }
 
@@ -48,6 +51,8 @@ function getStepLabel(step: TrajectoryStep) {
       return "Agent";
     case "final_response":
       return "Response";
+    case "session_message":
+      return step.role || "Message";
   }
 }
 
@@ -59,6 +64,8 @@ function getStepIcon(step: TrajectoryStep) {
       return Brain;
     case "final_response":
       return CheckCircle2;
+    case "session_message":
+      return ScrollText;
   }
 }
 
@@ -69,6 +76,8 @@ function getStepPreview(step: TrajectoryStep): string {
     case "agent_turn":
       return step.thought.slice(0, 80);
     case "final_response":
+      return step.content.slice(0, 80);
+    case "session_message":
       return step.content.slice(0, 80);
   }
 }

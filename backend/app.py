@@ -1455,7 +1455,7 @@ def claude_code_live_status() -> Any:
 
 @app.post("/api/claude-code/sessions/register")
 def register_claude_code_session() -> Any:
-    """Register a live claude-commander session (called by tools/iris-session)."""
+    """Register a live claude-commander session (called by tools/claudei)."""
     body = request.get_json(silent=True) or {}
     socket_path = str(body.get("socket_path") or "").strip()
     if not socket_path:
@@ -1914,27 +1914,32 @@ def v1_agent() -> Any:
         session = _load_session(session_id)
         if not session:
             session = _make_session(session_id, session_id, model)
-        session.setdefault("metadata", {})
+        if not isinstance(session.get("metadata"), dict):
+            session["metadata"] = {}
+        metadata = session["metadata"]
         is_first_prompt = not session.get("messages") and _session_needs_auto_name(session)
 
         # Merge provider-link metadata from request into persisted session metadata.
         conversation_id = request_metadata.get("claude_code_conversation_id")
         if isinstance(conversation_id, str) and conversation_id.strip():
-            session["metadata"]["claude_code_conversation_id"] = conversation_id.strip()
+            metadata["claude_code_conversation_id"] = conversation_id.strip()
         claude_code_cwd = request_metadata.get("claude_code_cwd")
         if isinstance(claude_code_cwd, str) and claude_code_cwd.strip():
-            session["metadata"]["claude_code_cwd"] = claude_code_cwd.strip()
+            metadata["claude_code_cwd"] = claude_code_cwd.strip()
         codex_conversation_id = request_metadata.get("codex_conversation_id")
         if isinstance(codex_conversation_id, str) and codex_conversation_id.strip():
-            session["metadata"]["codex_conversation_id"] = codex_conversation_id.strip()
+            metadata["codex_conversation_id"] = codex_conversation_id.strip()
         codex_cwd = request_metadata.get("codex_cwd")
         if isinstance(codex_cwd, str) and codex_cwd.strip():
-            session["metadata"]["codex_cwd"] = codex_cwd.strip()
+            metadata["codex_cwd"] = codex_cwd.strip()
+        system_prompt = _iris_system_prompt()
+        if system_prompt:
+            metadata["system_prompt"] = system_prompt
 
         session["model"] = model
 
         claude_code_mode = model.strip().lower() == "claude_code" or bool(
-            str(session["metadata"].get("claude_code_conversation_id") or "").strip()
+            str(metadata.get("claude_code_conversation_id") or "").strip()
         )
         if claude_code_mode:
             session["model"] = "claude_code"
@@ -1969,7 +1974,7 @@ def v1_agent() -> Any:
             )
 
         codex_mode = model.strip().lower() == "codex" or bool(
-            str(session["metadata"].get("codex_conversation_id") or "").strip()
+            str(metadata.get("codex_conversation_id") or "").strip()
         )
         if codex_mode:
             session["model"] = "codex"
@@ -2127,7 +2132,8 @@ def v1_agent() -> Any:
         if not ephemeral and session is not None:
             session.setdefault("widgets", []).append(widget_record)
 
-        # Route iPad diagrams to the place endpoint (rasterized SVG image)
+        # Route iPad diagrams to the place endpoint (rasterized SVG image).
+        # Never fall through to widget.open — iPad diagrams are always rasterized.
         is_ipad_diagram = (
             widget_record["type"] == "diagram"
             and widget_record["target"] == "ipad"
@@ -2143,18 +2149,18 @@ def v1_agent() -> Any:
                 widget_record,
                 ipad_base_urls=_candidate_ipad_urls(source_ip),
             )
+            place_succeeded = place_ok
+            _log_widget_push_debug(
+                session_id=session_id,
+                request_id=request_id,
+                model=model,
+                widget_record=widget_record,
+                raw_widget=w,
+                event_kind="place" if place_ok else "place_failed",
+                place_attempted=place_attempted,
+                place_succeeded=place_succeeded,
+            )
             if place_ok:
-                place_succeeded = True
-                _log_widget_push_debug(
-                    session_id=session_id,
-                    request_id=request_id,
-                    model=model,
-                    widget_record=widget_record,
-                    raw_widget=w,
-                    event_kind="place",
-                    place_attempted=place_attempted,
-                    place_succeeded=place_succeeded,
-                )
                 events.append({
                     "kind": "place",
                     "place": {
@@ -2166,8 +2172,7 @@ def v1_agent() -> Any:
                         "coordinate_space": widget_record["coordinate_space"],
                     },
                 })
-                continue
-            # Fall through to widget.open if place failed
+            continue
 
         _log_widget_push_debug(
             session_id=session_id,

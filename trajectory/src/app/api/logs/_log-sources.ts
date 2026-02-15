@@ -144,6 +144,98 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function stringifyUnknown(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function normalizeSessionMessageContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return stringifyUnknown(content);
+
+  const chunks: string[] = [];
+  for (const item of content) {
+    if (!isRecord(item)) {
+      chunks.push(stringifyUnknown(item));
+      continue;
+    }
+
+    const kind = typeof item.type === "string" ? item.type.trim() : "";
+    if (
+      kind === "input_text" ||
+      kind === "output_text" ||
+      kind === "text" ||
+      kind === "summary_text"
+    ) {
+      const text = asNonEmptyString(item.text);
+      if (text) chunks.push(text);
+      continue;
+    }
+
+    if (kind.includes("image")) {
+      const source = isRecord(item.source) ? item.source : null;
+      const mediaType = asNonEmptyString(source?.media_type);
+      const imageUrl = asNonEmptyString(item.image_url);
+      const label = mediaType || imageUrl || "embedded";
+      chunks.push(`[image: ${label}]`);
+      continue;
+    }
+
+    chunks.push(stringifyUnknown(item));
+  }
+
+  return chunks.join("\n\n").trim();
+}
+
+function extractSystemPrompt(parsed: Record<string, unknown>): string | null {
+  const directCandidates = [
+    parsed.system_prompt,
+    parsed.system,
+    parsed.prompt,
+  ];
+  for (const candidate of directCandidates) {
+    const value = asNonEmptyString(candidate);
+    if (value) return value;
+  }
+
+  const metadata = isRecord(parsed.metadata) ? parsed.metadata : null;
+  if (metadata) {
+    const metadataCandidates = [
+      metadata.system_prompt,
+      metadata.system,
+      metadata.base_instructions,
+      metadata.instructions,
+      metadata.prompt,
+    ];
+    for (const candidate of metadataCandidates) {
+      const value = asNonEmptyString(candidate);
+      if (value) return value;
+    }
+  }
+
+  const rawMessages = Array.isArray(parsed.messages) ? parsed.messages : [];
+  for (const item of rawMessages) {
+    if (!isRecord(item)) continue;
+    const role = asNonEmptyString(item.role)?.toLowerCase();
+    if (role !== "system" && role !== "developer") continue;
+    const content = normalizeSessionMessageContent(item.content);
+    if (content.trim()) return content;
+  }
+
+  return null;
+}
+
 function parseTimestampMs(value: unknown): number {
   if (typeof value !== "string" || !value.trim()) return 0;
   const ms = Date.parse(value);
@@ -273,16 +365,31 @@ function normalizeSessionToolCalls(
         ? item.name.trim()
         : "unknown_tool";
 
-    const input: Record<string, unknown> = {};
+    const explicitInput = isRecord(item.input) ? { ...item.input } : {};
+    const input: Record<string, unknown> = { ...explicitInput };
+    if (typeof item.arguments === "string" && item.arguments.trim()) {
+      try {
+        const parsedArgs = JSON.parse(item.arguments);
+        if (isRecord(parsedArgs)) {
+          Object.assign(input, parsedArgs);
+        }
+      } catch {
+        // Keep raw arguments as-is when parsing fails.
+        input.arguments = item.arguments;
+      }
+    }
     for (const [key, itemValue] of Object.entries(item)) {
       if (
         key === "id" ||
         key === "name" ||
+        key === "input" ||
+        key === "arguments" ||
         key === "result" ||
         key === "duration_ms" ||
         key === "screenshot_base64" ||
         key === "widget_html" ||
-        key === "widget_spec"
+        key === "widget_spec" ||
+        key === "raw"
       ) {
         continue;
       }
@@ -313,6 +420,7 @@ function normalizeSessionToolCalls(
     if (isRecord(item.widget_spec)) {
       toolCall.widget_spec = item.widget_spec;
     }
+    toolCall.raw = item;
 
     toolCalls.push(toolCall);
   }
@@ -344,17 +452,15 @@ async function toSessionTrajectoryJSONL(rawSession: string): Promise<string | nu
 
   const rawMessages = Array.isArray(parsed.messages) ? parsed.messages : [];
   const messages = rawMessages.filter(isRecord);
-  const firstUser = messages.find(
-    (msg) =>
-      typeof msg.role === "string" &&
-      msg.role.trim().toLowerCase() === "user" &&
-      typeof msg.content === "string" &&
-      msg.content.trim()
-  );
-  const task =
-    typeof firstUser?.content === "string" && firstUser.content.trim()
-      ? firstUser.content.trim().slice(0, 200)
-      : "Session replay";
+  const firstUser = messages.find((msg) => {
+    const role = typeof msg.role === "string" ? msg.role.trim().toLowerCase() : "";
+    if (role !== "user") return false;
+    return normalizeSessionMessageContent(msg.content).trim().length > 0;
+  });
+  const firstUserContent = firstUser ? normalizeSessionMessageContent(firstUser.content) : "";
+  const task = firstUserContent.trim() ? firstUserContent.trim().slice(0, 200) : "Session replay";
+  const systemPrompt = extractSystemPrompt(parsed);
+  const sessionMetadata = isRecord(parsed.metadata) ? parsed.metadata : null;
 
   const screenshots = await loadSessionScreenshots(sessionId);
   const screenshotById = new Map(screenshots.map((row) => [row.id, row]));
@@ -372,34 +478,90 @@ async function toSessionTrajectoryJSONL(rawSession: string): Promise<string | nu
     task,
   };
   if (endedAt) metadata.ended_at = endedAt;
+  if (systemPrompt) metadata.system_prompt = systemPrompt;
+  if (sessionMetadata) metadata.session_metadata = sessionMetadata;
   lines.push(metadata);
 
   let step = 0;
-  let lastAssistant: { content: string; timestamp: string } | null = null;
-  for (const message of messages) {
+  const hasExplicitSystemMessage = messages.some((message) => {
     const role = typeof message.role === "string" ? message.role.trim().toLowerCase() : "";
-    if (role !== "user" && role !== "assistant") continue;
+    return role === "system" || role === "developer";
+  });
+  if (systemPrompt && !hasExplicitSystemMessage) {
+    lines.push({
+      type: "session_message",
+      step,
+      timestamp: startedAt,
+      role: "system",
+      content: systemPrompt,
+      source: "session.metadata",
+    });
+    step += 1;
+  }
 
-    const content =
-      typeof message.content === "string"
-        ? message.content
-        : message.content == null
-          ? ""
-          : String(message.content);
+  let lastAssistant: { content: string; timestamp: string; meta: Record<string, unknown> } | null =
+    null;
+  let lastRole = "";
+  for (const message of messages) {
+    const role = typeof message.role === "string" ? message.role.trim().toLowerCase() : "unknown";
+    const content = normalizeSessionMessageContent(message.content);
     const timestamp =
       typeof message.created_at === "string" && message.created_at.trim()
         ? message.created_at.trim()
         : new Date().toISOString();
+    const messageMeta: Record<string, unknown> = {
+      role,
+      message_id: typeof message.id === "string" ? message.id : undefined,
+      source: typeof message.source === "string" ? message.source : undefined,
+      device_id: typeof message.device_id === "string" ? message.device_id : undefined,
+      raw_message: message,
+    };
+    lastRole = role;
 
     if (role === "user") {
-      for (const screenshotId of extractScreenshotIdsFromText(content)) {
+      const screenshotIds = extractScreenshotIdsFromText(content);
+      for (const screenshotId of screenshotIds) {
         pendingScreenshotIds.push(screenshotId);
       }
-      lines.push({
+
+      const userScreenshots: Array<Record<string, unknown>> = [];
+      for (const screenshotId of [...new Set(screenshotIds)]) {
+        const screenshot = screenshotById.get(screenshotId);
+        if (!screenshot) continue;
+        const base64 = await loadScreenshotBase64(screenshot, screenshotBase64ById);
+        if (!base64) continue;
+        const screenshotRow: Record<string, unknown> = {
+          device: screenshot.deviceId || "unknown",
+          base64,
+        };
+        if (screenshot.createdAtMs > 0) {
+          screenshotRow.captured_at = new Date(screenshot.createdAtMs).toISOString();
+        }
+        userScreenshots.push(screenshotRow);
+      }
+
+      const userLine: Record<string, unknown> = {
         type: "user_message",
         step,
         timestamp,
         content,
+        ...messageMeta,
+      };
+      if (userScreenshots.length > 0) userLine.screenshots = userScreenshots;
+
+      lines.push(userLine);
+      step += 1;
+      continue;
+    }
+
+    if (role !== "assistant") {
+      lines.push({
+        type: "session_message",
+        step,
+        timestamp,
+        role,
+        content,
+        ...messageMeta,
       });
       step += 1;
       continue;
@@ -463,20 +625,22 @@ async function toSessionTrajectoryJSONL(rawSession: string): Promise<string | nu
       step,
       timestamp,
       thought: content,
+      ...messageMeta,
       tool_calls: toolCalls,
       duration_ms: 0,
     });
-    lastAssistant = { content, timestamp };
+    lastAssistant = { content, timestamp, meta: messageMeta };
     step += 1;
   }
 
-  if (lastAssistant) {
+  if (lastAssistant && lastRole === "assistant") {
     lines.push({
       type: "final_response",
       step,
       timestamp: lastAssistant.timestamp,
       content: lastAssistant.content,
       total_duration_ms: 0,
+      ...lastAssistant.meta,
     });
   }
 

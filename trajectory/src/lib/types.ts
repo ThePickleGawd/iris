@@ -9,6 +9,8 @@ export interface TrajectoryMetadata {
   ended_at?: string;
   task: string;
   devices?: string[];
+  system_prompt?: string;
+  session_metadata?: Record<string, unknown>;
 }
 
 export interface Screenshot {
@@ -37,6 +39,7 @@ export interface ToolCall {
   widget_html?: string;
   widget_spec?: WidgetSpec;
   duration_ms?: number;
+  raw?: Record<string, unknown>;
 }
 
 export interface UserMessage {
@@ -44,8 +47,13 @@ export interface UserMessage {
   step: number;
   timestamp: string;
   content: string;
+  role?: string;
+  message_id?: string;
+  source?: string;
+  device_id?: string;
   screenshots?: Screenshot[];
   transcripts?: string[];
+  raw_message?: Record<string, unknown>;
 }
 
 export interface AgentTurn {
@@ -53,8 +61,13 @@ export interface AgentTurn {
   step: number;
   timestamp: string;
   thought: string;
+  role?: string;
+  message_id?: string;
+  source?: string;
+  device_id?: string;
   tool_calls: ToolCall[];
   duration_ms: number;
+  raw_message?: Record<string, unknown>;
 }
 
 export interface FinalResponse {
@@ -63,9 +76,26 @@ export interface FinalResponse {
   timestamp: string;
   content: string;
   total_duration_ms: number;
+  role?: string;
+  message_id?: string;
+  source?: string;
+  device_id?: string;
+  raw_message?: Record<string, unknown>;
 }
 
-export type TrajectoryStep = UserMessage | AgentTurn | FinalResponse;
+export interface SessionMessage {
+  type: "session_message";
+  step: number;
+  timestamp: string;
+  role: string;
+  content: string;
+  message_id?: string;
+  source?: string;
+  device_id?: string;
+  raw_message?: Record<string, unknown>;
+}
+
+export type TrajectoryStep = UserMessage | AgentTurn | FinalResponse | SessionMessage;
 
 export interface ComputedStats {
   totalSteps: number;
