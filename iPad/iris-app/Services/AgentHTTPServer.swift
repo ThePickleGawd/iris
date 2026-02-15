@@ -233,6 +233,9 @@ class AgentHTTPServer {
         case ("POST", "draw", nil, nil):
             handleDraw(req, conn)
 
+        case ("POST", "place", nil, nil):
+            handlePlace(req, conn)
+
         case ("POST", "cursor", nil, nil):
             handleCursorCommand(req, conn)
 
@@ -817,6 +820,68 @@ class AgentHTTPServer {
                 strokeWidth: CGFloat(strokeWidth),
                 speed: speed
             )
+        }
+    }
+
+    // MARK: - Place Handler (rasterized SVG image)
+
+    private func handlePlace(_ req: HTTPRequest, _ conn: NWConnection) {
+        guard let json = req.jsonBody, let svg = json["svg"] as? String, !svg.isEmpty else {
+            respondJSON(conn, status: 400, body: ["error": "Missing required field: 'svg' (string)"])
+            return
+        }
+
+        let x = numericValue(json["x"]) ?? 0
+        let y = numericValue(json["y"]) ?? 0
+        let coordinateSpace = (json["coordinate_space"] as? String ?? "viewport_offset").lowercased()
+        let scale = numericValue(json["scale"]) ?? 1.0
+        let backgroundHex = json["background"] as? String
+
+        guard let mgr = objectManager else {
+            respondJSON(conn, status: 503, body: ["error": "Canvas not ready — open a document first"])
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            let canonicalSpace = self.canonicalCoordinateSpace(coordinateSpace)
+            let canvasPos = self.resolveCanvasPoint(
+                x: x,
+                y: y,
+                coordinateSpace: canonicalSpace,
+                manager: mgr
+            )
+            let viewport = mgr.viewportCenter
+            let axis = mgr.axisPoint(forCanvasPoint: canvasPos)
+
+            let background: UIColor? = backgroundHex.flatMap { hex in
+                let cleaned = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+                return cleaned.isEmpty ? nil : UIColor(hex: cleaned)
+            }
+
+            guard let result = await mgr.placeSVGImage(
+                svg: svg,
+                at: canvasPos,
+                scale: CGFloat(scale),
+                background: background
+            ) else {
+                self.respondJSON(conn, status: 400, body: ["error": "Failed to render SVG — no image produced"])
+                return
+            }
+
+            self.respondJSON(conn, status: 201, body: [
+                "id": result.id.uuidString,
+                "status": "placed",
+                "width": result.size.width,
+                "height": result.size.height,
+                "x": x,
+                "y": y,
+                "coordinate_space_used": canonicalSpace,
+                "viewport_center": ["x": viewport.x, "y": viewport.y],
+                "canvas_position": ["x": canvasPos.x, "y": canvasPos.y],
+                "document_axis_position": ["x": axis.x, "y": axis.y]
+            ])
         }
     }
 

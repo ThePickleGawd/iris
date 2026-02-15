@@ -1584,23 +1584,37 @@ struct ContentView: View {
     private func responseToast(_ text: String) -> some View {
         VStack {
             Spacer()
-            Text(text)
-                .font(.system(size: 14))
-                .foregroundColor(.white)
-                .padding(16)
-                .frame(maxWidth: 560, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(Color(white: 0.12))
-                )
-                .padding(.horizontal, 20)
-                .padding(.bottom, 28)
-                .onTapGesture {
-                    withAnimation { lastResponse = nil }
-                }
+            ScrollView {
+                markdownText(text)
+                    .font(.system(size: 14))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .scrollIndicators(.hidden)
+            .frame(maxWidth: 560, maxHeight: 280)
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color(white: 0.12))
+            )
+            .padding(.horizontal, 20)
+            .padding(.bottom, 28)
+            .onTapGesture {
+                withAnimation { lastResponse = nil }
+            }
         }
         .zIndex(30)
         .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    private func markdownText(_ source: String) -> Text {
+        guard let attributed = try? AttributedString(
+            markdown: source,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        ) else {
+            return Text(source)
+        }
+        return Text(attributed)
     }
 
     private var processingIndicator: some View {

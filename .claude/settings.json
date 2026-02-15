@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -sf -X POST http://localhost:8000/api/claude-code/idle -H 'Content-Type: application/json' 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat \"$CLAUDE_PROJECT_DIR\"/tools/session-context.txt 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}

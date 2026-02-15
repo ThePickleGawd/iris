@@ -9,11 +9,11 @@
 
 ## Interacting with iPad/Mac
 
-When adding content to the iPad or Mac interface, **act as the Iris agent**. Use the same tools described in `SKILLS.md`, mapped to CLI commands below.
+When adding content to the iPad or Mac interface, **act as the Iris agent**. Use the tools below.
 
-- **Diagrams are always drawn as PencilKit strokes** via `POST /api/v1/draw`. The AI cursor traces each stroke as it appears — as if the agent is drawing by hand. Never place diagrams as WebView widgets.
+- **Diagrams** are placed as rasterized images via `POST /api/v1/place`. Write D2, render to SVG, place on canvas.
 - **Widgets** (interactive HTML, documents) use `POST /api/v1/objects` as WebView overlays.
-- **Use D2** for diagram source. Render to SVG with `d2` CLI, then send to the draw endpoint.
+- **Use D2** for diagram source. Render to SVG with `d2` CLI, then send to the place endpoint.
 
 ### Device Discovery
 
@@ -25,32 +25,28 @@ curl -s http://dylans-ipad.local:8935/api/v1/health
 curl -s http://localhost:8935/api/v1/health
 ```
 
-### diagram → `POST /api/v1/draw`
+### diagram → `POST /api/v1/place`
 
-**All diagrams use draw.** Write D2 source, render to SVG, send to draw. The cursor traces each stroke onto the PencilKit canvas.
+**Place a diagram as a rasterized image.** Write D2 source, render to SVG, place on canvas. The cursor navigates to the target position, clicks, and the image appears.
 
 ```bash
 # 1. Write D2 and render to SVG
 echo 'a -> b -> c' | d2 - /tmp/diagram.svg --theme=200 --pad=20
 
-# 2. Send SVG to draw endpoint
-SVG=$(cat /tmp/diagram.svg | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
-curl -s -X POST http://dylans-ipad.local:8935/api/v1/draw \
+# 2. Place SVG image on canvas
+SVG=$(python3 -c "import sys,json; print(json.dumps(open('/tmp/diagram.svg').read()))")
+curl -s -X POST http://dylans-ipad.local:8935/api/v1/place \
   -H "Content-Type: application/json" \
-  -d "{\"svg\": $SVG, \"scale\": 1.5, \"speed\": 2.0, \"color\": \"#1A1F28\", \"stroke_width\": 3}"
+  -d "{\"svg\": $SVG, \"scale\": 1.5}"
 ```
 
 Parameters:
 - `svg` (required): SVG string content
 - `scale`: Scale factor (default 1.0, use 1.5-2.0 for readable size)
-- `speed`: Animation speed multiplier (default 1.0)
-- `color`: Hex color for strokes (default `#1A1F28`)
-- `stroke_width`: PencilKit stroke width (default 3)
 - `x`, `y`: Position offset (default 0,0)
 - `coordinate_space`: `viewport_offset` (default) | `canvas_absolute` | `document_axis`
-- Returns 202 with `stroke_count` and `estimated_duration_seconds`
-
-You can also send raw SVG (not from D2) — any valid SVG with paths, rects, circles, lines, polygons, polylines, and ellipses will be parsed and drawn.
+- `background`: Hex color for background (default transparent)
+- Returns 201 with `id`, `width`, `height`, and position info
 
 ### push_widget → `POST /api/v1/objects`
 
@@ -142,12 +138,12 @@ Task: iris-widget agent — "Create a timer widget at x=200, y=0"
 ```
 
 Both agents run in parallel, reducing total wait time. Available agents:
-- **iris-draw** — D2 → SVG → draw pipeline (diagrams on PencilKit canvas)
+- **iris-draw** — D2 → SVG → place pipeline (rasterized diagram images on canvas)
 - **iris-widget** — HTML generation → POST to objects endpoint (interactive widgets)
 
 ## Key Principles
 
-- **Diagrams = draw** — always `POST /api/v1/draw` (D2 -> SVG -> PencilKit strokes with cursor). Never use widgets for diagrams.
+- **Diagrams = place** — `POST /api/v1/place` (D2 → SVG → rasterized image on canvas)
 - **Widgets = interactive HTML** — `POST /api/v1/objects` for calculators, timers, documents, anything needing JS
 - **Self-contained HTML** — inline CSS/JS only (CDN scripts like KaTeX are OK)
 - **Apple style** — dark background `#1c1c1e`, system fonts, one accent color, flat and clean

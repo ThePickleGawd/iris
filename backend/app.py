@@ -2039,7 +2039,7 @@ def unregister_device(device_id: str) -> Any:
 # Agent helpers
 # ---------------------------------------------------------------------------
 
-_ipad_draw_log = logging.getLogger("iris.ipad_draw")
+_ipad_place_log = logging.getLogger("iris.ipad_place")
 
 
 def _request_source_ip() -> str:
@@ -2073,26 +2073,23 @@ def _candidate_ipad_urls(source_ip: str | None = None) -> list[str]:
     return out
 
 
-def _post_ipad_draw(
+def _post_ipad_place(
     svg: str,
     widget_record: dict[str, Any],
     *,
     ipad_base_urls: list[str] | None = None
 ) -> bool:
-    """POST raw SVG to the iPad draw endpoint. Returns True on first success."""
+    """POST raw SVG to the iPad place endpoint (rasterized image). Returns True on first success."""
     payload = json.dumps({
         "svg": svg,
         "scale": 1.5,
-        "speed": 2.0,
-        "color": "#1A1F28",
-        "stroke_width": 3,
         "x": widget_record.get("x", 0),
         "y": widget_record.get("y", 0),
         "coordinate_space": widget_record.get("coordinate_space", "viewport_offset"),
     }).encode("utf-8")
     bases = ipad_base_urls or [IRIS_IPAD_URL.rstrip("/")]
     for base in bases:
-        url = f"{base.rstrip('/')}/api/v1/draw"
+        url = f"{base.rstrip('/')}/api/v1/place"
         req = urllib.request.Request(
             url,
             data=payload,
@@ -2101,11 +2098,11 @@ def _post_ipad_draw(
         )
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
-                _ipad_draw_log.info("iPad draw OK via %s (%s): %s", base, resp.status, resp.read(256))
+                _ipad_place_log.info("iPad place OK via %s (%s): %s", base, resp.status, resp.read(256))
             return True
         except Exception as exc:
-            _ipad_draw_log.warning("iPad draw failed via %s: %s", base, exc)
-    _ipad_draw_log.warning("iPad draw failed on all candidates; falling back to widget.open")
+            _ipad_place_log.warning("iPad place failed via %s: %s", base, exc)
+    _ipad_place_log.warning("iPad place failed on all candidates; falling back to widget.open")
     return False
 
 
@@ -2117,8 +2114,8 @@ def _log_widget_push_debug(
     widget_record: dict[str, Any],
     raw_widget: dict[str, Any],
     event_kind: str,
-    draw_attempted: bool,
-    draw_succeeded: bool,
+    place_attempted: bool,
+    place_succeeded: bool,
 ) -> None:
     """Emit a single structured debug line for each widget dispatch."""
     html = str(widget_record.get("html") or "")
@@ -2129,8 +2126,8 @@ def _log_widget_push_debug(
         "request_id": request_id,
         "model": model,
         "event_kind": event_kind,
-        "draw_attempted": draw_attempted,
-        "draw_succeeded": draw_succeeded,
+        "place_attempted": place_attempted,
+        "place_succeeded": place_succeeded,
         "widget": {
             "id": widget_record.get("id"),
             "type": widget_record.get("type"),
@@ -2507,37 +2504,37 @@ def v1_agent() -> Any:
         if not ephemeral and session is not None:
             session.setdefault("widgets", []).append(widget_record)
 
-        # Route iPad diagrams to the draw endpoint (PencilKit strokes)
+        # Route iPad diagrams to the place endpoint (rasterized SVG image)
         is_ipad_diagram = (
             widget_record["type"] == "diagram"
             and widget_record["target"] == "ipad"
             and raw_svg
         )
-        draw_attempted = False
-        draw_succeeded = False
+        place_attempted = False
+        place_succeeded = False
         if is_ipad_diagram:
-            draw_attempted = True
+            place_attempted = True
             source_ip = _request_source_ip()
-            draw_ok = _post_ipad_draw(
+            place_ok = _post_ipad_place(
                 raw_svg,
                 widget_record,
                 ipad_base_urls=_candidate_ipad_urls(source_ip),
             )
-            if draw_ok:
-                draw_succeeded = True
+            if place_ok:
+                place_succeeded = True
                 _log_widget_push_debug(
                     session_id=session_id,
                     request_id=request_id,
                     model=model,
                     widget_record=widget_record,
                     raw_widget=w,
-                    event_kind="draw",
-                    draw_attempted=draw_attempted,
-                    draw_succeeded=draw_succeeded,
+                    event_kind="place",
+                    place_attempted=place_attempted,
+                    place_succeeded=place_succeeded,
                 )
                 events.append({
-                    "kind": "draw",
-                    "draw": {
+                    "kind": "place",
+                    "place": {
                         "id": widget_record["id"],
                         "target": widget_record["target"],
                         "svg": raw_svg,
@@ -2547,7 +2544,7 @@ def v1_agent() -> Any:
                     },
                 })
                 continue
-            # Fall through to widget.open if draw failed
+            # Fall through to widget.open if place failed
 
         _log_widget_push_debug(
             session_id=session_id,
@@ -2556,8 +2553,8 @@ def v1_agent() -> Any:
             widget_record=widget_record,
             raw_widget=w,
             event_kind="widget.open",
-            draw_attempted=draw_attempted,
-            draw_succeeded=draw_succeeded,
+            place_attempted=place_attempted,
+            place_succeeded=place_succeeded,
         )
         events.append({
             "kind": "widget.open",

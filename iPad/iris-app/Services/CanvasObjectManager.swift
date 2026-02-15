@@ -2,6 +2,7 @@ import Foundation
 import CoreText
 import PencilKit
 import UIKit
+import WebKit
 
 struct CanvasCoordinateSnapshot: Codable {
     struct Point: Codable {
@@ -280,6 +281,7 @@ final class CanvasObjectManager: ObservableObject {
     @Published private(set) var suggestions: [UUID: CanvasSuggestion] = [:]
     @Published var isAnimatingDraw: Bool = false
     private(set) var objectViews: [UUID: CanvasObjectWebView] = [:]
+    private(set) var imageViews: [UUID: UIImageView] = [:]
     var onWidgetRemoved: ((String) -> Void)?
 
     let httpServer = AgentHTTPServer.shared
@@ -427,21 +429,12 @@ final class CanvasObjectManager: ObservableObject {
         )
         guard let canvasView else { return object }
 
-        if animated, let cursor {
+        if animated {
             let widgetCenterCanvas = CGPoint(
                 x: position.x + (size.width * 0.5),
                 y: position.y + (size.height * 0.5)
             )
-            let targetScreen = canvasView.screenPoint(forCanvasPoint: widgetCenterCanvas)
-            let startScreen = CGPoint(
-                x: targetScreen.x - 52,
-                y: targetScreen.y - 64
-            )
-            cursor.appear(at: startScreen)
-            try? await Task.sleep(nanoseconds: 160_000_000)
-            cursor.moveTo(targetScreen, duration: 0.34)
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            cursor.click()
+            await cursorNavigateAndClick(to: widgetCenterCanvas)
         }
 
         let widget = CanvasObjectWebView(id: object.id, size: size, htmlContent: html)
@@ -529,8 +522,24 @@ final class CanvasObjectManager: ObservableObject {
     }
 
     func remove(id: UUID) {
-        guard let view = objectViews[id] else { return }
         let backendID = objects[id]?.backendWidgetID
+
+        if let imageView = imageViews[id] {
+            UIView.animate(withDuration: 0.18, animations: {
+                imageView.alpha = 0
+                imageView.transform = CGAffineTransform(scaleX: 0.95, y: 0.95)
+            }, completion: { _ in
+                imageView.removeFromSuperview()
+            })
+            imageViews.removeValue(forKey: id)
+            objects.removeValue(forKey: id)
+            if let backendID, !backendID.isEmpty {
+                onWidgetRemoved?(backendID)
+            }
+            return
+        }
+
+        guard let view = objectViews[id] else { return }
         UIView.animate(withDuration: 0.18, animations: {
             view.alpha = 0
             view.transform = CGAffineTransform(scaleX: 0.95, y: 0.95)
@@ -545,7 +554,7 @@ final class CanvasObjectManager: ObservableObject {
     }
 
     func removeAll() {
-        let ids = Array(objectViews.keys)
+        let ids = Array(objects.keys)
         for id in ids { remove(id: id) }
     }
 
@@ -597,9 +606,12 @@ final class CanvasObjectManager: ObservableObject {
 
     func syncLayout() {
         for (id, object) in objects {
-            guard let view = objectViews[id] else { continue }
             let next = CGRect(origin: object.position, size: object.size)
-            if view.frame != next { view.frame = next }
+            if let view = objectViews[id] {
+                if view.frame != next { view.frame = next }
+            } else if let view = imageViews[id] {
+                if view.frame != next { view.frame = next }
+            }
         }
     }
 
@@ -616,6 +628,34 @@ final class CanvasObjectManager: ObservableObject {
     func cursorClick() { cursor?.click() }
     func cursorDisappear() { cursor?.disappear() }
 
+    /// Moves the cursor to a canvas-space target, clicks, then returns.
+    /// If the cursor is already visible it glides from its current position;
+    /// otherwise it appears at a slight offset first.
+    func cursorNavigateAndClick(to canvasPoint: CGPoint) async {
+        guard let canvasView, let cursor else { return }
+
+        let targetScreen = canvasView.screenPoint(forCanvasPoint: canvasPoint)
+
+        if cursor.isVisible {
+            // Glide from wherever the cursor currently is
+            cursor.moveTo(targetScreen, duration: 0.28)
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        } else {
+            // Appear near target, then glide in
+            let startScreen = CGPoint(
+                x: targetScreen.x - 48,
+                y: targetScreen.y - 56
+            )
+            cursor.appear(at: startScreen)
+            try? await Task.sleep(nanoseconds: 140_000_000)
+            cursor.moveTo(targetScreen, duration: 0.24)
+            try? await Task.sleep(nanoseconds: 260_000_000)
+        }
+
+        cursor.click()
+        try? await Task.sleep(nanoseconds: 120_000_000)
+    }
+
     /// Captures the current visible canvas viewport as PNG data.
     func captureViewportPNGData() -> Data? {
         guard let canvasView, canvasView.bounds.width > 0, canvasView.bounds.height > 0 else {
@@ -627,6 +667,150 @@ final class CanvasObjectManager: ObservableObject {
             canvasView.drawHierarchy(in: canvasView.bounds, afterScreenUpdates: true)
         }
         return image.pngData()
+    }
+
+    // MARK: - SVG Image Placement
+
+    /// Renders an SVG string to a rasterized UIImage and places it on the canvas instantly.
+    @discardableResult
+    func placeSVGImage(
+        svg: String,
+        at position: CGPoint,
+        scale: CGFloat = 1.0,
+        background: UIColor? = nil
+    ) async -> (id: UUID, size: CGSize)? {
+        guard let canvasView else { return nil }
+
+        let naturalSize = extractSVGSize(from: svg)
+        let scaledSize = CGSize(
+            width: naturalSize.width * scale,
+            height: naturalSize.height * scale
+        )
+
+        guard let image = await renderSVGToImage(svg: svg, size: scaledSize, background: background) else {
+            return nil
+        }
+
+        // Cursor navigates to image center, clicks, then image appears
+        let imageCenter = CGPoint(
+            x: position.x + scaledSize.width * 0.5,
+            y: position.y + scaledSize.height * 0.5
+        )
+        await cursorNavigateAndClick(to: imageCenter)
+
+        let id = UUID()
+        let imageView = UIImageView(image: image)
+        imageView.frame = CGRect(origin: position, size: scaledSize)
+        imageView.contentMode = .scaleAspectFit
+        imageView.clipsToBounds = true
+
+        canvasView.widgetContainerView().addSubview(imageView)
+
+        // Pop in
+        imageView.alpha = 0
+        imageView.transform = CGAffineTransform(scaleX: 0.94, y: 0.94)
+        UIView.animate(withDuration: 0.22, delay: 0, options: .curveEaseOut) {
+            imageView.alpha = 1
+            imageView.transform = .identity
+        }
+        try? await Task.sleep(nanoseconds: 180_000_000)
+        cursor?.disappear()
+
+        let object = CanvasObject(
+            id: id,
+            position: position,
+            size: scaledSize,
+            htmlContent: ""
+        )
+        objects[id] = object
+        imageViews[id] = imageView
+
+        return (id, scaledSize)
+    }
+
+    private func extractSVGSize(from svg: String) -> CGSize {
+        // Try viewBox="minX minY width height"
+        if let regex = try? NSRegularExpression(pattern: #"viewBox\s*=\s*"([^"]+)""#),
+           let match = regex.firstMatch(in: svg, range: NSRange(svg.startIndex..., in: svg)),
+           match.numberOfRanges >= 2,
+           let range = Range(match.range(at: 1), in: svg) {
+            let parts = svg[range].split { $0.isWhitespace || $0 == "," }
+                .compactMap { Double($0) }
+            if parts.count >= 4 {
+                return CGSize(width: parts[2], height: parts[3])
+            }
+        }
+
+        // Try width/height attributes on the <svg> tag
+        var w: Double = 400, h: Double = 300
+        if let regex = try? NSRegularExpression(pattern: #"<svg[^>]*?\bwidth\s*=\s*"([^"]+)""#),
+           let match = regex.firstMatch(in: svg, range: NSRange(svg.startIndex..., in: svg)),
+           match.numberOfRanges >= 2,
+           let range = Range(match.range(at: 1), in: svg),
+           let val = Double(svg[range].replacingOccurrences(of: "px", with: "")) {
+            w = val
+        }
+        if let regex = try? NSRegularExpression(pattern: #"<svg[^>]*?\bheight\s*=\s*"([^"]+)""#),
+           let match = regex.firstMatch(in: svg, range: NSRange(svg.startIndex..., in: svg)),
+           match.numberOfRanges >= 2,
+           let range = Range(match.range(at: 1), in: svg),
+           let val = Double(svg[range].replacingOccurrences(of: "px", with: "")) {
+            h = val
+        }
+        return CGSize(width: w, height: h)
+    }
+
+    private func renderSVGToImage(svg: String, size: CGSize, background: UIColor?) async -> UIImage? {
+        guard let canvasView else { return nil }
+
+        let webView = WKWebView(frame: CGRect(origin: .zero, size: size))
+        webView.isOpaque = background != nil
+        webView.backgroundColor = background ?? .clear
+        webView.scrollView.backgroundColor = background ?? .clear
+        webView.alpha = 0 // hidden during render
+
+        // Must be in view hierarchy for reliable snapshot
+        canvasView.addSubview(webView)
+        defer { webView.removeFromSuperview() }
+
+        let bgCSS: String
+        if let bg = background {
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            bg.getRed(&r, green: &g, blue: &b, alpha: &a)
+            bgCSS = "rgba(\(Int(r*255)),\(Int(g*255)),\(Int(b*255)),\(a))"
+        } else {
+            bgCSS = "transparent"
+        }
+
+        let html = """
+        <!DOCTYPE html><html><head>
+        <meta name="viewport" content="width=\(Int(size.width)),initial-scale=1.0">
+        <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        html,body{width:\(Int(size.width))px;height:\(Int(size.height))px;background:\(bgCSS);overflow:hidden}
+        body{display:flex;align-items:center;justify-content:center}
+        svg{max-width:100%;max-height:100%;display:block}
+        </style></head><body>\(svg)</body></html>
+        """
+
+        webView.loadHTMLString(html, baseURL: nil)
+
+        // Poll for load completion (up to 3 seconds)
+        var loaded = false
+        for _ in 0..<30 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            if let state = try? await webView.evaluateJavaScript("document.readyState") as? String,
+               state == "complete" {
+                loaded = true
+                try? await Task.sleep(nanoseconds: 100_000_000) // extra time for SVG paint
+                break
+            }
+        }
+        guard loaded else { return nil }
+
+        let snapshotConfig = WKSnapshotConfiguration()
+        snapshotConfig.rect = webView.bounds
+        return try? await webView.takeSnapshot(configuration: snapshotConfig)
     }
 
     // MARK: - SVG Drawing
