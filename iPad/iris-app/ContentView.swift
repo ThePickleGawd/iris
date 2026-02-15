@@ -31,6 +31,9 @@ struct ContentView: View {
     @State private var connectionMonitorTimer: Timer?
     @State private var isConnectionCheckInFlight = false
     @State private var macConnectionStatus: MacConnectionStatus = .checking
+    @State private var awaitingPlacementTap = false
+    @State private var placementTapPrompt = "Tap where the response should start."
+    @State private var placementTapContinuation: CheckedContinuation<CGPoint, Never>?
 
     private let proactiveEnabled = false
     private let proactiveIntervalSeconds: TimeInterval = 5
@@ -113,6 +116,10 @@ struct ContentView: View {
             AgentCursorView(controller: cursor)
                 .zIndex(50)
 
+            if awaitingPlacementTap {
+                placementTapOverlay
+            }
+
             if isProcessing {
                 processingIndicator
             }
@@ -148,6 +155,11 @@ struct ContentView: View {
             proactiveMonitorTimer?.invalidate()
             proactiveStrokeIdleTask?.cancel()
             connectionMonitorTimer?.invalidate()
+            if let continuation = placementTapContinuation {
+                continuation.resume(returning: objectManager.viewportCenter)
+                placementTapContinuation = nil
+                awaitingPlacementTap = false
+            }
         }
         .onAppear {
             SpeechTranscriber.requestAuthorization { _ in }
@@ -182,6 +194,41 @@ struct ContentView: View {
         .accessibilityValue(macConnectionStatus.accessibilityValue)
     }
 
+    private var placementTapOverlay: some View {
+        ZStack(alignment: .top) {
+            Color.black.opacity(0.18)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onEnded { value in
+                            resolvePlacementTap(at: value.location)
+                        }
+                )
+
+            VStack(spacing: 8) {
+                Text("Place Response")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.white)
+                Text(placementTapPrompt)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white.opacity(0.9))
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(red: 0.07, green: 0.09, blue: 0.16).opacity(0.96))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.white.opacity(0.18), lineWidth: 0.8)
+            )
+            .padding(.top, 90)
+        }
+        .zIndex(60)
+    }
+
     private func startRecording() {
         lastResponse = nil
         transcriber.startTranscribing()
@@ -209,6 +256,9 @@ struct ContentView: View {
 
         Task {
             do {
+                let placementAnchor = await waitForPlacementTap(
+                    prompt: "Tap where the answer should start."
+                )
                 var message = prompt
                 var screenshotID: String?
                 var screenshotUploadWarning: String?
@@ -291,11 +341,17 @@ struct ContentView: View {
 
             if aiOutputInkEnabled {
                 let widgetInkAnchors = Dictionary(
-                    uniqueKeysWithValues: agentResponse.widgets.map { ($0.id, widgetOrigin(for: $0)) }
+                    uniqueKeysWithValues: agentResponse.widgets.enumerated().map { idx, widget in
+                        let origin = (idx == 0)
+                            ? preferredWidgetOrigin(for: widget, anchorCanvas: placementAnchor)
+                            : widgetOrigin(for: widget)
+                        return (widget.id, origin)
+                    }
                 )
                 await renderAgentOutputAsHandwriting(
                     response: agentResponse,
                     prefix: screenshotUploadWarning,
+                    startAnchor: placementAnchor,
                     widgetAnchors: widgetInkAnchors
                 )
                 await MainActor.run {
@@ -307,8 +363,10 @@ struct ContentView: View {
                     }
                 } else {
                     // Place widgets on the canvas and track them
-                    for widget in agentResponse.widgets {
-                        let pos = widgetOrigin(for: widget)
+                    for (idx, widget) in agentResponse.widgets.enumerated() {
+                        let pos = (idx == 0)
+                            ? preferredWidgetOrigin(for: widget, anchorCanvas: placementAnchor)
+                            : widgetOrigin(for: widget)
                         await objectManager.place(
                             html: widget.html,
                             at: pos,
@@ -368,6 +426,9 @@ struct ContentView: View {
         defer { isProcessing = false }
 
         do {
+            let placementAnchor = await waitForPlacementTap(
+                prompt: "Tap where the explicit answer should start."
+            )
             var message = userIntent
             if let backendURL = objectManager.httpServer.backendServerURL(),
                let screenshotID = try await uploadCanvasScreenshot(
@@ -399,16 +460,24 @@ struct ContentView: View {
 
             if aiOutputInkEnabled {
                 let widgetInkAnchors = Dictionary(
-                    uniqueKeysWithValues: agentResponse.widgets.map { ($0.id, widgetOrigin(for: $0)) }
+                    uniqueKeysWithValues: agentResponse.widgets.enumerated().map { idx, widget in
+                        let origin = (idx == 0)
+                            ? preferredWidgetOrigin(for: widget, anchorCanvas: placementAnchor)
+                            : widgetOrigin(for: widget)
+                        return (widget.id, origin)
+                    }
                 )
                 await renderAgentOutputAsHandwriting(
                     response: agentResponse,
+                    startAnchor: placementAnchor,
                     widgetAnchors: widgetInkAnchors
                 )
                 withAnimation { lastResponse = nil }
             } else {
-                for widget in agentResponse.widgets {
-                    let pos = widgetOrigin(for: widget)
+                for (idx, widget) in agentResponse.widgets.enumerated() {
+                    let pos = (idx == 0)
+                        ? preferredWidgetOrigin(for: widget, anchorCanvas: placementAnchor)
+                        : widgetOrigin(for: widget)
                     await objectManager.place(
                         html: widget.html,
                         at: pos,
@@ -753,6 +822,7 @@ struct ContentView: View {
     private func renderAgentOutputAsHandwriting(
         response: AgentResponse,
         prefix: String? = nil,
+        startAnchor: CGPoint? = nil,
         widgetAnchors: [String: CGPoint] = [:]
     ) async {
         var textBlocks: [String] = []
@@ -778,6 +848,29 @@ struct ContentView: View {
         }
 
         guard !textBlocks.isEmpty || !widgetBlocks.isEmpty else { return }
+        if let startAnchor {
+            let viewport = objectManager.viewportCanvasRect()
+            let maxWidth = min(520, max(240, viewport.width * 0.45))
+            var anchor = startAnchor
+            anchor.x = min(max(anchor.x, viewport.minX + 16), viewport.maxX - maxWidth - 16)
+            anchor.y = max(anchor.y, viewport.minY + 16)
+
+            var flowBlocks: [String] = []
+            flowBlocks.append(contentsOf: textBlocks)
+            flowBlocks.append(contentsOf: widgetBlocks.map(\.text))
+
+            for block in flowBlocks where !block.isEmpty {
+                let clipped = String(block.prefix(900))
+                let drawn = await objectManager.drawHandwrittenText(
+                    clipped,
+                    at: anchor,
+                    maxWidth: maxWidth
+                )
+                anchor.y += max(40, drawn.height + 18)
+            }
+            return
+        }
+
         if !textBlocks.isEmpty {
             var anchor = preferredAIInkAnchor(maxWidthHint: 420)
             let viewport = objectManager.viewportCanvasRect()
@@ -1406,6 +1499,36 @@ struct ContentView: View {
         }
 
         return CGPoint(x: base.x - anchorOffset.x, y: base.y - anchorOffset.y)
+    }
+
+    @MainActor
+    private func waitForPlacementTap(prompt: String) async -> CGPoint {
+        placementTapPrompt = prompt
+        awaitingPlacementTap = true
+        return await withCheckedContinuation { continuation in
+            placementTapContinuation = continuation
+        }
+    }
+
+    @MainActor
+    private func resolvePlacementTap(at location: CGPoint) {
+        guard awaitingPlacementTap else { return }
+        awaitingPlacementTap = false
+        let canvasPoint = objectManager.canvasPoint(forScreenPoint: location)
+        placementTapContinuation?.resume(returning: canvasPoint)
+        placementTapContinuation = nil
+    }
+
+    private func preferredWidgetOrigin(for widget: AgentWidget, anchorCanvas: CGPoint) -> CGPoint {
+        let w = max(100, widget.width)
+        let h = max(100, widget.height)
+        let anchorOffset: CGPoint = {
+            if widget.anchor.lowercased() == "center" {
+                return CGPoint(x: w / 2, y: h / 2)
+            }
+            return .zero
+        }()
+        return CGPoint(x: anchorCanvas.x - anchorOffset.x, y: anchorCanvas.y - anchorOffset.y)
     }
 
     private func mostRecentWritingAnchorCanvasPoint() -> CGPoint? {
