@@ -1,6 +1,7 @@
 """Iris backend — single-JSON-per-session storage."""
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import os
@@ -46,6 +47,7 @@ def _load_root_env() -> None:
 _load_root_env()
 
 import agent as agent_module
+import claude_commander
 
 # ---------------------------------------------------------------------------
 # Config
@@ -1644,6 +1646,23 @@ def claude_code_respond() -> Any:
     if not prompt:
         return jsonify({"error": "prompt is required"}), 400
 
+    # Route to live injection if a claude-commander session exists
+    live = claude_commander.get_live_session()
+    if live:
+        socket_path = live.get("socket_path", claude_commander.DEFAULT_SOCKET_PATH)
+        ok = claude_commander.inject_text(prompt, socket_path)
+        if ok:
+            claude_commander.mark_busy()
+            return jsonify({
+                "ok": True,
+                "session_id": session_id,
+                "model": "claude_code",
+                "mode": "live",
+                "text": "(injected into live session)",
+                "timestamp": _now(),
+            })
+        # Fall through to headless if injection failed
+
     session = _load_session(session_id)
     if not session:
         session = _make_session(session_id, session_id, "claude_code")
@@ -1671,6 +1690,7 @@ def claude_code_respond() -> Any:
             "session_id": session_id,
             "conversation_id": result["conversation_id"],
             "model": "claude_code",
+            "mode": "headless",
             "text": result["text"],
             "synced_messages": result["synced_messages"],
             "timestamp": _now(),
@@ -1681,7 +1701,155 @@ def claude_code_respond() -> Any:
 @app.post("/api/claude-code/sessions/start")
 @app.post("/claude-code/sessions/start")
 def start_claude_code_session() -> Any:
+    body = request.get_json(silent=True) or {}
+    mode = str(body.get("mode") or "").strip().lower()
+
+    # If mode=live, just register the socket for live injection (no headless session)
+    if mode == "live":
+        socket_path = str(body.get("socket_path") or "").strip() or claude_commander.DEFAULT_SOCKET_PATH
+        cwd = str(body.get("cwd") or "").strip() or None
+        if not claude_commander.is_connected(socket_path):
+            return jsonify({"error": "No live claude-commander session at " + socket_path}), 502
+        claude_commander.register_session(socket_path, cwd=cwd)
+        return jsonify({
+            "ok": True,
+            "mode": "live",
+            "socket_path": socket_path,
+            "cwd": cwd,
+            "timestamp": _now(),
+        }), 201
+
+    # Default: headless mode (existing behavior)
     return _start_linked_session_for_provider("claude_code")
+
+
+# ---------------------------------------------------------------------------
+# Claude Code live injection (claude-commander)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/claude-code/inject")
+def claude_code_inject() -> Any:
+    """Inject a message (text + optional image) into a live Claude Code session."""
+    body = request.get_json(silent=True) or {}
+    text = str(body.get("text") or "").strip()
+    image_base64 = str(body.get("image_base64") or "").strip() or None
+    image_path = str(body.get("image_path") or "").strip() or None
+
+    if not text and not image_base64 and not image_path:
+        return jsonify({"error": "text, image_base64, or image_path is required"}), 400
+
+    # Determine socket path
+    live = claude_commander.get_live_session()
+    if not live:
+        # Fall back to headless mode if a session_id is provided
+        session_id = str(body.get("session_id") or "").strip()
+        if session_id and text:
+            return _fallback_headless_respond(session_id, text, body)
+        return jsonify({"error": "No live claude-commander session. Start one with tools/iris-session."}), 503
+
+    socket_path = live.get("socket_path", claude_commander.DEFAULT_SOCKET_PATH)
+
+    # Handle image injection
+    if image_base64 or image_path:
+        ok = claude_commander.inject_image(
+            image_path=image_path,
+            image_base64=image_base64,
+            prompt=text,
+            socket_path=socket_path,
+        )
+        if not ok:
+            return jsonify({"error": "Failed to inject image into live session"}), 502
+        claude_commander.mark_busy()
+        return jsonify({"status": "sent", "type": "image", "timestamp": _now()})
+
+    # Handle text injection
+    ok = claude_commander.inject_text(text, socket_path)
+    if not ok:
+        return jsonify({"error": "Failed to inject text into live session"}), 502
+    claude_commander.mark_busy()
+    return jsonify({"status": "sent", "type": "text", "timestamp": _now()})
+
+
+@app.post("/api/claude-code/idle")
+def claude_code_idle() -> Any:
+    """Called by Claude Code's Stop hook to signal it's ready for the next message."""
+    claude_commander.mark_idle()
+    return jsonify({"status": "idle", "timestamp": _now()})
+
+
+@app.get("/api/claude-code/live-status")
+def claude_code_live_status() -> Any:
+    """Check if a live claude-commander session is active."""
+    live = claude_commander.get_live_session()
+    if not live:
+        return jsonify({"live": False})
+
+    socket_path = live.get("socket_path", claude_commander.DEFAULT_SOCKET_PATH)
+    status = claude_commander.get_status(socket_path)
+    return jsonify({
+        "live": True,
+        "idle": claude_commander.is_idle(),
+        "socket_path": socket_path,
+        "cwd": live.get("cwd"),
+        "pid": live.get("pid"),
+        "commander_status": status,
+        "timestamp": _now(),
+    })
+
+
+@app.post("/api/claude-code/sessions/register")
+def register_claude_code_session() -> Any:
+    """Register a live claude-commander session (called by tools/iris-session)."""
+    body = request.get_json(silent=True) or {}
+    socket_path = str(body.get("socket_path") or "").strip()
+    if not socket_path:
+        return jsonify({"error": "socket_path is required"}), 400
+    cwd = str(body.get("cwd") or "").strip() or None
+    pid = body.get("pid")
+    claude_commander.register_session(socket_path, cwd=cwd, pid=pid)
+    return jsonify({"ok": True, "socket_path": socket_path})
+
+
+@app.post("/api/claude-code/sessions/unregister")
+def unregister_claude_code_session() -> Any:
+    """Unregister a live claude-commander session."""
+    body = request.get_json(silent=True) or {}
+    socket_path = str(body.get("socket_path") or "").strip() or None
+    claude_commander.unregister_session(socket_path)
+    return jsonify({"ok": True})
+
+
+def _fallback_headless_respond(session_id: str, prompt: str, body: dict) -> Any:
+    """Fall back to headless claude -p --resume when no live session exists."""
+    session = _load_session(session_id)
+    if not session:
+        session = _make_session(session_id, session_id, "claude_code")
+    session["model"] = "claude_code"
+
+    try:
+        result = _execute_linked_provider(
+            session,
+            provider="claude_code",
+            prompt=prompt,
+            device_id=body.get("device_id"),
+            conversation_id=str(body.get("conversation_id") or "").strip() or None,
+            cwd=str(body.get("cwd") or "").strip() or None,
+            source_suffix="inject_fallback",
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 502
+
+    _save_session(session)
+    return jsonify({
+        "status": "sent",
+        "type": "headless_fallback",
+        "text": result["text"],
+        "session_id": session_id,
+        "conversation_id": result["conversation_id"],
+        "timestamp": _now(),
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -1984,6 +2152,72 @@ def _log_widget_push_debug(
 
 
 # ---------------------------------------------------------------------------
+# Screenshot capture at query time
+# ---------------------------------------------------------------------------
+
+_screenshot_log = logging.getLogger("iris.screenshots")
+
+
+def _capture_mac_screenshot() -> bytes | None:
+    """Capture Mac screen via screencapture CLI. Returns JPEG bytes or None."""
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        subprocess.run(
+            ["/usr/sbin/screencapture", "-x", "-t", "jpg", tmp_path],
+            check=True,
+            capture_output=True,
+            timeout=4,
+        )
+        data = Path(tmp_path).read_bytes()
+        if len(data) > 0:
+            return data
+        return None
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError) as exc:
+        _screenshot_log.warning("Mac screenshot failed: %s", exc)
+        return None
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
+def _capture_ipad_screenshot(source_ip: str | None = None) -> bytes | None:
+    """Fetch screenshot from iPad HTTP server. Returns JPEG bytes or None."""
+    urls = _candidate_ipad_urls(source_ip)
+    for base in urls:
+        url = f"{base.rstrip('/')}/api/v1/screenshot"
+        try:
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                data = resp.read()
+                if len(data) > 0:
+                    _screenshot_log.info("iPad screenshot captured via %s (%d bytes)", base, len(data))
+                    return data
+        except Exception as exc:
+            _screenshot_log.warning("iPad screenshot failed via %s: %s", base, exc)
+    return None
+
+
+def _capture_screenshots(source_ip: str | None = None) -> dict[str, bytes]:
+    """Capture Mac and iPad screenshots in parallel. Returns dict with 'mac' and/or 'ipad' keys."""
+    result: dict[str, bytes] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        mac_future = pool.submit(_capture_mac_screenshot)
+        ipad_future = pool.submit(_capture_ipad_screenshot, source_ip)
+
+        mac_data = mac_future.result(timeout=6)
+        ipad_data = ipad_future.result(timeout=6)
+
+    if mac_data:
+        result["mac"] = mac_data
+        _screenshot_log.info("Mac screenshot: %d bytes", len(mac_data))
+    if ipad_data:
+        result["ipad"] = ipad_data
+        _screenshot_log.info("iPad screenshot: %d bytes", len(ipad_data))
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Agent
 # ---------------------------------------------------------------------------
 
@@ -2137,13 +2371,21 @@ def v1_agent() -> Any:
             if role in ("user", "assistant") and text:
                 context.append({"role": role, "content": text})
 
+    # Capture screenshots from both devices at query time.
+    source_ip = _request_source_ip()
+    try:
+        screenshots = _capture_screenshots(source_ip)
+    except Exception as exc:
+        _screenshot_log.warning("Screenshot capture failed: %s", exc)
+        screenshots = {}
+
     # Call agent with optional spatial context from caller metadata.
     enriched_message = message
     spatial_note = _spatial_context_text(request_metadata)
     if spatial_note:
         enriched_message = f"{message}\n\n{spatial_note}"
     try:
-        result = agent_module.run(context, enriched_message, model=model)
+        result = agent_module.run(context, enriched_message, model=model, screenshots=screenshots)
     except Exception as exc:
         app.logger.error(
             "v1_agent failed session_id=%s model=%s ephemeral=%s error=%s\n%s",

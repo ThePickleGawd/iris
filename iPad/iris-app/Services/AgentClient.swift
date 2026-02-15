@@ -17,7 +17,7 @@ struct AgentWidget {
 struct AgentResponse {
     let text: String
     let widgets: [AgentWidget]
-    let sessionName: String?
+    var sessionName: String? = nil
 }
 
 struct ProactiveDescriptionResult {

@@ -1,30 +1,137 @@
 import SwiftUI
 
+// MARK: - Provider Logos (inline paths)
+
+private enum ModelProvider {
+    case openai
+    case google
+    case anthropic
+    case unknown
+
+    var color: Color {
+        switch self {
+        case .openai:    return .white
+        case .google:    return Color(red: 0.52, green: 0.67, blue: 0.98) // Google blue
+        case .anthropic: return Color(red: 0.85, green: 0.65, blue: 0.47) // Anthropic tan
+        case .unknown:   return Color.white.opacity(0.6)
+        }
+    }
+}
+
+private func providerFor(_ modelID: String) -> ModelProvider {
+    let l = modelID.lowercased()
+    if l.hasPrefix("gpt") || l.hasPrefix("o1") || l.hasPrefix("o3") || l.hasPrefix("o4") { return .openai }
+    if l.hasPrefix("gemini") { return .google }
+    if l.hasPrefix("claude") { return .anthropic }
+    return .unknown
+}
+
+/// OpenAI hexagon logo — simplified path at 12×12
+private struct OpenAILogo: Shape {
+    func path(in rect: CGRect) -> Path {
+        let s = min(rect.width, rect.height)
+        let cx = rect.midX, cy = rect.midY
+        var p = Path()
+        // Outer hexagon
+        for i in 0..<6 {
+            let angle = Angle.degrees(Double(i) * 60 - 90)
+            let x = cx + cos(angle.radians) * s * 0.48
+            let y = cy + sin(angle.radians) * s * 0.48
+            if i == 0 { p.move(to: CGPoint(x: x, y: y)) }
+            else { p.addLine(to: CGPoint(x: x, y: y)) }
+        }
+        p.closeSubpath()
+        // Inner spokes (3 lines from center toward alternating vertices)
+        for i in stride(from: 0, to: 6, by: 2) {
+            let angle = Angle.degrees(Double(i) * 60 - 90)
+            p.move(to: CGPoint(x: cx, y: cy))
+            p.addLine(to: CGPoint(
+                x: cx + cos(angle.radians) * s * 0.32,
+                y: cy + sin(angle.radians) * s * 0.32
+            ))
+        }
+        return p
+    }
+}
+
+/// Google four-color "G" — simplified as four arc segments
+private struct GoogleLogo: Shape {
+    func path(in rect: CGRect) -> Path {
+        let s = min(rect.width, rect.height)
+        let cx = rect.midX, cy = rect.midY
+        let r = s * 0.42
+        var p = Path()
+        // Full circle
+        p.addArc(center: CGPoint(x: cx, y: cy), radius: r,
+                 startAngle: .degrees(0), endAngle: .degrees(360), clockwise: false)
+        // Horizontal bar (the dash of the G)
+        p.move(to: CGPoint(x: cx, y: cy))
+        p.addLine(to: CGPoint(x: cx + r, y: cy))
+        return p
+    }
+}
+
+/// Anthropic — stylized "A" spark
+private struct AnthropicLogo: Shape {
+    func path(in rect: CGRect) -> Path {
+        let w = rect.width, h = rect.height
+        let ox = rect.minX, oy = rect.minY
+        var p = Path()
+        // Upward triangle "A" shape
+        p.move(to: CGPoint(x: ox + w * 0.5, y: oy + h * 0.08))
+        p.addLine(to: CGPoint(x: ox + w * 0.15, y: oy + h * 0.92))
+        p.addLine(to: CGPoint(x: ox + w * 0.35, y: oy + h * 0.92))
+        p.addLine(to: CGPoint(x: ox + w * 0.5, y: oy + h * 0.52))
+        p.addLine(to: CGPoint(x: ox + w * 0.65, y: oy + h * 0.92))
+        p.addLine(to: CGPoint(x: ox + w * 0.85, y: oy + h * 0.92))
+        p.closeSubpath()
+        return p
+    }
+}
+
+private struct ProviderIcon: View {
+    let provider: ModelProvider
+    let size: CGFloat
+
+    var body: some View {
+        Group {
+            switch provider {
+            case .openai:
+                OpenAILogo()
+                    .stroke(provider.color, lineWidth: 1.2)
+                    .frame(width: size, height: size)
+            case .google:
+                GoogleLogo()
+                    .stroke(provider.color, lineWidth: 1.4)
+                    .frame(width: size, height: size)
+            case .anthropic:
+                AnthropicLogo()
+                    .fill(provider.color)
+                    .frame(width: size, height: size)
+            case .unknown:
+                Image(systemName: "circle.grid.2x2.fill")
+                    .font(.system(size: size * 0.75))
+                    .foregroundColor(provider.color)
+            }
+        }
+    }
+}
+
+// MARK: - Model Choices
+
 private struct ModelChoice: Identifiable {
     let id: String
     let name: String
-    let icon: String
-    let accentColor: Color
+    let provider: ModelProvider
 }
 
 private let generalModelChoices: [ModelChoice] = [
-    ModelChoice(id: "gpt-5.2-mini", name: "GPT-5.2 Mini", icon: "bolt.fill", accentColor: Color(red: 0.39, green: 0.72, blue: 0.54)),
-    ModelChoice(id: "gpt-5.2", name: "GPT-5.2", icon: "bolt.circle.fill", accentColor: Color(red: 0.39, green: 0.72, blue: 0.54)),
-    ModelChoice(id: "gemini-3-flash", name: "Gemini 3 Flash", icon: "sparkle", accentColor: Color(red: 0.43, green: 0.68, blue: 0.95)),
-    ModelChoice(id: "claude-opus-4-5", name: "Claude Opus 4.5", icon: "brain.head.profile.fill", accentColor: Color(red: 0.87, green: 0.58, blue: 0.38)),
-    ModelChoice(id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", icon: "brain.fill", accentColor: Color(red: 0.87, green: 0.58, blue: 0.38)),
+    ModelChoice(id: "gpt-5.2-mini", name: "GPT-5.2 Mini", provider: .openai),
+    ModelChoice(id: "gpt-5.2", name: "GPT-5.2", provider: .openai),
+    ModelChoice(id: "gemini-3-flash", name: "Gemini 3 Flash", provider: .google),
+    ModelChoice(id: "claude-opus-4-5", name: "Claude Opus 4.5", provider: .anthropic),
+    ModelChoice(id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", provider: .anthropic),
 ]
-
-private func modelMeta(for id: String) -> (icon: String, color: Color) {
-    let lowered = id.lowercased()
-    if let match = generalModelChoices.first(where: { $0.id.lowercased() == lowered }) {
-        return (match.icon, match.accentColor)
-    }
-    if lowered.hasPrefix("gpt") { return ("bolt.fill", Color(red: 0.39, green: 0.72, blue: 0.54)) }
-    if lowered.hasPrefix("gemini") { return ("sparkle", Color(red: 0.43, green: 0.68, blue: 0.95)) }
-    if lowered.hasPrefix("claude") { return ("brain.fill", Color(red: 0.87, green: 0.58, blue: 0.38)) }
-    return ("circle.grid.2x2.fill", Color.white.opacity(0.6))
-}
 
 struct ToolbarView: View {
     @EnvironmentObject var canvasState: CanvasState
@@ -228,12 +335,10 @@ struct ModelSelectorButton: View {
     @Binding var showPicker: Bool
 
     var body: some View {
-        let meta = modelMeta(for: modelID)
+        let provider = providerFor(modelID)
         Button { showPicker.toggle() } label: {
             HStack(spacing: 7) {
-                Image(systemName: meta.icon)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(meta.color)
+                ProviderIcon(provider: provider, size: 13)
                 Text(modelName)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(.white.opacity(0.85))
@@ -271,11 +376,9 @@ struct ModelPickerPopover: View {
                     HStack(spacing: 10) {
                         ZStack {
                             Circle()
-                                .fill(choice.accentColor.opacity(isSelected ? 0.22 : 0.12))
+                                .fill(choice.provider.color.opacity(isSelected ? 0.22 : 0.12))
                                 .frame(width: 28, height: 28)
-                            Image(systemName: choice.icon)
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(choice.accentColor)
+                            ProviderIcon(provider: choice.provider, size: 14)
                         }
 
                         Text(choice.name)
@@ -287,7 +390,7 @@ struct ModelPickerPopover: View {
                         if isSelected {
                             Image(systemName: "checkmark")
                                 .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(choice.accentColor)
+                                .foregroundColor(choice.provider.color)
                         }
                     }
                     .padding(.horizontal, 12)
