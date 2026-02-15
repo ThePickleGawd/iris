@@ -208,6 +208,35 @@ def _spatial_context_text(metadata: dict[str, Any] | None) -> str:
         return ""
 
 
+def _fov_summary_from_metadata(metadata: dict[str, Any] | None) -> str:
+    if not isinstance(metadata, dict):
+        return "fov=unknown"
+    snapshot = metadata.get("coordinate_snapshot")
+    if not isinstance(snapshot, dict):
+        return "fov=unknown"
+
+    top_left = snapshot.get("viewportTopLeftAxis") if isinstance(snapshot.get("viewportTopLeftAxis"), dict) else {}
+    bottom_right = snapshot.get("viewportBottomRightAxis") if isinstance(snapshot.get("viewportBottomRightAxis"), dict) else {}
+    center = snapshot.get("viewportCenterAxis") if isinstance(snapshot.get("viewportCenterAxis"), dict) else {}
+    size = snapshot.get("viewportSizeCanvas") if isinstance(snapshot.get("viewportSizeCanvas"), dict) else {}
+
+    return (
+        "fov_axis_top_left=({:.2f},{:.2f}) "
+        "fov_axis_bottom_right=({:.2f},{:.2f}) "
+        "fov_axis_center=({:.2f},{:.2f}) "
+        "fov_canvas_size=({:.2f},{:.2f})"
+    ).format(
+        float(top_left.get("x", 0.0)),
+        float(top_left.get("y", 0.0)),
+        float(bottom_right.get("x", 0.0)),
+        float(bottom_right.get("y", 0.0)),
+        float(center.get("x", 0.0)),
+        float(center.get("y", 0.0)),
+        float(size.get("width", 0.0)),
+        float(size.get("height", 0.0)),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Codex sync helpers
 # ---------------------------------------------------------------------------
@@ -2058,6 +2087,20 @@ def v1_agent() -> Any:
         if raw_svg:
             widget_record["svg"] = raw_svg
 
+        app.logger.info(
+            "widget_push session_id=%s model=%s target=%s id=%s coordinate_space=%s anchor=%s widget_xy=(%s,%s) widget_size=(%s,%s) %s",
+            session_id,
+            model,
+            widget_record["target"],
+            widget_record["id"],
+            widget_record["coordinate_space"],
+            widget_record["anchor"],
+            widget_record["x"],
+            widget_record["y"],
+            widget_record["width"],
+            widget_record["height"],
+            _fov_summary_from_metadata(request_metadata),
+        )
         if not ephemeral and session is not None:
             session.setdefault("widgets", []).append(widget_record)
 
