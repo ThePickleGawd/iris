@@ -667,6 +667,36 @@ final class CanvasObjectManager: ObservableObject {
         return result.strokes.count
     }
 
+    @discardableResult
+    func drawHandwrittenText(
+        _ text: String,
+        at position: CGPoint,
+        maxWidth: CGFloat = 420,
+        color: UIColor = UIColor(red: 0.10, green: 0.12, blue: 0.16, alpha: 1)
+    ) async -> CGSize {
+        guard let canvasView else { return .zero }
+
+        let result = HandwrittenInkRenderer.render(
+            text: text,
+            origin: position,
+            maxWidth: maxWidth,
+            color: color
+        )
+        guard !result.strokes.isEmpty else { return .zero }
+
+        var drawing = canvasView.drawing
+        for stroke in result.strokes {
+            drawing.strokes.append(stroke)
+        }
+        canvasView.drawing = drawing
+
+        if let recentStroke = drawing.strokes.last {
+            updateMostRecentStrokeBounds(recentStroke.renderBounds)
+        }
+
+        return result.size
+    }
+
     private func normalizeStrokesToLocalOrigin(_ strokes: [SVGStroke]) -> [SVGStroke] {
         var minX = CGFloat.greatestFiniteMagnitude
         var minY = CGFloat.greatestFiniteMagnitude
