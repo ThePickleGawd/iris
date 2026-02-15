@@ -5,10 +5,12 @@ final class AgentCursorController: ObservableObject {
     @Published var position: CGPoint = .zero
     @Published var isVisible: Bool = false
     @Published var isClicking: Bool = false
-    @Published var showLabel: Bool = false
+    @Published var showLabel: Bool = true
 
     var collaboratorName: String = "Iris"
-    var cursorColor: Color = Color(red: 0.38, green: 0.82, blue: 0.62)
+    var cursorColor: Color = Color(red: 0.69, green: 0.32, blue: 0.87)
+    // Small calibration so the visible arrow tip sits on the stroke path.
+    var hotspotOffset: CGPoint = CGPoint(x: 0.0, y: 10.0)
 
     func appear(at point: CGPoint) {
         position = point

@@ -55,7 +55,7 @@ final class CanvasObjectManager: ObservableObject {
     private(set) var objectViews: [UUID: CanvasObjectWebView] = [:]
     var onWidgetRemoved: ((String) -> Void)?
 
-    let httpServer = AgentHTTPServer()
+    let httpServer = AgentHTTPServer.shared
 
     private weak var canvasView: NoteCanvasView?
     private weak var cursor: AgentCursorController?
@@ -420,6 +420,7 @@ final class CanvasObjectManager: ObservableObject {
         let parser = SVGPathParser()
         let result = parser.parse(svgString: svg)
         guard !result.strokes.isEmpty else { return 0 }
+        let normalizedStrokes = normalizeStrokesToLocalOrigin(result.strokes)
 
         isAnimatingDraw = true
         defer { isAnimatingDraw = false }
@@ -431,7 +432,7 @@ final class CanvasObjectManager: ObservableObject {
         )
 
         await animator.animate(
-            strokes: result.strokes,
+            strokes: normalizedStrokes,
             origin: position,
             scale: scale,
             color: color,
@@ -445,5 +446,32 @@ final class CanvasObjectManager: ObservableObject {
         }
 
         return result.strokes.count
+    }
+
+    private func normalizeStrokesToLocalOrigin(_ strokes: [SVGStroke]) -> [SVGStroke] {
+        var minX = CGFloat.greatestFiniteMagnitude
+        var minY = CGFloat.greatestFiniteMagnitude
+
+        for stroke in strokes {
+            for point in stroke.points {
+                minX = min(minX, point.x)
+                minY = min(minY, point.y)
+            }
+        }
+
+        guard minX.isFinite, minY.isFinite else { return strokes }
+        guard abs(minX) > 0.001 || abs(minY) > 0.001 else { return strokes }
+
+        return strokes.map { stroke in
+            let shifted = stroke.points.map { point in
+                CGPoint(x: point.x - minX, y: point.y - minY)
+            }
+            return SVGStroke(
+                points: shifted,
+                color: stroke.color,
+                strokeWidth: stroke.strokeWidth,
+                isFill: stroke.isFill
+            )
+        }
     }
 }

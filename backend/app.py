@@ -1819,9 +1819,44 @@ def unregister_device(device_id: str) -> Any:
 _ipad_draw_log = logging.getLogger("iris.ipad_draw")
 
 
-def _post_ipad_draw(svg: str, widget_record: dict[str, Any]) -> bool:
-    """POST raw SVG to the iPad draw endpoint. Returns True on success."""
-    url = f"{IRIS_IPAD_URL}/api/v1/draw"
+def _request_source_ip() -> str:
+    """Best-effort request source IP (supports simple proxy forwarding)."""
+    forwarded = request.headers.get("X-Forwarded-For", "").strip()
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return (request.remote_addr or "").strip()
+
+
+def _candidate_ipad_urls(source_ip: str | None = None) -> list[str]:
+    """Build candidate iPad base URLs in priority order."""
+    urls: list[str] = []
+    ip = (source_ip or "").strip()
+    if ip:
+        host = ip
+        # Bracket IPv6 literals for URL safety.
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        urls.append(f"http://{host}:8935")
+        if ip in {"127.0.0.1", "::1", "localhost"}:
+            urls.append("http://localhost:8935")
+    urls.append(IRIS_IPAD_URL.rstrip("/"))
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    out: list[str] = []
+    for url in urls:
+        if url and url not in seen:
+            seen.add(url)
+            out.append(url)
+    return out
+
+
+def _post_ipad_draw(
+    svg: str,
+    widget_record: dict[str, Any],
+    *,
+    ipad_base_urls: list[str] | None = None
+) -> bool:
+    """POST raw SVG to the iPad draw endpoint. Returns True on first success."""
     payload = json.dumps({
         "svg": svg,
         "scale": 1.5,
@@ -1832,19 +1867,23 @@ def _post_ipad_draw(svg: str, widget_record: dict[str, Any]) -> bool:
         "y": widget_record.get("y", 0),
         "coordinate_space": widget_record.get("coordinate_space", "viewport_offset"),
     }).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            _ipad_draw_log.info("iPad draw OK (%s): %s", resp.status, resp.read(256))
-        return True
-    except Exception as exc:
-        _ipad_draw_log.warning("iPad draw failed, falling back to widget.open: %s", exc)
-        return False
+    bases = ipad_base_urls or [IRIS_IPAD_URL.rstrip("/")]
+    for base in bases:
+        url = f"{base.rstrip('/')}/api/v1/draw"
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                _ipad_draw_log.info("iPad draw OK via %s (%s): %s", base, resp.status, resp.read(256))
+            return True
+        except Exception as exc:
+            _ipad_draw_log.warning("iPad draw failed via %s: %s", base, exc)
+    _ipad_draw_log.warning("iPad draw failed on all candidates; falling back to widget.open")
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -2068,7 +2107,12 @@ def v1_agent() -> Any:
             and raw_svg
         )
         if is_ipad_diagram:
-            draw_ok = _post_ipad_draw(raw_svg, widget_record)
+            source_ip = _request_source_ip()
+            draw_ok = _post_ipad_draw(
+                raw_svg,
+                widget_record,
+                ipad_base_urls=_candidate_ipad_urls(source_ip),
+            )
             if draw_ok:
                 events.append({
                     "kind": "draw",

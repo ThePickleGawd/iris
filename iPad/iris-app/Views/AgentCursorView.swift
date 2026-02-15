@@ -15,7 +15,10 @@ struct AgentCursorView: View {
 
             CursorShape(color: controller.cursorColor)
                 .scaleEffect(controller.isClicking ? 0.85 : 1.0, anchor: .topLeading)
-                .offset(x: controller.position.x, y: controller.position.y)
+                .offset(
+                    x: controller.position.x + controller.hotspotOffset.x,
+                    y: controller.position.y + controller.hotspotOffset.y
+                )
 
             if controller.showLabel {
                 CollaboratorLabel(
@@ -28,6 +31,7 @@ struct AgentCursorView: View {
                 )
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .opacity(controller.isVisible ? 1 : 0)
         .scaleEffect(controller.isVisible ? 1 : 0.6, anchor: .topLeading)
         .allowsHitTesting(false)

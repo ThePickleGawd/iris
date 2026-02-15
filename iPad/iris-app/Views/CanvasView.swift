@@ -127,8 +127,15 @@ struct CanvasView: UIViewRepresentable {
             // Always keep canvasState.drawing in sync for UI
             parent.canvasState.drawing = canvasView.drawing
 
-            // During SVG draw animation, skip save timers and proactive triggers
-            if parent.objectManager.isAnimatingDraw { return }
+            // During SVG draw animation, skip proactive/undo triggers but still persist drawing.
+            if parent.objectManager.isAnimatingDraw {
+                saveTimer?.invalidate()
+                guard let doc = parent.document else { return }
+                saveTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { _ in
+                    doc.saveDrawing(canvasView.drawing)
+                }
+                return
+            }
 
             parent.canvasState.undoManager = canvasView.undoManager
             parent.canvasState.canUndo = canvasView.undoManager?.canUndo ?? false

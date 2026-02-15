@@ -11,6 +11,7 @@ import UIKit
 /// Advertises itself via Bonjour (`_iris-canvas._tcp`) so that Mac and
 /// other devices on the same network discover it automatically.
 class AgentHTTPServer {
+    static let shared = AgentHTTPServer()
 
     static let defaultPort: UInt16 = 8935
     static let bonjourType = "_iris-canvas._tcp"
@@ -63,6 +64,10 @@ class AgentHTTPServer {
 
     func start(objectManager: CanvasObjectManager) {
         self.objectManager = objectManager
+        if listener != nil {
+            print("[iris] Agent API already running — switched active canvas manager")
+            return
+        }
 
         guard let nwPort = NWEndpoint.Port(rawValue: port) else { return }
 
@@ -626,8 +631,28 @@ class AgentHTTPServer {
                 manager: mgr
             )
 
+            let svgStrokeHexColor: String? = parsed.strokes.compactMap { stroke in
+                guard let raw = stroke.color?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !raw.isEmpty else {
+                    return nil
+                }
+                let normalized = raw.replacingOccurrences(of: "#", with: "")
+                let isHex = normalized.range(
+                    of: #"^[0-9a-fA-F]{3,8}$"#,
+                    options: .regularExpression
+                ) != nil
+                guard isHex, [3, 4, 6, 8].contains(normalized.count) else {
+                    return nil
+                }
+                return "#\(normalized)"
+            }.first
+
+            let requestedColor = colorHex?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolvedColorHex = (requestedColor?.isEmpty == false) ? requestedColor : svgStrokeHexColor
+
             let color: UIColor
-            if let hex = colorHex {
+            if let hex = resolvedColorHex {
                 color = UIColor(hex: hex)
             } else {
                 color = UIColor(red: 0.10, green: 0.12, blue: 0.16, alpha: 1)
