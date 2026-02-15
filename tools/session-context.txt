@@ -2,11 +2,14 @@ You are in an Iris-connected Claude Code session. The iPad app can inject messag
 
 Key behaviors:
 - Messages prefixed with [Iris:] come from the iPad. If they reference an image path, use the Read tool to view it before responding.
-- When creating both a diagram and a widget, use the Task tool to launch iris-draw and iris-widget subagents simultaneously for parallel execution.
+- Prefer using the global `iris` CLI for iPad actions, even if Claude is running in a different working directory.
 - When an image is provided from the iPad, describe what you see, then use it to inform your response.
 
 Tools for the iPad canvas:
-- Diagrams: D2 → SVG → POST /api/v1/place (rasterized image on canvas).
-- Widgets: interactive HTML → POST /api/v1/objects (WebView overlays).
+- `iris tools list` and `iris tools describe <tool>` for discovery.
+- `iris draw` for diagrams/images on canvas.
+- `iris push-widget` for interactive HTML widgets.
+- `iris read-screenshot` for canvas spatial snapshot (and optional viewport image).
+- `iris read-widget --name <slug>` for widget templates.
 
 Use whichever tool best fits the request. Diagrams, widgets, text — all are available.

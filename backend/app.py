@@ -69,6 +69,7 @@ CODEX_HISTORY_PATH = Path(
 CODEX_CLI_BIN = os.environ.get("CODEX_CLI_BIN", "codex")
 IRIS_IPAD_URL = os.environ.get("IRIS_IPAD_URL", "http://dylans-ipad.local:8935")
 CODEX_MESSAGE_DEDUP_WINDOW_SECONDS = 20
+IRIS_TOOLS_MANIFEST_PATH = BASE_DIR.parent / "tools" / "iris-tools.json"
 
 try:
     SCREENSHOT_RETENTION_LIMIT = max(1, int(os.environ.get("IRIS_SCREENSHOT_RETENTION_LIMIT", "50")))
@@ -226,6 +227,48 @@ def _iris_system_prompt() -> str:
         "You are Iris. Operate as a cross-device assistant, prioritize actionable outputs, "
         "and preserve consistency across Mac, iPad, and iPhone workflows."
     )
+
+
+@lru_cache(maxsize=1)
+def _iris_tools_manifest() -> dict[str, Any]:
+    try:
+        raw = json.loads(IRIS_TOOLS_MANIFEST_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"tools": []}
+    return raw if isinstance(raw, dict) else {"tools": []}
+
+
+@lru_cache(maxsize=1)
+def _iris_claude_cli_bootstrap_prompt() -> str:
+    """Compact first-turn context for Claude live sessions to use iris CLI."""
+    manifest = _iris_tools_manifest()
+    tools = manifest.get("tools") if isinstance(manifest.get("tools"), list) else []
+    lines = [
+        "Iris iPad CLI context:",
+        "- Use the global `iris` command from any working directory.",
+        "- iPad base URL is configured by `IRIS_IPAD_URL` (default `http://dylans-ipad.local:8935`).",
+        "- Discover commands: `iris tools list`.",
+        "- Get details: `iris tools describe <tool>`.",
+    ]
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        name = str(tool.get("name") or "").strip()
+        summary = str(tool.get("summary") or "").strip()
+        cli = str(tool.get("cli") or "").strip()
+        if not name:
+            continue
+        if summary and cli:
+            lines.append(f"- `{name}`: {summary} Example: `{cli}`")
+        elif summary:
+            lines.append(f"- `{name}`: {summary}")
+        elif cli:
+            lines.append(f"- `{name}`: `{cli}`")
+    lines.extend([
+        "- Prefer `iris` CLI commands over raw curl when operating on iPad canvas/widgets.",
+        "Apply these rules immediately when handling this request.",
+    ])
+    return "\n".join(lines)
 
 
 def _session_needs_auto_name(session: dict) -> bool:
@@ -2023,6 +2066,7 @@ def v1_agent() -> Any:
             session["metadata"] = {}
         metadata = session["metadata"]
         is_first_prompt = not session.get("messages") and _session_needs_auto_name(session)
+        needs_claude_bootstrap = not session.get("messages")
 
         # Merge provider-link metadata from request into persisted session metadata.
         conversation_id = request_metadata.get("claude_code_conversation_id")
@@ -2055,15 +2099,23 @@ def v1_agent() -> Any:
                 }), 503
 
             socket_path = live.get("socket_path", claude_commander.DEFAULT_SOCKET_PATH)
+            message_for_claude = message
+            if needs_claude_bootstrap:
+                bootstrap = _iris_claude_cli_bootstrap_prompt()
+                if bootstrap:
+                    message_for_claude = (
+                        f"{bootstrap}\n\n"
+                        f"User request:\n{message}"
+                    )
             image_b64 = (body.get("image_base64") or "").strip()
             if image_b64:
                 ok = claude_commander.inject_image(
                     image_base64=image_b64,
-                    prompt=message,
+                    prompt=message_for_claude,
                     socket_path=socket_path,
                 )
             else:
-                ok = claude_commander.inject_text(message, socket_path)
+                ok = claude_commander.inject_text(message_for_claude, socket_path)
             if not ok:
                 return jsonify({"error": "Failed to inject into live session"}), 502
             claude_commander.mark_busy()

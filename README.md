@@ -29,6 +29,9 @@ Iris is **all-to-all** — every device in your Apple ecosystem can see, talk to
 
 ## Prerequisites
 
+- **uv** (Python package/runtime manager)
+- **Node.js + npm** (for the Mac Electron app)
+- **Claude Code CLI** (`claude`) for live Claude integration
 - **D2** — diagram renderer for flowcharts, architecture, and sequence diagrams:
   ```
   brew install d2
@@ -45,6 +48,85 @@ Iris is **all-to-all** — every device in your Apple ecosystem can see, talk to
   cd backend && uv sync
   ```
 
+## Setup
+
+1. Create your local env file:
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Install backend dependencies:
+   ```bash
+   cd backend
+   uv sync
+   cd ..
+   ```
+
+3. Install Mac app dependencies:
+   ```bash
+   cd mac
+   npm install
+   cd ..
+   ```
+
+4. Install Iris helper CLIs globally:
+   ```bash
+   tools/claudei install
+   ```
+   This installs:
+   - `claudei` → live Claude Code bridge
+   - `iris` → iPad tools CLI (`draw`, `push-widget`, `read-screenshot`, `read-widget`)
+
+## Run
+
+- Start backend + Mac app together:
+  ```bash
+  ./run.sh
+  ```
+
+- Or run individually:
+  - backend: `bash backend/run.sh`
+  - mac app: `bash mac/run.sh`
+
+## Claude Code + iPad Workflow
+
+1. Link this Mac to the iPad:
+   ```bash
+   claudei link
+   ```
+
+2. Start a live Claude session from any project folder:
+   ```bash
+   claudei
+   ```
+   Optional:
+   - `claudei --cwd /path/to/project`
+   - `claudei --resume <session_id>`
+
+3. Send prompts from Iris on iPad.
+   On the first message of a linked Claude session, Iris now auto-injects a CLI bootstrap so Claude knows to use:
+   - `iris tools list`
+   - `iris tools describe <tool>`
+   - `iris draw`
+   - `iris push-widget`
+   - `iris read-screenshot`
+   - `iris read-widget`
+
+## Iris CLI (Global)
+
+After install, `iris` works from any directory:
+
+```bash
+iris tools list
+iris tools describe draw
+iris draw --svg-file /tmp/diagram.svg --scale 1.5
+iris push-widget --html-file /tmp/widget.html --width 360 --height 260
+iris read-screenshot --image-out /tmp/ipad.jpg
+iris read-widget --name calculator
+```
+
+Default iPad base URL is `http://dylans-ipad.local:8935` and can be overridden with `IRIS_IPAD_URL`.
+
 ## Browser Automation Service
 
 `browser/` contains a standalone browser-use integration that can execute browser actions from text + image context using Claude.
@@ -57,3 +139,10 @@ cd browser
 ```
 
 See `browser/README.md` for API payload format and Playwright setup.
+
+## More Docs
+
+- `backend/README.md` — backend API details and endpoints
+- `iPad/README.md` — iPad canvas API (`/api/v1/*`)
+- `mac/README.md` — Electron app setup and packaging
+- `CLAUDE.md` — Claude-focused workflow and tooling notes

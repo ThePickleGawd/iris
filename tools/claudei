@@ -91,6 +91,7 @@ PY
 # Handle `claudei install` subcommand
 if [[ "${1:-}" == "install" ]]; then
     INSTALL_PATH="/usr/local/bin/claudei"
+    IRIS_INSTALL_PATH="/usr/local/bin/iris"
     # Resolve through symlinks to find the real script location.
     REAL_SCRIPT="${BASH_SOURCE[0]}"
     while [[ -L "$REAL_SCRIPT" ]]; do
@@ -111,6 +112,19 @@ if [[ "${1:-}" == "install" ]]; then
 
     sudo ln -s "$SCRIPT_PATH" "$INSTALL_PATH"
     echo "Installed: $INSTALL_PATH -> $SCRIPT_PATH"
+
+    # Install companion iris CLI if present (same repository).
+    IRIS_SCRIPT_PATH="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)/iris"
+    if [[ -f "$IRIS_SCRIPT_PATH" ]]; then
+        if [[ -L "$IRIS_INSTALL_PATH" || -e "$IRIS_INSTALL_PATH" ]]; then
+            echo "Removing existing $IRIS_INSTALL_PATH"
+            sudo rm -f "$IRIS_INSTALL_PATH"
+        fi
+        sudo ln -s "$IRIS_SCRIPT_PATH" "$IRIS_INSTALL_PATH"
+        echo "Installed: $IRIS_INSTALL_PATH -> $IRIS_SCRIPT_PATH"
+    else
+        echo "Skipping iris install: not found at $IRIS_SCRIPT_PATH"
+    fi
     exit 0
 fi
 

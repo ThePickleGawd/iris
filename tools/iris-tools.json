@@ -1,0 +1,61 @@
+{
+  "version": "1.0",
+  "tools": [
+    {
+      "name": "draw",
+      "aliases": ["place"],
+      "summary": "Place an SVG diagram/image on the iPad canvas.",
+      "kind": "http",
+      "http": {
+        "method": "POST",
+        "path": "/api/v1/place"
+      },
+      "cli": "iris draw --svg-file <diagram.svg> [--scale 1.5] [--x 0] [--y 0] [--coordinate-space viewport_offset]",
+      "examples": [
+        "iris draw --svg-file /tmp/flow.svg --scale 1.5",
+        "iris draw --d2-file /tmp/flow.d2 --x 120 --y -40"
+      ]
+    },
+    {
+      "name": "push_widget",
+      "aliases": ["push-widget"],
+      "summary": "Place an interactive HTML widget on the iPad canvas.",
+      "kind": "http",
+      "http": {
+        "method": "POST",
+        "path": "/api/v1/objects"
+      },
+      "cli": "iris push-widget --html-file <widget.html> [--width 320 --height 220 --x 0 --y 0 --coordinate-space viewport_offset]",
+      "examples": [
+        "iris push-widget --html-file /tmp/widget.html --width 360 --height 260",
+        "iris push-widget --html '<div>Hello</div>' --x 100 --y 80"
+      ]
+    },
+    {
+      "name": "read_screenshot",
+      "aliases": ["read-screenshot"],
+      "summary": "Get iPad canvas spatial snapshot and optionally capture current viewport screenshot.",
+      "kind": "http",
+      "http": {
+        "method": "GET",
+        "path": "/api/v1/canvas"
+      },
+      "cli": "iris read-screenshot [--image-out /tmp/ipad.jpg]",
+      "examples": [
+        "iris read-screenshot",
+        "iris read-screenshot --image-out /tmp/ipad.jpg"
+      ]
+    },
+    {
+      "name": "read_widget",
+      "aliases": ["read-widget"],
+      "summary": "Load a prebuilt widget template from widgets/lib.",
+      "kind": "local",
+      "cli": "iris read-widget --name calculator",
+      "examples": [
+        "iris read-widget --name calculator",
+        "iris read-widget --name timer --html-only"
+      ]
+    }
+  ]
+}

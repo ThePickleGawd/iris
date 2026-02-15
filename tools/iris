@@ -1,0 +1,592 @@
+#!/usr/bin/env bash
+# tools/iris — iPad tool CLI for Claude/Codex sessions.
+#
+# Usage examples:
+#   iris tools list
+#   iris draw --svg-file /tmp/diagram.svg --scale 1.5
+#   iris push-widget --html-file /tmp/widget.html
+#   iris read-screenshot --image-out /tmp/ipad.jpg
+#   iris read-widget --name calculator
+
+set -euo pipefail
+
+IRIS_IPAD_URL_DEFAULT="${IRIS_IPAD_URL:-http://dylans-ipad.local:8935}"
+
+resolve_script_path() {
+  local self="${BASH_SOURCE[0]}"
+  while [[ -L "$self" ]]; do
+    local dir
+    dir="$(cd -P "$(dirname "$self")" && pwd)"
+    local target
+    target="$(readlink "$self")"
+    if [[ "$target" == /* ]]; then
+      self="$target"
+    else
+      self="$dir/$target"
+    fi
+  done
+  cd -P "$(dirname "$self")" && pwd
+}
+
+SCRIPT_DIR="$(resolve_script_path)"
+REPO_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
+MANIFEST_PATH="$REPO_ROOT/tools/iris-tools.json"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  iris tools list [--json]
+  iris tools describe <tool> [--json]
+
+  iris health [--ipad-url URL]
+  iris draw --svg-file <file.svg> [--x N --y N --scale N --coordinate-space SPACE --background HEX --ipad-url URL]
+  iris draw --d2-file <file.d2> [draw options...]
+
+  iris push-widget --html-file <file.html> [--width N --height N --x N --y N --coordinate-space SPACE --animate true|false --ipad-url URL]
+  iris push-widget --html '<html...>' [widget options...]
+
+  iris read-screenshot [--image-out /tmp/ipad.jpg] [--ipad-url URL]
+  iris read-widget --name <widget-slug> [--html-only]
+
+  iris install
+USAGE
+}
+
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
+
+assert_manifest() {
+  [[ -f "$MANIFEST_PATH" ]] || die "Missing manifest: $MANIFEST_PATH"
+}
+
+print_tools_list() {
+  local as_json="$1"
+  assert_manifest
+  if [[ "$as_json" == "true" ]]; then
+    cat "$MANIFEST_PATH"
+    return
+  fi
+
+  python3 - "$MANIFEST_PATH" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+tools = data.get("tools", [])
+for t in tools:
+    name = str(t.get("name", "")).strip()
+    summary = str(t.get("summary", "")).strip()
+    if name:
+        print(f"{name}: {summary}")
+PY
+}
+
+print_tool_describe() {
+  local tool_name="$1"
+  local as_json="$2"
+  assert_manifest
+
+  python3 - "$MANIFEST_PATH" "$tool_name" "$as_json" <<'PY'
+import json
+import sys
+
+manifest_path, wanted_raw, as_json = sys.argv[1], sys.argv[2], sys.argv[3]
+wanted = wanted_raw.strip().lower()
+
+with open(manifest_path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+picked = None
+for tool in data.get("tools", []):
+    names = [str(tool.get("name", "")).strip().lower()]
+    for alias in tool.get("aliases", []):
+        names.append(str(alias).strip().lower())
+    if wanted in names:
+        picked = tool
+        break
+
+if picked is None:
+    print(json.dumps({"error": f"unknown tool '{wanted_raw}'"}))
+    sys.exit(2)
+
+if as_json == "true":
+    print(json.dumps(picked, ensure_ascii=False, indent=2))
+    raise SystemExit(0)
+
+print(f"name: {picked.get('name', '')}")
+aliases = picked.get("aliases") or []
+if aliases:
+    print("aliases: " + ", ".join(str(a) for a in aliases))
+summary = str(picked.get("summary", "")).strip()
+if summary:
+    print(f"summary: {summary}")
+kind = str(picked.get("kind", "")).strip()
+if kind:
+    print(f"kind: {kind}")
+http = picked.get("http")
+if isinstance(http, dict):
+    method = str(http.get("method", "")).strip()
+    path = str(http.get("path", "")).strip()
+    if method and path:
+        print(f"http: {method} {path}")
+cli = str(picked.get("cli", "")).strip()
+if cli:
+    print(f"cli: {cli}")
+examples = picked.get("examples") or []
+if examples:
+    print("examples:")
+    for ex in examples:
+        print(f"  - {ex}")
+PY
+}
+
+http_get() {
+  local base_url="$1"
+  local path="$2"
+  curl -sS -f "${base_url%/}${path}"
+}
+
+http_post_json() {
+  local base_url="$1"
+  local path="$2"
+  local payload="$3"
+  curl -sS -f -X POST "${base_url%/}${path}" \
+    -H "Content-Type: application/json" \
+    -d "$payload"
+}
+
+cmd_health() {
+  local ipad_url="$IRIS_IPAD_URL_DEFAULT"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --ipad-url)
+        [[ $# -ge 2 ]] || die "--ipad-url requires a value"
+        ipad_url="$2"
+        shift 2
+        ;;
+      *)
+        die "Unknown option for health: $1"
+        ;;
+    esac
+  done
+  http_get "$ipad_url" "/api/v1/health"
+}
+
+cmd_draw() {
+  local ipad_url="$IRIS_IPAD_URL_DEFAULT"
+  local svg_file=""
+  local d2_file=""
+  local svg_inline=""
+  local x="0"
+  local y="0"
+  local scale="1.5"
+  local coordinate_space="viewport_offset"
+  local background=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --ipad-url)
+        [[ $# -ge 2 ]] || die "--ipad-url requires a value"
+        ipad_url="$2"
+        shift 2
+        ;;
+      --svg-file)
+        [[ $# -ge 2 ]] || die "--svg-file requires a path"
+        svg_file="$2"
+        shift 2
+        ;;
+      --d2-file)
+        [[ $# -ge 2 ]] || die "--d2-file requires a path"
+        d2_file="$2"
+        shift 2
+        ;;
+      --svg)
+        [[ $# -ge 2 ]] || die "--svg requires a value"
+        svg_inline="$2"
+        shift 2
+        ;;
+      --x)
+        [[ $# -ge 2 ]] || die "--x requires a value"
+        x="$2"
+        shift 2
+        ;;
+      --y)
+        [[ $# -ge 2 ]] || die "--y requires a value"
+        y="$2"
+        shift 2
+        ;;
+      --scale)
+        [[ $# -ge 2 ]] || die "--scale requires a value"
+        scale="$2"
+        shift 2
+        ;;
+      --coordinate-space)
+        [[ $# -ge 2 ]] || die "--coordinate-space requires a value"
+        coordinate_space="$2"
+        shift 2
+        ;;
+      --background)
+        [[ $# -ge 2 ]] || die "--background requires a value"
+        background="$2"
+        shift 2
+        ;;
+      *)
+        die "Unknown option for draw: $1"
+        ;;
+    esac
+  done
+
+  local svg=""
+  if [[ -n "$d2_file" ]]; then
+    need_cmd d2
+    [[ -f "$d2_file" ]] || die "D2 file not found: $d2_file"
+    local tmp_svg
+    tmp_svg="$(mktemp -t iris-draw-XXXXXX.svg)"
+    d2 "$d2_file" "$tmp_svg" >/dev/null
+    svg="$(cat "$tmp_svg")"
+    rm -f "$tmp_svg"
+  elif [[ -n "$svg_file" ]]; then
+    [[ -f "$svg_file" ]] || die "SVG file not found: $svg_file"
+    svg="$(cat "$svg_file")"
+  elif [[ -n "$svg_inline" ]]; then
+    svg="$svg_inline"
+  elif [[ ! -t 0 ]]; then
+    svg="$(cat)"
+  fi
+
+  [[ -n "$svg" ]] || die "Provide SVG via --svg-file, --d2-file, --svg, or stdin"
+
+  local payload
+  payload="$(python3 - "$svg" "$x" "$y" "$scale" "$coordinate_space" "$background" <<'PY'
+import json
+import sys
+
+svg, x, y, scale, coordinate_space, background = sys.argv[1:7]
+out = {
+    "svg": svg,
+    "x": float(x),
+    "y": float(y),
+    "scale": float(scale),
+    "coordinate_space": coordinate_space,
+}
+if background.strip():
+    out["background"] = background.strip()
+print(json.dumps(out, ensure_ascii=False))
+PY
+)"
+
+  http_post_json "$ipad_url" "/api/v1/place" "$payload"
+}
+
+cmd_push_widget() {
+  local ipad_url="$IRIS_IPAD_URL_DEFAULT"
+  local html_file=""
+  local html_inline=""
+  local width="320"
+  local height="220"
+  local x="0"
+  local y="0"
+  local coordinate_space="viewport_offset"
+  local animate="true"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --ipad-url)
+        [[ $# -ge 2 ]] || die "--ipad-url requires a value"
+        ipad_url="$2"
+        shift 2
+        ;;
+      --html-file)
+        [[ $# -ge 2 ]] || die "--html-file requires a path"
+        html_file="$2"
+        shift 2
+        ;;
+      --html)
+        [[ $# -ge 2 ]] || die "--html requires a value"
+        html_inline="$2"
+        shift 2
+        ;;
+      --width)
+        [[ $# -ge 2 ]] || die "--width requires a value"
+        width="$2"
+        shift 2
+        ;;
+      --height)
+        [[ $# -ge 2 ]] || die "--height requires a value"
+        height="$2"
+        shift 2
+        ;;
+      --x)
+        [[ $# -ge 2 ]] || die "--x requires a value"
+        x="$2"
+        shift 2
+        ;;
+      --y)
+        [[ $# -ge 2 ]] || die "--y requires a value"
+        y="$2"
+        shift 2
+        ;;
+      --coordinate-space)
+        [[ $# -ge 2 ]] || die "--coordinate-space requires a value"
+        coordinate_space="$2"
+        shift 2
+        ;;
+      --animate)
+        [[ $# -ge 2 ]] || die "--animate requires true|false"
+        animate="$2"
+        shift 2
+        ;;
+      *)
+        die "Unknown option for push-widget: $1"
+        ;;
+    esac
+  done
+
+  local html=""
+  if [[ -n "$html_file" ]]; then
+    [[ -f "$html_file" ]] || die "HTML file not found: $html_file"
+    html="$(cat "$html_file")"
+  elif [[ -n "$html_inline" ]]; then
+    html="$html_inline"
+  elif [[ ! -t 0 ]]; then
+    html="$(cat)"
+  fi
+  [[ -n "$html" ]] || die "Provide HTML via --html-file, --html, or stdin"
+
+  local payload
+  payload="$(python3 - "$html" "$width" "$height" "$x" "$y" "$coordinate_space" "$animate" <<'PY'
+import json
+import sys
+
+html, width, height, x, y, coordinate_space, animate = sys.argv[1:8]
+animate_val = str(animate).strip().lower()
+if animate_val in {"true", "1", "yes", "y", "on"}:
+    animate_bool = True
+elif animate_val in {"false", "0", "no", "n", "off"}:
+    animate_bool = False
+else:
+    raise SystemExit("Invalid --animate value; use true|false")
+
+out = {
+    "html": html,
+    "width": float(width),
+    "height": float(height),
+    "x": float(x),
+    "y": float(y),
+    "coordinate_space": coordinate_space,
+    "animate": animate_bool,
+}
+print(json.dumps(out, ensure_ascii=False))
+PY
+)"
+
+  http_post_json "$ipad_url" "/api/v1/objects" "$payload"
+}
+
+cmd_read_screenshot() {
+  local ipad_url="$IRIS_IPAD_URL_DEFAULT"
+  local image_out=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --ipad-url)
+        [[ $# -ge 2 ]] || die "--ipad-url requires a value"
+        ipad_url="$2"
+        shift 2
+        ;;
+      --image-out)
+        [[ $# -ge 2 ]] || die "--image-out requires a path"
+        image_out="$2"
+        shift 2
+        ;;
+      *)
+        die "Unknown option for read-screenshot: $1"
+        ;;
+    esac
+  done
+
+  http_get "$ipad_url" "/api/v1/canvas"
+
+  if [[ -n "$image_out" ]]; then
+    echo
+    curl -sS -f "${ipad_url%/}/api/v1/screenshot" -o "$image_out"
+    echo "{\"image_saved\": \"$image_out\"}"
+  fi
+}
+
+cmd_read_widget() {
+  local name=""
+  local html_only="false"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --name)
+        [[ $# -ge 2 ]] || die "--name requires a value"
+        name="$2"
+        shift 2
+        ;;
+      --html-only)
+        html_only="true"
+        shift
+        ;;
+      *)
+        die "Unknown option for read-widget: $1"
+        ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || die "--name is required"
+
+  local widget_dir="$REPO_ROOT/widgets/lib/$name"
+  local html_path="$widget_dir/widget.html"
+  local meta_path="$widget_dir/meta.json"
+
+  [[ -f "$html_path" ]] || die "Widget not found: $name"
+
+  if [[ "$html_only" == "true" ]]; then
+    cat "$html_path"
+    return
+  fi
+
+  python3 - "$name" "$html_path" "$meta_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+name, html_path, meta_path = sys.argv[1:4]
+html = Path(html_path).read_text(encoding="utf-8")
+meta = {}
+meta_file = Path(meta_path)
+if meta_file.is_file():
+    try:
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        meta = {}
+
+out = {
+    "name": meta.get("name", name),
+    "description": meta.get("description", ""),
+    "defaultWidth": meta.get("defaultWidth", 320),
+    "defaultHeight": meta.get("defaultHeight", 220),
+    "accent": meta.get("accent", "#007aff"),
+    "tags": meta.get("tags", []),
+    "html": html,
+}
+print(json.dumps(out, ensure_ascii=False, indent=2))
+PY
+}
+
+cmd_install() {
+  local install_path="/usr/local/bin/iris"
+  local real_script
+  real_script="${BASH_SOURCE[0]}"
+  while [[ -L "$real_script" ]]; do
+    local link_dir
+    link_dir="$(cd -P "$(dirname "$real_script")" && pwd)"
+    local link_target
+    link_target="$(readlink "$real_script")"
+    if [[ "$link_target" == /* ]]; then
+      real_script="$link_target"
+    else
+      real_script="$link_dir/$link_target"
+    fi
+  done
+  local script_path
+  script_path="$(cd -P "$(dirname "$real_script")" && pwd)/$(basename "$real_script")"
+
+  if [[ -L "$install_path" || -e "$install_path" ]]; then
+    echo "Removing existing $install_path"
+    sudo rm -f "$install_path"
+  fi
+
+  sudo ln -s "$script_path" "$install_path"
+  echo "Installed: $install_path -> $script_path"
+}
+
+main() {
+  need_cmd curl
+  need_cmd python3
+
+  local subcmd="${1:-}"
+  if [[ -z "$subcmd" ]]; then
+    usage
+    exit 1
+  fi
+  shift || true
+
+  case "$subcmd" in
+    -h|--help|help)
+      usage
+      ;;
+    install)
+      cmd_install
+      ;;
+    tools)
+      local action="${1:-}"
+      shift || true
+      case "$action" in
+        list)
+          local as_json="false"
+          while [[ $# -gt 0 ]]; do
+            case "$1" in
+              --json) as_json="true"; shift ;;
+              *) die "Unknown option for tools list: $1" ;;
+            esac
+          done
+          print_tools_list "$as_json"
+          ;;
+        describe)
+          local name=""
+          local as_json="false"
+          while [[ $# -gt 0 ]]; do
+            case "$1" in
+              --json) as_json="true"; shift ;;
+              *)
+                if [[ -z "$name" ]]; then
+                  name="$1"
+                  shift
+                else
+                  die "Unexpected argument: $1"
+                fi
+                ;;
+            esac
+          done
+          [[ -n "$name" ]] || die "Usage: iris tools describe <tool> [--json]"
+          print_tool_describe "$name" "$as_json"
+          ;;
+        *)
+          die "Usage: iris tools {list|describe}"
+          ;;
+      esac
+      ;;
+    health)
+      cmd_health "$@"
+      ;;
+    draw)
+      cmd_draw "$@"
+      ;;
+    push-widget|push_widget)
+      cmd_push_widget "$@"
+      ;;
+    read-screenshot|read_screenshot)
+      cmd_read_screenshot "$@"
+      ;;
+    read-widget|read_widget)
+      cmd_read_widget "$@"
+      ;;
+    *)
+      die "Unknown command: $subcmd"
+      ;;
+  esac
+}
+
+main "$@"
