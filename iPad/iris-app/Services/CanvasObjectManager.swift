@@ -748,8 +748,9 @@ final class CanvasObjectManager: ObservableObject {
         imageView.contentMode = .scaleAspectFit
         imageView.clipsToBounds = true
 
-        let container = canvasView.imageContainerView()
-        container.addSubview(imageView)
+        let container = canvasView.widgetContainerView()
+        imageView.isUserInteractionEnabled = false
+        container.insertSubview(imageView, at: 0)
 
         guard imageView.window != nil else {
             imageView.removeFromSuperview()

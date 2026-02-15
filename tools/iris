@@ -186,6 +186,7 @@ cmd_draw() {
   local svg_file=""
   local d2_file=""
   local svg_inline=""
+  local image_base64=""
   local x="0"
   local y="0"
   local scale="1.5"
@@ -249,35 +250,75 @@ cmd_draw() {
   if [[ -n "$d2_file" ]]; then
     need_cmd d2
     [[ -f "$d2_file" ]] || die "D2 file not found: $d2_file"
-    local tmp_svg
-    tmp_svg="$(mktemp -t iris-draw-XXXXXX.svg)"
-    d2 "$d2_file" "$tmp_svg" >/dev/null
-    svg="$(cat "$tmp_svg")"
-    rm -f "$tmp_svg"
+    local tmp_png_base
+    local tmp_png
+    tmp_png_base="$(mktemp -t iris-draw-XXXXXX)"
+    tmp_png="${tmp_png_base}.png"
+    mv "$tmp_png_base" "$tmp_png"
+    d2 "$d2_file" "$tmp_png" >/dev/null
+    image_base64="$(python3 - "$tmp_png" <<'PY'
+import base64
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+print(base64.b64encode(path.read_bytes()).decode("ascii"))
+PY
+)"
+    rm -f "$tmp_png"
   elif [[ -n "$svg_file" ]]; then
     [[ -f "$svg_file" ]] || die "SVG file not found: $svg_file"
-    svg="$(cat "$svg_file")"
+    # Render SVG to PNG locally — on-device WKWebView SVG rendering is unreliable
+    if command -v rsvg-convert &>/dev/null; then
+      local tmp_png_svg="/tmp/iris-svg-$$.png"
+      rsvg-convert "$svg_file" -o "$tmp_png_svg"
+      image_base64="$(python3 -c "import base64,sys; print(base64.b64encode(open(sys.argv[1],'rb').read()).decode())" "$tmp_png_svg")"
+      rm -f "$tmp_png_svg"
+    else
+      svg="$(cat "$svg_file")"
+    fi
   elif [[ -n "$svg_inline" ]]; then
-    svg="$svg_inline"
+    if command -v rsvg-convert &>/dev/null; then
+      local tmp_svg_in="/tmp/iris-svgin-$$.svg" tmp_png_in="/tmp/iris-svgin-$$.png"
+      printf '%s' "$svg_inline" > "$tmp_svg_in"
+      rsvg-convert "$tmp_svg_in" -o "$tmp_png_in"
+      image_base64="$(python3 -c "import base64,sys; print(base64.b64encode(open(sys.argv[1],'rb').read()).decode())" "$tmp_png_in")"
+      rm -f "$tmp_svg_in" "$tmp_png_in"
+    else
+      svg="$svg_inline"
+    fi
   elif [[ ! -t 0 ]]; then
-    svg="$(cat)"
+    local stdin_svg
+    stdin_svg="$(cat)"
+    if command -v rsvg-convert &>/dev/null; then
+      local tmp_svg_pipe="/tmp/iris-svgpipe-$$.svg" tmp_png_pipe="/tmp/iris-svgpipe-$$.png"
+      printf '%s' "$stdin_svg" > "$tmp_svg_pipe"
+      rsvg-convert "$tmp_svg_pipe" -o "$tmp_png_pipe"
+      image_base64="$(python3 -c "import base64,sys; print(base64.b64encode(open(sys.argv[1],'rb').read()).decode())" "$tmp_png_pipe")"
+      rm -f "$tmp_svg_pipe" "$tmp_png_pipe"
+    else
+      svg="$stdin_svg"
+    fi
   fi
 
-  [[ -n "$svg" ]] || die "Provide SVG via --svg-file, --d2-file, --svg, or stdin"
+  [[ -n "$svg" || -n "$image_base64" ]] || die "Provide SVG via --svg-file/--svg/stdin, or D2 via --d2-file"
 
   local payload
-  payload="$(python3 - "$svg" "$x" "$y" "$scale" "$coordinate_space" "$background" <<'PY'
+  payload="$(python3 - "$svg" "$image_base64" "$x" "$y" "$scale" "$coordinate_space" "$background" <<'PY'
 import json
 import sys
 
-svg, x, y, scale, coordinate_space, background = sys.argv[1:7]
+svg, image_base64, x, y, scale, coordinate_space, background = sys.argv[1:8]
 out = {
-    "svg": svg,
     "x": float(x),
     "y": float(y),
     "scale": float(scale),
     "coordinate_space": coordinate_space,
 }
+if svg:
+    out["svg"] = svg
+if image_base64:
+    out["image_base64"] = image_base64
 if background.strip():
     out["background"] = background.strip()
 print(json.dumps(out, ensure_ascii=False))
