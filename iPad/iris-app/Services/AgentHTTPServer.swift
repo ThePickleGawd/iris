@@ -230,9 +230,6 @@ class AgentHTTPServer {
         case ("GET", "device", nil, nil):
             handleDeviceInfo(conn)
 
-        case ("POST", "draw", nil, nil):
-            handleDraw(req, conn)
-
         case ("POST", "place", nil, nil):
             handlePlace(req, conn)
 
@@ -335,7 +332,6 @@ class AgentHTTPServer {
         let w     = numericValue(json["width"]) ?? 320
         let h     = numericValue(json["height"]) ?? 220
         let anim  = (json["animate"] as? Bool) ?? true
-        let renderMode = (json["render_mode"] as? String ?? "handwritten").lowercased()
         let coordinateSpace = (json["coordinate_space"] as? String ?? "viewport_offset").lowercased()
 
         guard let mgr = objectManager else {
@@ -354,28 +350,6 @@ class AgentHTTPServer {
             let viewport = mgr.viewportCenter
             let size = CGSize(width: w, height: h)
             let axis = mgr.axisPoint(forCanvasPoint: canvasPos)
-            let text = self?.extractInkSource(fromHTML: html) ?? ""
-            let wantsHandwritten = renderMode != "widget"
-
-            if wantsHandwritten, !text.isEmpty {
-                let inkSize = await mgr.drawHandwrittenText(
-                    text,
-                    at: canvasPos,
-                    maxWidth: size.width
-                )
-                self?.respondJSON(conn, status: 201, body: [
-                    "id": UUID().uuidString,
-                    "x": x, "y": y,
-                    "coordinate_space_used": canonicalSpace,
-                    "rendered_as": "handwritten_ink",
-                    "width": max(inkSize.width, size.width),
-                    "height": max(inkSize.height, 44),
-                    "viewport_center": ["x": viewport.x, "y": viewport.y],
-                    "canvas_position": ["x": canvasPos.x, "y": canvasPos.y],
-                    "document_axis_position": ["x": axis.x, "y": axis.y]
-                ])
-                return
-            }
 
             let obj = await mgr.place(html: html, at: canvasPos, size: size, animated: anim)
             self?.respondJSON(conn, status: 201, body: [
@@ -389,118 +363,6 @@ class AgentHTTPServer {
                 "document_axis_position": ["x": axis.x, "y": axis.y]
             ])
         }
-    }
-
-    private func extractInkSource(fromHTML html: String) -> String {
-        if let embeddedSource = extractEmbeddedDocumentSource(fromHTML: html) {
-            let normalized = embeddedSource
-                .replacingOccurrences(of: "\r\n", with: "\n")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !normalized.isEmpty {
-                return normalized
-            }
-        }
-
-        let withBreaks = html.replacingOccurrences(
-            of: "(?i)<br\\s*/?>",
-            with: "\n",
-            options: .regularExpression
-        )
-        guard let data = withBreaks.data(using: .utf8) else { return "" }
-
-        let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
-            .documentType: NSAttributedString.DocumentType.html,
-            .characterEncoding: String.Encoding.utf8.rawValue
-        ]
-        guard let attributed = try? NSAttributedString(
-            data: data,
-            options: options,
-            documentAttributes: nil
-        ) else {
-            return ""
-        }
-
-        return attributed.string
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n")
-    }
-
-    private func extractEmbeddedDocumentSource(fromHTML html: String) -> String? {
-        guard let regex = try? NSRegularExpression(
-            pattern: #"(?is)<script[^>]*id\s*=\s*['"]source['"][^>]*>(.*?)</script>"#
-        ) else {
-            return nil
-        }
-        let ns = html as NSString
-        let range = NSRange(location: 0, length: ns.length)
-        guard let match = regex.firstMatch(in: html, range: range), match.numberOfRanges >= 2 else {
-            return nil
-        }
-        let raw = ns.substring(with: match.range(at: 1))
-        let decoded = decodeHTMLEntities(raw)
-        return decoded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : decoded
-    }
-
-    private func decodeHTMLEntities(_ input: String) -> String {
-        var output = input
-        let namedMap: [String: String] = [
-            "&lt;": "<",
-            "&gt;": ">",
-            "&amp;": "&",
-            "&quot;": "\"",
-            "&#39;": "'",
-            "&apos;": "'",
-            "&nbsp;": " "
-        ]
-        for (entity, replacement) in namedMap {
-            output = output.replacingOccurrences(of: entity, with: replacement)
-        }
-        output = replaceRegexEntity(
-            output,
-            pattern: #"&#x([0-9A-Fa-f]+);"#
-        ) { hex in
-            guard let scalarValue = UInt32(hex, radix: 16),
-                  let scalar = UnicodeScalar(scalarValue) else {
-                return "&#x\(hex);"
-            }
-            return String(scalar)
-        }
-        output = replaceRegexEntity(
-            output,
-            pattern: #"&#([0-9]+);"#
-        ) { decimal in
-            guard let scalarValue = UInt32(decimal),
-                  let scalar = UnicodeScalar(scalarValue) else {
-                return "&#\(decimal);"
-            }
-            return String(scalar)
-        }
-        return output
-    }
-
-    private func replaceRegexEntity(
-        _ source: String,
-        pattern: String,
-        transform: (String) -> String
-    ) -> String {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return source }
-        let ns = source as NSString
-        let matches = regex.matches(in: source, range: NSRange(location: 0, length: ns.length))
-        guard !matches.isEmpty else { return source }
-        var output = source
-        for match in matches.reversed() {
-            guard match.numberOfRanges >= 2 else { continue }
-            let fullRange = match.range(at: 0)
-            let innerRange = match.range(at: 1)
-            let inner = ns.substring(with: innerRange)
-            let replacement = transform(inner)
-            if let swiftRange = Range(fullRange, in: output) {
-                output.replaceSubrange(swiftRange, with: replacement)
-            }
-        }
-        return output
     }
 
     private func handleListObjects(_ conn: NWConnection) {
@@ -729,97 +591,6 @@ class AgentHTTPServer {
                 return
             }
             self.respondJSON(conn, status: 200, body: ["rejected": uuid.uuidString])
-        }
-    }
-
-    // MARK: - Draw Handler
-
-    private func handleDraw(_ req: HTTPRequest, _ conn: NWConnection) {
-        guard let json = req.jsonBody, let svg = json["svg"] as? String, !svg.isEmpty else {
-            respondJSON(conn, status: 400, body: ["error": "Missing required field: 'svg' (string)"])
-            return
-        }
-
-        let x = numericValue(json["x"]) ?? 0
-        let y = numericValue(json["y"]) ?? 0
-        let coordinateSpace = (json["coordinate_space"] as? String ?? "viewport_offset").lowercased()
-        let scale = numericValue(json["scale"]) ?? 1.0
-        let speed = numericValue(json["speed"]) ?? 1.0
-        let strokeWidth = numericValue(json["stroke_width"]) ?? 3
-        let colorHex = json["color"] as? String
-
-        guard let mgr = objectManager else {
-            respondJSON(conn, status: 503, body: ["error": "Canvas not ready — open a document first"])
-            return
-        }
-
-        // Parse stroke count upfront for the response
-        let parser = SVGPathParser()
-        let parsed = parser.parse(svgString: svg)
-        let strokeCount = parsed.strokes.count
-
-        guard strokeCount > 0 else {
-            respondJSON(conn, status: 400, body: ["error": "SVG contains no drawable strokes"])
-            return
-        }
-
-        // Estimate duration: ~30 points/sec per stroke, with pauses
-        let totalPoints = parsed.strokes.reduce(0) { $0 + $1.points.count }
-        let drawTime = Double(totalPoints) / (30.0 * max(speed, 0.1))
-        let pauseTime = Double(strokeCount) * 0.15
-        let estimatedDuration = (drawTime + pauseTime).rounded(toPlaces: 1)
-
-        // Respond immediately (202), then animate asynchronously
-        respondJSON(conn, status: 202, body: [
-            "status": "drawing",
-            "stroke_count": strokeCount,
-            "estimated_duration_seconds": estimatedDuration
-        ])
-
-        Task { @MainActor in
-            let canonicalSpace = self.canonicalCoordinateSpace(coordinateSpace)
-            let canvasPos = self.resolveCanvasPoint(
-                x: x,
-                y: y,
-                coordinateSpace: canonicalSpace,
-                manager: mgr
-            )
-
-            let svgStrokeHexColor: String? = parsed.strokes.compactMap { stroke in
-                guard let raw = stroke.color?.trimmingCharacters(in: .whitespacesAndNewlines),
-                      !raw.isEmpty else {
-                    return nil
-                }
-                let normalized = raw.replacingOccurrences(of: "#", with: "")
-                let isHex = normalized.range(
-                    of: #"^[0-9a-fA-F]{3,8}$"#,
-                    options: .regularExpression
-                ) != nil
-                guard isHex, [3, 4, 6, 8].contains(normalized.count) else {
-                    return nil
-                }
-                return "#\(normalized)"
-            }.first
-
-            let requestedColor = colorHex?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let resolvedColorHex = (requestedColor?.isEmpty == false) ? requestedColor : svgStrokeHexColor
-
-            let color: UIColor
-            if let hex = resolvedColorHex {
-                color = UIColor(hex: hex)
-            } else {
-                color = UIColor(red: 0.10, green: 0.12, blue: 0.16, alpha: 1)
-            }
-
-            await mgr.drawSVG(
-                svg: svg,
-                at: canvasPos,
-                scale: CGFloat(scale),
-                color: color,
-                strokeWidth: CGFloat(strokeWidth),
-                speed: speed
-            )
         }
     }
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# tools/iris-session — Launch a claude-commander session for Iris.
+# tools/claudei — Launch a claude-commander session for Iris.
 #
 # Usage:
-#   tools/iris-session                         # new session
-#   tools/iris-session --resume <session_id>   # resume existing session
-#   tools/iris-session --cwd /some/project     # specify working directory
+#   claudei                              # new session in current directory
+#   claudei --resume <session_id>        # resume existing session
+#   claudei --cwd /some/project          # specify working directory
+#   claudei install                      # symlink to /usr/local/bin/claudei
 #
 # Environment:
 #   IRIS_BACKEND_URL   Backend base URL (default: http://localhost:8000)
@@ -14,7 +15,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 IRIS_BACKEND_URL="${IRIS_BACKEND_URL:-http://localhost:8000}"
 CLAUDEC_BIN="${CLAUDEC_BIN:-claudec}"
@@ -22,8 +22,28 @@ SOCKET_PATH="/tmp/iris-claude.sock"
 META_FILE="/tmp/iris-claude-meta.json"
 IMAGES_DIR="/tmp/iris/images"
 
+# Handle `claudei install` subcommand
+if [[ "${1:-}" == "install" ]]; then
+    INSTALL_PATH="/usr/local/bin/claudei"
+    # Resolve through symlinks to find the real script location
+    REAL_SCRIPT="$0"
+    while [[ -L "$REAL_SCRIPT" ]]; do
+        REAL_SCRIPT="$(readlink "$REAL_SCRIPT")"
+    done
+    SCRIPT_PATH="$(cd "$(dirname "$REAL_SCRIPT")" && pwd)/$(basename "$REAL_SCRIPT")"
+
+    if [[ -L "$INSTALL_PATH" || -e "$INSTALL_PATH" ]]; then
+        echo "Removing existing $INSTALL_PATH"
+        sudo rm -f "$INSTALL_PATH"
+    fi
+
+    sudo ln -s "$SCRIPT_PATH" "$INSTALL_PATH"
+    echo "Installed: $INSTALL_PATH -> $SCRIPT_PATH"
+    exit 0
+fi
+
 # Parse arguments
-CWD="${PROJECT_ROOT}"
+CWD="$(pwd)"
 RESUME_ID=""
 EXTRA_ARGS=()
 
@@ -74,7 +94,9 @@ CLAUDEC_ARGS=(-d "$CWD")
 if [[ -n "$RESUME_ID" ]]; then
     CLAUDEC_ARGS+=(--resume "$RESUME_ID")
 fi
-CLAUDEC_ARGS+=("${EXTRA_ARGS[@]}")
+if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+    CLAUDEC_ARGS+=("${EXTRA_ARGS[@]}")
+fi
 
 # Write meta file before launching so the backend can discover the socket
 cat > "$META_FILE" <<EOF

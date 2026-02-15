@@ -94,22 +94,35 @@ curl -s http://dylans-ipad.local:8935/api/v1/device                           # 
 
 ## Live Session (claude-commander)
 
-Iris supports a **live session** mode where the iPad can inject messages into an interactive Claude Code terminal via [claude-commander](https://github.com/sstraus/claude-commander).
+Iris uses **live-only** Claude Code sessions. The user runs `claudei` on their Mac, and the iPad discovers and injects messages into it via [claude-commander](https://github.com/sstraus/claude-commander).
+
+### Installing the CLI
+
+```bash
+# From the Iris repo:
+tools/claudei install    # symlinks to /usr/local/bin/claudei
+
+# Requires claude-commander (claudec):
+curl -L https://github.com/sstraus/claude-commander/releases/latest/download/claudec-macos-arm64 -o /usr/local/bin/claudec
+chmod +x /usr/local/bin/claudec
+```
 
 ### Starting a Live Session
 
 ```bash
-# From the project root:
-tools/iris-session
+# From any project directory:
+claudei
 
 # With a specific working directory:
-tools/iris-session --cwd /path/to/project
+claudei --cwd /path/to/project
 
 # Resume an existing session:
-tools/iris-session --resume <session_id>
+claudei --resume <session_id>
 ```
 
-This launches `claudec` with a fixed socket at `/tmp/iris-claude.sock`. The iPad backend can then push messages into the session.
+This launches `claudec` in the current directory with a fixed socket at `/tmp/iris-claude.sock`. The iPad backend can then push messages into the session.
+
+There is no headless Claude Code mode — `claudei` must be running on the Mac for Claude Code to work from the iPad.
 
 ### Injected Messages
 

@@ -176,6 +176,7 @@ private struct AgentPickerOverlay: View {
     @State private var loadingSessions = false
     @State private var creatingLinkedSession = false
     @State private var sessionPickerError: String?
+    @State private var checkingLiveSession = false
 
     var body: some View {
         ZStack {
@@ -213,7 +214,9 @@ private struct AgentPickerOverlay: View {
             VStack(spacing: 10) {
                 ForEach(Array(choices.enumerated()), id: \.element.id) { index, choice in
                     Button {
-                        if choice.isSessionLinked {
+                        if choice.id == "claude_code" {
+                            checkClaudeCodeLiveSession()
+                        } else if choice.isSessionLinked {
                             sessionPickerModelID = choice.id
                             fetchRemoteSessions(for: choice.id)
                         } else {
@@ -297,48 +300,30 @@ private struct AgentPickerOverlay: View {
                 .font(.system(size: 28, weight: .semibold, design: .rounded))
                 .foregroundColor(.white)
 
-            Text("Select a session to link to this note.")
-                .font(.system(size: 14, weight: .regular))
-                .foregroundColor(.white.opacity(0.72))
-                .fixedSize(horizontal: false, vertical: true)
-
             if sessionPickerModelID == "claude_code" {
-                Button {
-                    createNewClaudeSession()
-                } label: {
-                    HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("New Claude Code Session")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundColor(.white)
-                                .lineLimit(1)
-                            Text("Start a fresh Claude session")
-                                .font(.system(size: 12))
-                                .foregroundColor(.white.opacity(0.62))
-                                .lineLimit(1)
-                        }
-
-                        Spacer(minLength: 0)
-
-                        Image(systemName: "plus")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(.white.opacity(0.4))
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(Color.white.opacity(0.08))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(Color.white.opacity(0.1), lineWidth: 1)
-                    )
-                }
-                .buttonStyle(.plain)
+                Text("Checking for a live Claude Code session...")
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundColor(.white.opacity(0.72))
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Select a session to link to this note.")
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundColor(.white.opacity(0.72))
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            if loadingSessions {
+            if sessionPickerModelID == "claude_code" {
+                // Claude Code: just show spinner while checking live status
+                if checkingLiveSession {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                            .tint(.white)
+                        Spacer()
+                    }
+                    .padding(.vertical, 20)
+                }
+            } else if loadingSessions {
                 HStack {
                     Spacer()
                     ProgressView()
@@ -429,12 +414,14 @@ private struct AgentPickerOverlay: View {
 
                 Spacer()
 
-                Button(creatingLinkedSession ? "Starting..." : "New Session") {
-                    startNewLinkedSession()
+                if sessionPickerModelID != "claude_code" {
+                    Button(creatingLinkedSession ? "Starting..." : "New Session") {
+                        startNewLinkedSession()
+                    }
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white.opacity(creatingLinkedSession ? 0.4 : 0.9))
+                    .disabled(creatingLinkedSession || loadingSessions)
                 }
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(.white.opacity(creatingLinkedSession ? 0.4 : 0.9))
-                .disabled(creatingLinkedSession || loadingSessions)
             }
             .padding(.top, 2)
         }
@@ -450,6 +437,52 @@ private struct AgentPickerOverlay: View {
     }
 
     // MARK: - Networking
+
+    private func checkClaudeCodeLiveSession() {
+        guard let urlStr = UserDefaults.standard.string(forKey: "iris_agent_server_url"),
+              let serverURL = URL(string: urlStr) else {
+            sessionPickerError = "No linked server URL found."
+            sessionPickerModelID = "claude_code"
+            showSessionPicker = true
+            return
+        }
+
+        checkingLiveSession = true
+        sessionPickerError = nil
+        remoteSessions = []
+        sessionPickerModelID = "claude_code"
+        showSessionPicker = true
+
+        Task {
+            let endpoint = serverURL.appendingPathComponent("claude-code").appendingPathComponent("live-status")
+            var request = URLRequest(url: endpoint)
+            request.timeoutInterval = 5
+
+            var isLive = false
+            var liveCWD: String?
+
+            if let (data, response) = try? await URLSession.shared.data(for: request),
+               let http = response as? HTTPURLResponse,
+               (200...299).contains(http.statusCode),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                isLive = (json["live"] as? Bool) == true
+                liveCWD = json["cwd"] as? String
+            }
+
+            await MainActor.run {
+                checkingLiveSession = false
+                if isLive {
+                    let sessionName = liveCWD.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Claude Code"
+                    let doc = documentStore.addDocument(name: sessionName, model: "claude_code")
+                    registerSessionOnBackend(doc)
+                    isPresented = false
+                    onCreated(doc)
+                } else {
+                    sessionPickerError = "Start a live session on your Mac first:\n\n  claudei"
+                }
+            }
+        }
+    }
 
     private func fetchRemoteSessions(for modelID: String) {
         guard let urlStr = UserDefaults.standard.string(forKey: "iris_agent_server_url"),
@@ -473,7 +506,7 @@ private struct AgentPickerOverlay: View {
     }
 
     private func startNewLinkedSession() {
-        guard sessionPickerModelID == "codex" || sessionPickerModelID == "claude_code" else { return }
+        guard sessionPickerModelID == "codex" else { return }
         guard let urlStr = UserDefaults.standard.string(forKey: "iris_agent_server_url"),
               let serverURL = URL(string: urlStr) else {
             sessionPickerError = "No linked server URL found."
@@ -803,8 +836,12 @@ struct CanvasScreen: View {
     @StateObject private var canvasState = CanvasState()
     @Environment(\.dismiss) var dismiss
 
+    private var currentDocument: Document {
+        documentStore.documents.first(where: { $0.id == document.id }) ?? document
+    }
+
     var body: some View {
-        ContentView(document: document, onBack: { dismiss() })
+        ContentView(document: currentDocument, documentStore: documentStore, onBack: { dismiss() })
             .environmentObject(canvasState)
             .navigationBarBackButtonHidden(true)
     }
