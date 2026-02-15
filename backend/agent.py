@@ -22,10 +22,11 @@ from openai import OpenAI
 DEFAULT_MODEL = "gpt-5.2-mini"
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-5"
 DEFAULT_GEMINI_MODEL = "gemini-3-flash"
-MAX_TOOL_ROUNDS = 6
+MAX_TOOL_ROUNDS = 14
 BROWSER_TOOL_TIMEOUT_SECONDS = max(
     30, int(os.environ.get("BROWSER_TOOL_TIMEOUT_SECONDS", "180"))
 ) if os.environ.get("BROWSER_TOOL_TIMEOUT_SECONDS", "").strip().isdigit() else 180
+DEFAULT_BROWSER_SESSION = str(os.environ.get("IRIS_BROWSER_SESSION") or "iris-main").strip() or "iris-main"
 try:
     ANTHROPIC_MAX_TOKENS = max(
         256, min(4096, int(os.environ.get("ANTHROPIC_MAX_TOKENS", "3072")))
@@ -52,6 +53,8 @@ except ValueError:
     ANTHROPIC_HTTP_BACKOFF_SECONDS = 1.0
 
 _WIDGETS_DIR = Path(__file__).resolve().parent.parent / "widgets"
+_PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
+_BROWSER_SKILL_PATH = _PROMPTS_DIR / "browser-use-SKILL.md"
 
 
 def _load_widget_catalog() -> str:
@@ -83,10 +86,29 @@ def _load_widget_catalog() -> str:
     return "\n".join(lines)
 
 
+def _load_browser_skill_markdown() -> str:
+    """Load the vendored browser-use skill markdown used in the system prompt."""
+    try:
+        text = _BROWSER_SKILL_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return (
+            "Browser skill file missing. Expected: "
+            f"{_BROWSER_SKILL_PATH}. Re-sync from browser-use upstream."
+        )
+    if not text:
+        return "Browser skill file is empty."
+    return text
+
+
 def _build_system_prompt() -> str:
-    """Build the full system prompt with the dynamic widget catalog injected."""
+    """Build the full system prompt with dynamic widget catalog + browser skill."""
     catalog = _load_widget_catalog()
-    return _SYSTEM_PROMPT_TEMPLATE.replace("{widget_catalog}", catalog)
+    browser_skill = _load_browser_skill_markdown()
+    return (
+        _SYSTEM_PROMPT_TEMPLATE
+        .replace("{widget_catalog}", catalog)
+        .replace("{browser_skill}", browser_skill)
+    )
 
 
 _SYSTEM_PROMPT_TEMPLATE = """\
@@ -97,12 +119,17 @@ You can run web actions using the run_browser_task tool when browsing is the mos
 
 ## Browser Skill (Hardcoded)
 
-When the user asks for browser navigation or web actions, use `run_browser_task`.
-- `start_url`: set this when the user gives a URL to open first.
-- `instruction`: the concrete browser task to execute.
-- `max_steps`: optional limit for autonomous runs.
-- If the request is only "open/go to this URL", prefer a simple open instruction.
-- If both `start_url` and a task are needed, provide both.
+{browser_skill}
+
+### Iris Browser Tool Mapping
+
+- Use `run_browser_task` for all browser-use actions.
+- Prefer high-level usage (`instruction`, `start_url`) unless specific browser-use subcommands are needed.
+- For direct browser-use command parity, pass `command` + `command_args`.
+- If `BROWSER_USE_API_KEY` is absent, Iris maps `OPENAI_API_KEY` to browser-use auth for compatibility.
+- Browser persistence policy: keep browser sessions alive after tasks complete.
+- Never execute `command: "close"` unless the user explicitly asks to close/shut down the browser.
+- Ignore generic cleanup suggestions from the imported browser skill that say to always close when done.
 
 ## Widget Types
 
@@ -262,7 +289,7 @@ def _tool_call_info(name: str, args: dict) -> dict:
             if args.get(k) is not None:
                 info[k] = int(args[k])
     if name == "run_browser_task":
-        for k in ("start_url",):
+        for k in ("start_url", "browser", "session", "profile", "command"):
             if args.get(k):
                 info[k] = str(args[k])
         for k in ("max_steps",):
@@ -271,7 +298,46 @@ def _tool_call_info(name: str, args: dict) -> dict:
                     info[k] = int(args[k])
                 except (TypeError, ValueError):
                     pass
+        instruction = str(args.get("instruction") or "").strip()
+        if instruction:
+            info["instruction"] = instruction[:180]
     return info
+
+
+def _attach_tool_call_result(tool_call: dict[str, Any], raw_result: Any) -> None:
+    """Attach a compact, trajectory-safe tool result payload."""
+    parsed: Any = raw_result
+    if isinstance(raw_result, str):
+        trimmed = raw_result.strip()
+        if trimmed.startswith("{") or trimmed.startswith("["):
+            try:
+                parsed = json.loads(trimmed)
+            except json.JSONDecodeError:
+                parsed = raw_result
+
+    tool_call["result"] = _compact_tool_result(parsed)
+
+
+def _compact_tool_result(value: Any, *, max_chars: int = 3000) -> Any:
+    """Reduce oversized tool payloads so they can be persisted in session logs."""
+    if isinstance(value, str):
+        if len(value) <= max_chars:
+            return value
+        return value[:max_chars] + "... [truncated]"
+
+    if isinstance(value, (dict, list)):
+        try:
+            serialized = json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return str(value)[:max_chars] + ("... [truncated]" if len(str(value)) > max_chars else "")
+        if len(serialized) <= max_chars:
+            return value
+        return {
+            "truncated": True,
+            "preview": serialized[:max_chars] + "... [truncated]",
+        }
+
+    return value
 
 
 TOOLS = [
@@ -347,16 +413,28 @@ TOOLS = [
         "function": {
             "name": "run_browser_task",
             "description": (
-                "Execute browser automation using the browser-use CLI. "
-                "Use this when the user asks for web actions like navigating sites, filling forms, "
-                "searching content, or completing browser workflows."
+                "Execute browser automation using browser-use CLI. "
+                "Supports high-level tasks (instruction/start_url) and direct browser-use subcommand parity "
+                "(command/command_args) for easy skill transition."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": (
+                            "Optional browser-use subcommand to run directly "
+                            "(for example: open, state, click, input, type, screenshot, run, close)."
+                        ),
+                    },
+                    "command_args": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional positional args for `command`, in browser-use CLI order.",
+                    },
                     "instruction": {
                         "type": "string",
-                        "description": "The exact browser task to execute.",
+                        "description": "High-level browser task to execute (used when command is omitted).",
                     },
                     "context_text": {
                         "type": "string",
@@ -369,6 +447,23 @@ TOOLS = [
                     "max_steps": {
                         "type": "number",
                         "description": "Optional max browser action steps. Default 12, max 200.",
+                    },
+                    "session": {
+                        "type": "string",
+                        "description": "Optional browser-use session name (maps to --session).",
+                    },
+                    "browser": {
+                        "type": "string",
+                        "enum": ["chromium", "real", "remote"],
+                        "description": "Optional browser mode (maps to --browser).",
+                    },
+                    "profile": {
+                        "type": "string",
+                        "description": "Optional browser profile (maps to --profile).",
+                    },
+                    "headed": {
+                        "type": "boolean",
+                        "description": "Show browser window. Defaults to true.",
                     },
                     "include_attached_screenshots": {
                         "type": "boolean",
@@ -557,13 +652,20 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str, screensh
 
         if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
             msgs.append(choice.message.model_dump())
-            forced_final_text: str | None = None
             for tc in choice.message.tool_calls:
                 args = json.loads(tc.function.arguments)
-                tool_calls.append(_tool_call_info(tc.function.name, args))
+                tool_call = _tool_call_info(tc.function.name, args)
+                tool_calls.append(tool_call)
                 if tc.function.name == "push_widget":
                     widget = _normalize_widget_args(args)
                     widgets.append(widget)
+                    _attach_tool_call_result(tool_call, {
+                        "ok": True,
+                        "widget_id": widget["widget_id"],
+                        "target": widget["target"],
+                        "width": widget["width"],
+                        "height": widget["height"],
+                    })
                     msgs.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
@@ -578,6 +680,7 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str, screensh
 
                 if tc.function.name == "read_screenshot":
                     analysis = _handle_read_screenshot(args)
+                    _attach_tool_call_result(tool_call, analysis)
                     msgs.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
@@ -587,6 +690,7 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str, screensh
 
                 if tc.function.name == "read_widget":
                     result = _handle_read_widget(args)
+                    _attach_tool_call_result(tool_call, result)
                     msgs.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
@@ -595,23 +699,28 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str, screensh
                     continue
 
                 if tc.function.name == "run_browser_task":
-                    result = _handle_run_browser_task(args, screenshots=screenshots)
+                    result = _handle_run_browser_task(
+                        args,
+                        screenshots=screenshots,
+                        user_message=user_message,
+                    )
+                    _attach_tool_call_result(tool_call, result)
                     msgs.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
                         "content": result,
                     })
-                    if forced_final_text is None:
-                        forced_final_text = _browser_tool_final_text(result)
                     continue
 
+                _attach_tool_call_result(tool_call, {
+                    "ok": False,
+                    "error": f"Unsupported tool '{tc.function.name}'.",
+                })
                 msgs.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
                     "content": f"Unsupported tool '{tc.function.name}'.",
                 })
-            if forced_final_text:
-                return {"text": forced_final_text, "widgets": widgets, "tool_calls": tool_calls}
         else:
             return {"text": choice.message.content or "", "widgets": widgets, "tool_calls": tool_calls}
 
@@ -649,16 +758,23 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
         if stop_reason == "tool_use":
             anth_messages.append({"role": "assistant", "content": content_blocks})
             tool_results = []
-            forced_final_text: str | None = None
             for block in content_blocks:
                 if block.get("type") != "tool_use":
                     continue
                 args = block.get("input") or {}
                 tool_name = block.get("name")
-                tool_calls.append(_tool_call_info(tool_name, args))
+                tool_call = _tool_call_info(tool_name, args)
+                tool_calls.append(tool_call)
                 if tool_name == "push_widget":
                     widget = _normalize_widget_args(args)
                     widgets.append(widget)
+                    _attach_tool_call_result(tool_call, {
+                        "ok": True,
+                        "widget_id": widget["widget_id"],
+                        "target": widget["target"],
+                        "width": widget["width"],
+                        "height": widget["height"],
+                    })
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.get("id"),
@@ -673,6 +789,7 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
 
                 if tool_name == "read_screenshot":
                     analysis = _handle_read_screenshot(args)
+                    _attach_tool_call_result(tool_call, analysis)
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.get("id"),
@@ -682,6 +799,7 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
 
                 if tool_name == "read_widget":
                     result = _handle_read_widget(args)
+                    _attach_tool_call_result(tool_call, result)
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.get("id"),
@@ -690,24 +808,29 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
                     continue
 
                 if tool_name == "run_browser_task":
-                    result = _handle_run_browser_task(args, screenshots=screenshots)
+                    result = _handle_run_browser_task(
+                        args,
+                        screenshots=screenshots,
+                        user_message=user_message,
+                    )
+                    _attach_tool_call_result(tool_call, result)
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.get("id"),
                         "content": result,
                     })
-                    if forced_final_text is None:
-                        forced_final_text = _browser_tool_final_text(result)
                     continue
 
+                _attach_tool_call_result(tool_call, {
+                    "ok": False,
+                    "error": f"Unsupported tool '{tool_name}'.",
+                })
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.get("id"),
                     "content": f"Unsupported tool '{tool_name}'.",
                 })
             anth_messages.append({"role": "user", "content": tool_results})
-            if forced_final_text:
-                return {"text": forced_final_text, "widgets": widgets, "tool_calls": tool_calls}
             continue
 
         text = "".join(
@@ -773,17 +896,24 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str, screensh
         if function_calls:
             contents.append({"role": "model", "parts": [{"functionCall": fc} for fc in function_calls]})
             tool_response_parts: list[dict[str, Any]] = []
-            forced_final_text: str | None = None
             for call in function_calls:
                 name = str(call.get("name") or "").strip()
                 args = call.get("args")
                 if not isinstance(args, dict):
                     args = {}
-                tool_calls.append(_tool_call_info(name, args))
+                tool_call = _tool_call_info(name, args)
+                tool_calls.append(tool_call)
 
                 if name == "push_widget":
                     widget = _normalize_widget_args(args)
                     widgets.append(widget)
+                    _attach_tool_call_result(tool_call, {
+                        "ok": True,
+                        "widget_id": widget["widget_id"],
+                        "target": widget["target"],
+                        "width": widget["width"],
+                        "height": widget["height"],
+                    })
                     tool_response_parts.append({
                         "functionResponse": {
                             "name": name,
@@ -801,6 +931,7 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str, screensh
 
                 if name == "read_screenshot":
                     analysis = _handle_read_screenshot(args)
+                    _attach_tool_call_result(tool_call, analysis)
                     tool_response_parts.append({
                         "functionResponse": {
                             "name": name,
@@ -811,6 +942,7 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str, screensh
 
                 if name == "read_widget":
                     result = _handle_read_widget(args)
+                    _attach_tool_call_result(tool_call, result)
                     tool_response_parts.append({
                         "functionResponse": {
                             "name": name,
@@ -820,7 +952,11 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str, screensh
                     continue
 
                 if name == "run_browser_task":
-                    result = _handle_run_browser_task(args, screenshots=screenshots)
+                    result = _handle_run_browser_task(
+                        args,
+                        screenshots=screenshots,
+                        user_message=user_message,
+                    )
                     response: dict[str, Any]
                     try:
                         parsed = json.loads(result)
@@ -830,26 +966,25 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str, screensh
                             response = {"ok": True, "result": result}
                     except json.JSONDecodeError:
                         response = {"ok": True, "result": result}
+                    _attach_tool_call_result(tool_call, response)
                     tool_response_parts.append({
                         "functionResponse": {
                             "name": name,
                             "response": response,
                         }
                     })
-                    if forced_final_text is None:
-                        forced_final_text = _browser_tool_final_text(result)
                     continue
 
+                unsupported = {"ok": False, "error": f"Unsupported tool '{name}'"}
+                _attach_tool_call_result(tool_call, unsupported)
                 tool_response_parts.append({
                     "functionResponse": {
                         "name": name or "unknown",
-                        "response": {"ok": False, "error": f"Unsupported tool '{name}'"},
+                        "response": unsupported,
                     }
                 })
 
             contents.append({"role": "user", "parts": tool_response_parts})
-            if forced_final_text:
-                return {"text": forced_final_text, "widgets": widgets, "tool_calls": tool_calls}
             continue
 
         text = "".join(
@@ -1588,20 +1723,54 @@ def _handle_read_widget(args: dict[str, Any]) -> str:
     }, ensure_ascii=False)
 
 
+def _is_browser_session_corrupt(error_text: str) -> bool:
+    """Detect CDP connection death errors that require a full session reset."""
+    lower = error_text.lower()
+    return any(pattern in lower for pattern in (
+        "root cdp client not initialized",
+        "expected at least one handler",
+        "target closed",
+        "browser not initialized",
+        "session not found",
+        "no browser context",
+        "connection closed",
+        "websocket is not connected",
+    ))
+
+
+def _reset_browser_session(session_name: str, env: dict[str, str]) -> None:
+    """Force-close all tabs then stop the browser-use server for a session."""
+    base = ["uvx", "browser-use[cli]", "--session", session_name]
+    try:
+        subprocess.run(base + ["close", "--all"], capture_output=True, timeout=15, env=env)
+    except Exception:
+        pass
+    try:
+        subprocess.run(base + ["server", "stop"], capture_output=True, timeout=15, env=env)
+    except Exception:
+        pass
+
+
 def _handle_run_browser_task(
     args: dict[str, Any],
     *,
     screenshots: dict[str, bytes] | None = None,
+    user_message: str = "",
 ) -> str:
     instruction = str(args.get("instruction") or "").strip()
     start_url = str(args.get("start_url") or "").strip()
     context_text = str(args.get("context_text") or "").strip()
+    command = str(args.get("command") or "").strip().lower()
+    command_args_raw = args.get("command_args")
+    session_name = str(args.get("session") or "").strip() or DEFAULT_BROWSER_SESSION
+    browser_mode = str(args.get("browser") or "").strip().lower()
+    profile = str(args.get("profile") or "").strip()
+    headed_value = args.get("headed")
+    headed = True if headed_value is None else bool(headed_value)
+    del screenshots  # kept for signature parity with other tool handlers
 
     if not start_url:
         start_url = _infer_url_from_text(instruction) or _infer_url_from_text(context_text)
-
-    if not instruction and not start_url:
-        return json.dumps({"ok": False, "error": "Missing 'instruction' or 'start_url' parameter."})
 
     try:
         max_steps = int(args.get("max_steps", 12))
@@ -1609,92 +1778,427 @@ def _handle_run_browser_task(
         max_steps = 12
     max_steps = max(1, min(max_steps, 200))
 
-    # browser-use CLI accepts --json as a global flag and does not support
-    # --start-url on the `run` subcommand in current versions.
-    cmd: list[str] = ["uvx", "browser-use[cli]", "--headed", "--json"]
+    cmd: list[str] = ["uvx", "browser-use[cli]", "--json"]
+    if headed:
+        cmd.append("--headed")
+    if session_name:
+        cmd += ["--session", session_name]
+    if browser_mode in {"chromium", "real", "remote"}:
+        cmd += ["--browser", browser_mode]
+    if profile:
+        cmd += ["--profile", profile]
 
-    raw_instruction = instruction.strip()
-    lower_instruction = raw_instruction.lower()
-    simple_open_request = (
-        not raw_instruction
-        or lower_instruction.startswith("open ")
-        or " go to " in f" {lower_instruction} "
-        or lower_instruction.startswith("go to ")
-        or lower_instruction.startswith("navigate to ")
-    )
+    executed_command = ""
 
-    if start_url and simple_open_request and not context_text:
-        cmd += ["open", start_url]
+    if isinstance(command_args_raw, list):
+        command_args = [str(value) for value in command_args_raw]
+    elif command_args_raw is None:
+        command_args = []
     else:
-        task_parts: list[str] = []
-        if start_url:
-            task_parts.append(f"Start at {start_url}.")
-        if raw_instruction:
-            task_parts.append(raw_instruction)
-        if context_text:
-            task_parts.append(f"Context: {context_text}")
-        full_instruction = "\n\n".join(part for part in task_parts if part).strip()
-        if not full_instruction:
-            full_instruction = f"Open {start_url} in a new tab and stop."
-        cmd += ["run", full_instruction, "--max-steps", str(max_steps)]
+        command_args = [str(command_args_raw)]
+
+    if command:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", command):
+            return json.dumps({
+                "ok": False,
+                "error": f"Invalid browser-use command: {command}",
+            }, ensure_ascii=False)
+
+        if command == "close" and not _user_explicitly_requested_browser_close(
+            user_message=user_message,
+            instruction=instruction,
+            command_args=command_args,
+        ):
+            return json.dumps({
+                "ok": False,
+                "error": (
+                    "Blocked browser close: keep browser running unless the user "
+                    "explicitly requests shutdown."
+                ),
+            }, ensure_ascii=False)
+
+        executed_command = command
+
+        if command == "open" and not command_args and start_url:
+            command_args = [start_url]
+        if command == "run" and not command_args:
+            task_parts: list[str] = []
+            if start_url:
+                task_parts.append(f"Start at {start_url}.")
+            if instruction:
+                task_parts.append(instruction)
+            if context_text:
+                task_parts.append(f"Context: {context_text}")
+            run_task = "\n\n".join(part for part in task_parts if part).strip()
+            if not run_task:
+                return json.dumps({
+                    "ok": False,
+                    "error": "Missing run task. Provide `instruction` or `command_args`.",
+                }, ensure_ascii=False)
+            command_args = [run_task]
+
+        cmd.append(command)
+        cmd += command_args
+        if command == "run" and "--max-steps" not in command_args:
+            cmd += ["--max-steps", str(max_steps)]
+    else:
+        if not instruction and not start_url:
+            return json.dumps({
+                "ok": False,
+                "error": "Missing `instruction`, `start_url`, or `command` parameter.",
+            }, ensure_ascii=False)
+
+        raw_instruction = instruction.strip()
+        simple_open_request = _is_open_only_instruction(raw_instruction)
+
+        if start_url and simple_open_request and not context_text:
+            executed_command = "open"
+            cmd += ["open", start_url]
+        else:
+            executed_command = "run"
+            task_parts = []
+            if start_url:
+                task_parts.append(f"Start at {start_url}.")
+            if raw_instruction:
+                task_parts.append(raw_instruction)
+            if context_text:
+                task_parts.append(f"Context: {context_text}")
+            full_instruction = "\n\n".join(part for part in task_parts if part).strip()
+            if not full_instruction:
+                full_instruction = f"Open {start_url} in a new tab and stop."
+            cmd += ["run", full_instruction, "--max-steps", str(max_steps)]
+
+    env = os.environ.copy()
+    if not str(env.get("BROWSER_USE_API_KEY") or "").strip():
+        openai_key = str(env.get("OPENAI_API_KEY") or "").strip()
+        if openai_key:
+            env["BROWSER_USE_API_KEY"] = openai_key
+
+    _session_was_reset = False
+    for _attempt in range(2):
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=BROWSER_TOOL_TIMEOUT_SECONDS,
+                env=env,
+            )
+            raw = proc.stdout.strip()
+            stderr = proc.stderr.strip()
+
+            if raw:
+                normalized = _normalize_browser_use_cli_response(raw, returncode=proc.returncode)
+                if normalized is not None:
+                    if not normalized.get("ok") and not _session_was_reset:
+                        details = str(normalized.get("details") or normalized.get("error") or "")
+                        if _is_browser_session_corrupt(details):
+                            _reset_browser_session(session_name, env)
+                            _session_was_reset = True
+                            continue
+                    normalized = _with_browser_session_persistence_note(
+                        normalized,
+                        executed_command=executed_command,
+                        session_name=session_name,
+                        headed=headed,
+                        browser_mode=browser_mode,
+                        profile=profile,
+                        start_url=start_url,
+                        env=env,
+                    )
+                    return json.dumps(normalized, ensure_ascii=False)
+
+            if proc.returncode == 0:
+                out = {
+                    "ok": True,
+                    "result": {"final_result": raw or "Browser task completed."},
+                }
+                out = _with_browser_session_persistence_note(
+                    out,
+                    executed_command=executed_command,
+                    session_name=session_name,
+                    headed=headed,
+                    browser_mode=browser_mode,
+                    profile=profile,
+                    start_url=start_url,
+                    env=env,
+                )
+                return json.dumps(out, ensure_ascii=False)
+            else:
+                error_text = stderr[:1500] or raw[:1500] or f"Exit code {proc.returncode}"
+                if not _session_was_reset and _is_browser_session_corrupt(error_text):
+                    _reset_browser_session(session_name, env)
+                    _session_was_reset = True
+                    continue
+                return json.dumps({
+                    "ok": False,
+                    "error": "browser-use command failed",
+                    "details": error_text,
+                }, ensure_ascii=False)
+
+        except subprocess.TimeoutExpired:
+            return json.dumps({
+                "ok": False,
+                "error": f"Browser task timed out after {BROWSER_TOOL_TIMEOUT_SECONDS}s",
+                "details": "The browser session is still running. You can interact with it manually.",
+            }, ensure_ascii=False)
+        except FileNotFoundError:
+            return json.dumps({
+                "ok": False,
+                "error": "browser-use CLI not found. Install with: uv pip install 'browser-use[cli]'",
+            }, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps(
+                {"ok": False, "error": "Browser task failed", "details": str(exc)},
+                ensure_ascii=False,
+            )
+
+    # Both attempts failed (should only reach here after corrupt-session retry)
+    return json.dumps({
+        "ok": False,
+        "error": "browser-use command failed after session reset",
+        "details": "The browser session was corrupt and recovery did not help.",
+    }, ensure_ascii=False)
+
+
+def _with_browser_session_persistence_note(
+    payload: dict[str, Any],
+    *,
+    executed_command: str,
+    session_name: str,
+    headed: bool,
+    browser_mode: str,
+    profile: str,
+    start_url: str,
+    env: dict[str, str],
+) -> dict[str, Any]:
+    """Keep browser session alive after `run` unless user explicitly closed it."""
+    if executed_command != "run":
+        return payload
+    if not bool(payload.get("ok")):
+        return payload
+
+    result = payload.get("result")
+    confirmed_url = ""
+    if isinstance(result, dict):
+        confirmed_url = str(result.get("confirmed_url") or "").strip()
+    fallback_url = confirmed_url or start_url or "about:blank"
+
+    note = _ensure_browser_session_persisted(
+        session_name=session_name,
+        headed=headed,
+        browser_mode=browser_mode,
+        profile=profile,
+        fallback_url=fallback_url,
+        env=env,
+    )
+    if not note:
+        return payload
+
+    if isinstance(result, dict):
+        result["session_note"] = note
+    else:
+        payload["result"] = {
+            "final_result": str(result) if result is not None else "Browser task completed.",
+            "session_note": note,
+        }
+    return payload
+
+
+def _ensure_browser_session_persisted(
+    *,
+    session_name: str,
+    headed: bool,
+    browser_mode: str,
+    profile: str,
+    fallback_url: str,
+    env: dict[str, str],
+) -> str | None:
+    """Re-open a session only when `run` closed it unexpectedly."""
+    if not session_name:
+        return None
+
+    if _browser_session_is_running(session_name, env=env):
+        return None
+
+    reopen_cmd: list[str] = ["uvx", "browser-use[cli]", "--json"]
+    if headed:
+        reopen_cmd.append("--headed")
+    reopen_cmd += ["--session", session_name]
+    if browser_mode in {"chromium", "real", "remote"}:
+        reopen_cmd += ["--browser", browser_mode]
+    if profile:
+        reopen_cmd += ["--profile", profile]
+    reopen_cmd += ["open", fallback_url or "about:blank"]
 
     try:
         proc = subprocess.run(
-            cmd,
+            reopen_cmd,
             capture_output=True,
             text=True,
-            timeout=BROWSER_TOOL_TIMEOUT_SECONDS,
+            timeout=min(BROWSER_TOOL_TIMEOUT_SECONDS, 90),
+            env=env,
         )
-        raw = proc.stdout.strip()
-        stderr = proc.stderr.strip()
-
-        # Try to parse JSON output
-        if raw:
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, dict):
-                    parsed["ok"] = parsed.get("ok", proc.returncode == 0)
-                    return json.dumps(parsed, ensure_ascii=False)
-            except json.JSONDecodeError:
-                pass
-
-        # Fallback: return raw output
-        if proc.returncode == 0:
-            return json.dumps({
-                "ok": True,
-                "result": {"final_result": raw or "Browser task completed."},
-            }, ensure_ascii=False)
-        else:
-            return json.dumps({
-                "ok": False,
-                "error": "browser-use command failed",
-                "details": stderr[:1500] or raw[:1500] or f"Exit code {proc.returncode}",
-            }, ensure_ascii=False)
-
-    except subprocess.TimeoutExpired:
-        return json.dumps({
-            "ok": False,
-            "error": f"Browser task timed out after {BROWSER_TOOL_TIMEOUT_SECONDS}s",
-            "details": "The browser session is still running. You can interact with it manually.",
-        }, ensure_ascii=False)
-    except FileNotFoundError:
-        return json.dumps({
-            "ok": False,
-            "error": "browser-use CLI not found. Install with: uv pip install 'browser-use[cli]'",
-        }, ensure_ascii=False)
     except Exception as exc:
-        return json.dumps(
-            {"ok": False, "error": "Browser task failed", "details": str(exc)},
-            ensure_ascii=False,
+        return f"Could not re-open browser session '{session_name}': {exc}"
+
+    if proc.returncode == 0:
+        return f"Session '{session_name}' was re-opened to keep the browser alive."
+
+    details = (proc.stderr or proc.stdout or "").strip()
+    if details:
+        return f"Could not re-open browser session '{session_name}': {details[:300]}"
+    return f"Could not re-open browser session '{session_name}'."
+
+
+def _browser_session_is_running(session_name: str, *, env: dict[str, str]) -> bool:
+    """Best-effort check for whether a named browser-use session is active."""
+    try:
+        proc = subprocess.run(
+            ["uvx", "browser-use[cli]", "--json", "sessions"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            env=env,
         )
+    except Exception:
+        return False
+
+    if proc.returncode != 0:
+        return False
+
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        return False
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return False
+
+    sessions: list[Any] = []
+    if isinstance(parsed, list):
+        sessions = parsed
+    elif isinstance(parsed, dict):
+        data = parsed.get("data")
+        if isinstance(data, list):
+            sessions = data
+        else:
+            maybe_sessions = parsed.get("sessions")
+            if isinstance(maybe_sessions, list):
+                sessions = maybe_sessions
+
+    for item in sessions:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if name != session_name:
+            continue
+        status = str(item.get("status") or "").strip().lower()
+        if not status:
+            return True
+        if status in {"running", "active", "open", "ready"}:
+            return True
+    return False
+
+
+def _normalize_browser_use_cli_response(raw: str, *, returncode: int) -> dict[str, Any] | None:
+    """Normalize browser-use JSON output to Iris' {ok, result/error} shape."""
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+
+    if "ok" in parsed:
+        normalized = dict(parsed)
+        normalized["ok"] = bool(parsed.get("ok"))
+        return normalized
+
+    if "success" not in parsed:
+        if returncode == 0:
+            result: dict[str, Any] = {}
+            url = str(parsed.get("url") or "").strip()
+            title = str(parsed.get("title") or "").strip()
+            if url:
+                result["confirmed_url"] = url
+            if title:
+                result["page_title"] = title
+            if not result:
+                result["final_result"] = "Browser task completed."
+            return {"ok": True, "result": result}
+        return {
+            "ok": False,
+            "error": "browser-use command failed",
+            "details": raw[:1500],
+        }
+
+    outer_success = bool(parsed.get("success"))
+    data = parsed.get("data")
+    request_id = str(parsed.get("id") or "").strip()
+
+    if not outer_success:
+        details = ""
+        if isinstance(data, dict):
+            details = str(data.get("error") or data.get("message") or "").strip()
+        if not details:
+            details = str(parsed.get("error") or parsed.get("message") or "").strip()
+        out: dict[str, Any] = {"ok": False, "error": "browser-use command failed"}
+        if details:
+            out["details"] = details
+        if request_id:
+            out["request_id"] = request_id
+        return out
+
+    if isinstance(data, dict):
+        inner_success = data.get("success")
+        if inner_success is False:
+            details = str(data.get("error") or data.get("message") or "").strip()
+            out = {"ok": False, "error": "browser-use task failed"}
+            if details:
+                out["details"] = details
+            if request_id:
+                out["request_id"] = request_id
+            return out
+
+        result: dict[str, Any] = {}
+        url = str(data.get("url") or "").strip()
+        title = str(data.get("title") or "").strip()
+        if url:
+            result["confirmed_url"] = url
+        if title:
+            result["page_title"] = title
+
+        final_result = str(data.get("result") or data.get("message") or "").strip()
+        if not final_result and not url and data:
+            final_result = json.dumps(data, ensure_ascii=False)[:2000]
+        if final_result:
+            result["final_result"] = final_result
+        if request_id:
+            result["request_id"] = request_id
+        if not result:
+            result["final_result"] = "Browser task completed."
+        return {"ok": True, "result": result}
+
+    result = {
+        "final_result": str(data).strip() if data is not None else "Browser task completed.",
+    }
+    if request_id:
+        result["request_id"] = request_id
+    return {"ok": True, "result": result}
 
 
 def _browser_tool_final_text(result_json: str) -> str:
     """Create a deterministic final assistant message from browser tool output."""
-    try:
-        parsed = json.loads(result_json)
-    except json.JSONDecodeError:
-        parsed = {"ok": False, "error": "Browser service returned invalid JSON"}
+    normalized = _normalize_browser_use_cli_response(result_json, returncode=0)
+    if isinstance(normalized, dict):
+        parsed = normalized
+    else:
+        try:
+            parsed = json.loads(result_json)
+        except json.JSONDecodeError:
+            parsed = {"ok": False, "error": "Browser service returned invalid JSON"}
 
     if not isinstance(parsed, dict):
         return "Browser automation finished, but response format was unexpected."
@@ -1732,6 +2236,25 @@ def _browser_tool_final_text(result_json: str) -> str:
     return "Completed browser task on your Mac browser."
 
 
+def _user_explicitly_requested_browser_close(
+    *, user_message: str, instruction: str, command_args: list[str]
+) -> bool:
+    """Return True only when user text clearly asks to close/shutdown browser."""
+    combined = " ".join(
+        part for part in (str(user_message).strip(), str(instruction).strip(), " ".join(command_args)) if part
+    ).lower()
+    if not combined:
+        return False
+
+    has_close_verb = any(verb in combined for verb in (
+        "close", "quit", "exit", "shutdown", "shut down", "terminate",
+    ))
+    has_browser_object = any(noun in combined for noun in (
+        "browser", "tab", "session", "window",
+    ))
+    return has_close_verb and has_browser_object
+
+
 def _infer_url_from_text(text: str) -> str | None:
     raw = str(text or "").strip()
     if not raw:
@@ -1743,6 +2266,31 @@ def _infer_url_from_text(text: str) -> str | None:
     if bare_match:
         return f"https://{bare_match.group(0).rstrip('.,)')}"
     return None
+
+
+def _is_open_only_instruction(instruction: str) -> bool:
+    """True only for pure navigation requests (open/go-to/navigate-to) with no follow-up actions."""
+    raw = str(instruction or "").strip()
+    if not raw:
+        return True
+
+    lower = raw.lower()
+    has_open_phrase = (
+        lower.startswith("open ")
+        or lower.startswith("go to ")
+        or lower.startswith("navigate to ")
+        or " go to " in f" {lower} "
+    )
+    if not has_open_phrase:
+        return False
+
+    # If the user asks for any additional action, this is not open-only.
+    has_followup_action = bool(re.search(
+        r"\b(and|then|after|click|tap|select|search|find|type|enter|fill|submit|"
+        r"login|log in|sign in|scroll|extract|scrape|download|bookmark|vote|post|comment)\b",
+        lower,
+    ))
+    return not has_followup_action
 
 
 def _guess_image_media_type(raw: bytes) -> str:

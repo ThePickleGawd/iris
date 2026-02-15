@@ -109,6 +109,7 @@ struct CanvasView: UIViewRepresentable {
 
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
             guard let canvas = scrollView as? NoteCanvasView else { return }
+            canvas.refreshOverlayStacking()
             canvas.updateWidgetOverlayTransform()
             parent.objectManager.updateZoomScale(canvas.zoomScale)
             parent.objectManager.syncLayout()
@@ -118,11 +119,15 @@ struct CanvasView: UIViewRepresentable {
         }
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
-            (scrollView as? NoteCanvasView)?.updateWidgetOverlayTransform()
+            guard let canvas = scrollView as? NoteCanvasView else { return }
+            canvas.refreshOverlayStacking()
+            canvas.updateWidgetOverlayTransform()
             parent.objectManager.syncLayout()
         }
 
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
+            (canvasView as? NoteCanvasView)?.refreshOverlayStacking()
+
             // Always keep canvasState.drawing in sync for UI
             parent.canvasState.drawing = canvasView.drawing
 
@@ -143,6 +148,7 @@ struct CanvasView: UIViewRepresentable {
 
         func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
             guard let noteCanvas = canvasView as? NoteCanvasView else { return }
+            noteCanvas.refreshOverlayStacking()
             guard let recentStroke = canvasView.drawing.strokes.last else { return }
             let adjustedBounds = noteCanvas.expandCanvasIfNeeded(for: recentStroke.renderBounds)
             parent.objectManager.updateMostRecentStrokeBounds(adjustedBounds)
@@ -217,14 +223,44 @@ final class NoteCanvasView: PKCanvasView {
         imageOverlay.layer.zPosition = 0
         imageOverlay.layer.anchorPoint = .zero
         imageOverlay.layer.position = .zero
-        insertSubview(imageOverlay, at: 0)
 
         widgetOverlay.isUserInteractionEnabled = true
         widgetOverlay.backgroundColor = .clear
-        widgetOverlay.layer.zPosition = 10
+        widgetOverlay.layer.zPosition = 20
         widgetOverlay.layer.anchorPoint = .zero
         widgetOverlay.layer.position = .zero
+
+        insertSubview(imageOverlay, at: 0)
         addSubview(widgetOverlay)
+        ensureOverlayStacking()
+    }
+
+    private func inkHostSubview() -> UIView? {
+        subviews.first { view in
+            guard view !== imageOverlay, view !== widgetOverlay else { return false }
+            let className = String(describing: type(of: view))
+            return className.contains("PK")
+        }
+    }
+
+    private func ensureOverlayStacking() {
+        if let inkHost = inkHostSubview() {
+            insertSubview(imageOverlay, belowSubview: inkHost)
+        } else if imageOverlay.superview !== self {
+            insertSubview(imageOverlay, at: 0)
+        } else {
+            sendSubviewToBack(imageOverlay)
+        }
+
+        if widgetOverlay.superview !== self {
+            addSubview(widgetOverlay)
+        } else {
+            bringSubviewToFront(widgetOverlay)
+        }
+    }
+
+    func refreshOverlayStacking() {
+        ensureOverlayStacking()
     }
 
     func configureForInfiniteCanvas() {
@@ -324,6 +360,7 @@ final class NoteCanvasView: PKCanvasView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        ensureOverlayStacking()
         let overlayFrame = CGRect(origin: .zero, size: bounds.size)
         imageOverlay.frame = overlayFrame
         widgetOverlay.frame = overlayFrame

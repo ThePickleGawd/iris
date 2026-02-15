@@ -675,8 +675,6 @@ final class CanvasObjectManager: ObservableObject {
         clampToViewport: Bool = true,
         background: UIColor? = nil
     ) async -> Result<PlaceImageResult, PlaceError> {
-        guard let canvasView else { return .failure(.canvasNotAttached) }
-
         let naturalSize = extractSVGSize(from: svg)
         let scaledSize = CGSize(
             width: naturalSize.width * scale,
@@ -687,28 +685,77 @@ final class CanvasObjectManager: ObservableObject {
             return .failure(.renderFailed)
         }
 
+        return placeRenderedImage(
+            image: image,
+            requestedSize: scaledSize,
+            requestedPosition: position,
+            clampToViewport: clampToViewport
+        )
+    }
+
+    @discardableResult
+    func placeRasterImage(
+        image: UIImage,
+        at position: CGPoint,
+        scale: CGFloat = 1.0,
+        clampToViewport: Bool = true
+    ) async -> Result<PlaceImageResult, PlaceError> {
+        let baseSize = image.size.width > 0 && image.size.height > 0
+            ? image.size
+            : CGSize(width: 400, height: 300)
+        let safeScale = max(scale, 0.01)
+        let scaledSize = CGSize(
+            width: baseSize.width * safeScale,
+            height: baseSize.height * safeScale
+        )
+
+        let rendered: UIImage
+        if abs(safeScale - 1.0) > 0.001 {
+            let renderer = UIGraphicsImageRenderer(size: scaledSize)
+            rendered = renderer.image { _ in
+                image.draw(in: CGRect(origin: .zero, size: scaledSize))
+            }
+        } else {
+            rendered = image
+        }
+
+        return placeRenderedImage(
+            image: rendered,
+            requestedSize: scaledSize,
+            requestedPosition: position,
+            clampToViewport: clampToViewport
+        )
+    }
+
+    private func placeRenderedImage(
+        image: UIImage,
+        requestedSize: CGSize,
+        requestedPosition: CGPoint,
+        clampToViewport: Bool
+    ) -> Result<PlaceImageResult, PlaceError> {
+        guard let canvasView else { return .failure(.canvasNotAttached) }
+
         let placedPosition: CGPoint = {
-            guard clampToViewport else { return position }
-            return clampedImageOrigin(position, imageSize: scaledSize)
+            guard clampToViewport else { return requestedPosition }
+            return clampedImageOrigin(requestedPosition, imageSize: requestedSize)
         }()
-        let wasClamped = abs(placedPosition.x - position.x) > 0.5 || abs(placedPosition.y - position.y) > 0.5
+        let wasClamped = abs(placedPosition.x - requestedPosition.x) > 0.5
+            || abs(placedPosition.y - requestedPosition.y) > 0.5
 
         let id = UUID()
         let imageView = UIImageView(image: image)
-        imageView.frame = CGRect(origin: placedPosition, size: scaledSize)
+        imageView.frame = CGRect(origin: placedPosition, size: requestedSize)
         imageView.contentMode = .scaleAspectFit
         imageView.clipsToBounds = true
 
         let container = canvasView.imageContainerView()
         container.addSubview(imageView)
 
-        // Verify the image actually made it into the view hierarchy
         guard imageView.window != nil else {
             imageView.removeFromSuperview()
             return .failure(.notInViewHierarchy)
         }
 
-        // Pop in
         imageView.alpha = 0
         imageView.transform = CGAffineTransform(scaleX: 0.94, y: 0.94)
         UIView.animate(withDuration: 0.22, delay: 0, options: .curveEaseOut) {
@@ -719,7 +766,7 @@ final class CanvasObjectManager: ObservableObject {
         let object = CanvasObject(
             id: id,
             position: placedPosition,
-            size: scaledSize,
+            size: requestedSize,
             htmlContent: ""
         )
         objects[id] = object
@@ -728,8 +775,8 @@ final class CanvasObjectManager: ObservableObject {
         return .success(
             PlaceImageResult(
                 id: id,
-                size: scaledSize,
-                requestedPosition: position,
+                size: requestedSize,
+                requestedPosition: requestedPosition,
                 placedPosition: placedPosition,
                 clampedToViewport: wasClamped
             )
@@ -798,10 +845,11 @@ final class CanvasObjectManager: ObservableObject {
         webView.isOpaque = background != nil
         webView.backgroundColor = background ?? .clear
         webView.scrollView.backgroundColor = background ?? .clear
-        webView.alpha = 0 // hidden during render
+        webView.scrollView.isScrollEnabled = false
+        webView.alpha = 1
 
         // Must be in view hierarchy for reliable snapshot
-        canvasView.addSubview(webView)
+        canvasView.insertSubview(webView, at: 0)
         defer { webView.removeFromSuperview() }
 
         let bgCSS: String
@@ -841,7 +889,69 @@ final class CanvasObjectManager: ObservableObject {
 
         let snapshotConfig = WKSnapshotConfiguration()
         snapshotConfig.rect = webView.bounds
+        snapshotConfig.afterScreenUpdates = true
+        if let snapshot = try? await webView.takeSnapshot(configuration: snapshotConfig),
+           !isMostlyTransparent(snapshot) {
+            return snapshot
+        }
+
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let fallback = renderer.image { _ in
+            if let bg = background {
+                bg.setFill()
+                UIRectFill(CGRect(origin: .zero, size: size))
+            }
+            _ = webView.drawHierarchy(in: webView.bounds, afterScreenUpdates: true)
+        }
+        if !isMostlyTransparent(fallback) {
+            return fallback
+        }
+
+        // Last resort, return whatever snapshot WebKit gave us (even if translucent)
         return try? await webView.takeSnapshot(configuration: snapshotConfig)
+    }
+
+    private func isMostlyTransparent(_ image: UIImage) -> Bool {
+        guard let cg = image.cgImage else { return false }
+
+        let alphaInfo = cg.alphaInfo
+        let alphaIndex: Int
+        switch alphaInfo {
+        case .premultipliedFirst, .first, .noneSkipFirst:
+            alphaIndex = 0
+        case .premultipliedLast, .last, .noneSkipLast:
+            alphaIndex = max((cg.bitsPerPixel / 8) - 1, 0)
+        default:
+            return false
+        }
+
+        guard let provider = cg.dataProvider, let data = provider.data else { return false }
+        guard let bytes = CFDataGetBytePtr(data) else { return false }
+        let bytesPerPixel = max(cg.bitsPerPixel / 8, 1)
+        let bytesPerRow = cg.bytesPerRow
+        let width = cg.width
+        let height = cg.height
+        guard bytesPerRow > 0, width > 0, height > 0 else { return false }
+
+        let sampleCount = min(4_000, width * height)
+        let stride = max(1, (width * height) / max(sampleCount, 1))
+
+        var transparentHits = 0
+        var sampled = 0
+
+        var idx = 0
+        while idx < width * height {
+            let x = idx % width
+            let y = idx / width
+            let offset = (y * bytesPerRow) + (x * bytesPerPixel) + alphaIndex
+            let alpha = bytes[offset]
+            if alpha < 8 { transparentHits += 1 }
+            sampled += 1
+            idx += stride
+        }
+
+        guard sampled > 0 else { return false }
+        return Double(transparentHits) / Double(sampled) > 0.97
     }
 
     @discardableResult

@@ -2270,14 +2270,29 @@ def v1_agent() -> Any:
         session["messages"].append(assistant_msg)
         _publish_messages(session_id, [assistant_msg])
 
-    # Emit tool.call events + store widgets in session
+    # Emit tool.call/tool.result events + store widgets in session
     events: list[dict] = []
     for tc in result.get("tool_calls", []):
+        tool_name = str(tc.get("name") or "unknown")
         events.append({
             "kind": "tool.call",
-            "name": tc["name"],
+            "name": tool_name,
             "input": {k: v for k, v in tc.items() if k != "name"},
         })
+        if "result" in tc or "ok" in tc:
+            tool_result_event: dict[str, Any] = {
+                "kind": "tool.result",
+                "name": tool_name,
+            }
+            result_payload = tc.get("result")
+            if "result" in tc:
+                tool_result_event["result"] = result_payload
+            ok_value: Any = tc.get("ok")
+            if ok_value is None and isinstance(result_payload, dict) and "ok" in result_payload:
+                ok_value = result_payload.get("ok")
+            if ok_value is not None:
+                tool_result_event["ok"] = bool(ok_value)
+            events.append(tool_result_event)
     for w in result.get("widgets", []):
         widget_record = {
             "id": w.get("widget_id", str(uuid.uuid4())),

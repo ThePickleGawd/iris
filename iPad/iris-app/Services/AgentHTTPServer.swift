@@ -603,8 +603,15 @@ class AgentHTTPServer {
     // MARK: - Place Handler (rasterized SVG image)
 
     private func handlePlace(_ req: HTTPRequest, _ conn: NWConnection) {
-        guard let json = req.jsonBody, let svg = json["svg"] as? String, !svg.isEmpty else {
-            respondJSON(conn, status: 400, body: ["error": "Missing required field: 'svg' (string)"])
+        guard let json = req.jsonBody else {
+            respondJSON(conn, status: 400, body: ["error": "Missing JSON body"])
+            return
+        }
+        let svg = (json["svg"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let imageBase64Raw = (json["image_base64"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (svg?.isEmpty == false) || (imageBase64Raw?.isEmpty == false) else {
+            respondJSON(conn, status: 400, body: ["error": "Provide one of: 'svg' (string) or 'image_base64' (base64 image data)"])
             return
         }
 
@@ -636,12 +643,42 @@ class AgentHTTPServer {
                 return cleaned.isEmpty ? nil : UIColor(hex: cleaned)
             }
 
-            let placeResult = await mgr.placeSVGImage(
-                svg: svg,
-                at: canvasPos,
-                scale: CGFloat(scale),
-                background: background
-            )
+            let placeResult: Result<CanvasObjectManager.PlaceImageResult, CanvasObjectManager.PlaceError>
+            let renderSource: String
+
+            if let imageBase64Raw, !imageBase64Raw.isEmpty {
+                let payload: String = {
+                    if let comma = imageBase64Raw.firstIndex(of: ",") {
+                        let next = imageBase64Raw.index(after: comma)
+                        return String(imageBase64Raw[next...])
+                    }
+                    return imageBase64Raw
+                }()
+                guard
+                    let imageData = Data(base64Encoded: payload, options: [.ignoreUnknownCharacters]),
+                    let image = UIImage(data: imageData)
+                else {
+                    self.respondJSON(conn, status: 400, body: ["error": "Invalid image_base64 payload"])
+                    return
+                }
+                renderSource = "image_base64"
+                placeResult = await mgr.placeRasterImage(
+                    image: image,
+                    at: canvasPos,
+                    scale: CGFloat(scale)
+                )
+            } else if let svg, !svg.isEmpty {
+                renderSource = "svg"
+                placeResult = await mgr.placeSVGImage(
+                    svg: svg,
+                    at: canvasPos,
+                    scale: CGFloat(scale),
+                    background: background
+                )
+            } else {
+                self.respondJSON(conn, status: 400, body: ["error": "No renderable payload provided"])
+                return
+            }
 
             switch placeResult {
             case .failure(let error):
@@ -661,7 +698,8 @@ class AgentHTTPServer {
                     "requested_canvas_position": ["x": result.requestedPosition.x, "y": result.requestedPosition.y],
                     "canvas_position": ["x": result.placedPosition.x, "y": result.placedPosition.y],
                     "document_axis_position": ["x": placedAxis.x, "y": placedAxis.y],
-                    "clamped_to_viewport": result.clampedToViewport
+                    "clamped_to_viewport": result.clampedToViewport,
+                    "render_source": renderSource
                 ])
             }
         }

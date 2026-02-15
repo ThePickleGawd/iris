@@ -29,6 +29,7 @@ const toolMeta: Record<
 > = {
   read_screenshot: { icon: Camera, label: "Screenshot", color: "text-cyan-400" },
   push_widget: { icon: Layout, label: "Widget", color: "text-emerald-400" },
+  run_browser_task: { icon: Globe, label: "Browser", color: "text-sky-400" },
   run_bash: { icon: Terminal, label: "Bash", color: "text-amber-400" },
   web_search: { icon: Search, label: "Web Search", color: "text-blue-400" },
   read_transcript: { icon: Mic, label: "Transcript", color: "text-pink-400" },
@@ -42,6 +43,19 @@ function pretty(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function toolResultStatus(call: ToolCall): "error" | "ok" | null {
+  const result = call.result;
+  if (result == null) return null;
+  if (typeof result === "string") return null;
+  if (typeof result !== "object") return null;
+
+  const record = result as Record<string, unknown>;
+  if (record.ok === false) return "error";
+  if (typeof record.error === "string" && record.error.trim().length > 0) return "error";
+  if (record.ok === true) return "ok";
+  return null;
 }
 
 function ScreenshotCard({ call }: { call: ToolCall }) {
@@ -267,6 +281,7 @@ function ExactArgsCard({ call }: { call: ToolCall }) {
 
 function ToolCallSection({ call, index }: { call: ToolCall; index: number }) {
   const [collapsed, setCollapsed] = useState(false);
+  const status = toolResultStatus(call);
   const meta = toolMeta[call.name] || {
     icon: Terminal,
     label: call.name,
@@ -307,6 +322,16 @@ function ToolCallSection({ call, index }: { call: ToolCall; index: number }) {
             <span className="flex items-center gap-1 text-[10px] text-zinc-600 font-mono">
               <Clock className="h-3 w-3" />
               {formatDuration(call.duration_ms)}
+            </span>
+          )}
+          {status === "error" && (
+            <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/40">
+              error
+            </span>
+          )}
+          {status === "ok" && (
+            <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+              ok
             </span>
           )}
           {collapsed ? (
