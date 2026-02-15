@@ -418,14 +418,15 @@ final class CanvasObjectManager: ObservableObject {
         size: CGSize = CGSize(width: 360, height: 220),
         backendWidgetID: String? = nil,
         animated: Bool = true
-    ) async -> CanvasObject {
+    ) async -> Result<CanvasObject, PlaceError> {
+        guard let canvasView else { return .failure(.canvasNotAttached) }
+
         let object = CanvasObject(
             position: position,
             size: size,
             htmlContent: html,
             backendWidgetID: backendWidgetID
         )
-        guard let canvasView else { return object }
 
         let widget = CanvasObjectWebView(id: object.id, size: size, htmlContent: html)
         widget.frame = CGRect(origin: position, size: size)
@@ -447,6 +448,13 @@ final class CanvasObjectManager: ObservableObject {
         }
 
         canvasView.widgetContainerView().addSubview(widget)
+
+        // Verify the widget actually made it into the view hierarchy
+        guard widget.window != nil else {
+            widget.removeFromSuperview()
+            return .failure(.notInViewHierarchy)
+        }
+
         objects[object.id] = object
         objectViews[object.id] = widget
 
@@ -458,7 +466,7 @@ final class CanvasObjectManager: ObservableObject {
             }
         }
 
-        return object
+        return .success(object)
     }
 
     @discardableResult
@@ -497,12 +505,12 @@ final class CanvasObjectManager: ObservableObject {
                 y: centerCanvas.y - (suggestion.size.height * 0.5)
             )
         }()
-        return await place(
+        return try? await place(
             html: suggestion.html,
             at: position,
             size: suggestion.size,
             animated: suggestion.animateOnPlace
-        )
+        ).get()
     }
 
     func rejectSuggestion(id: UUID) -> Bool {
@@ -636,15 +644,38 @@ final class CanvasObjectManager: ObservableObject {
 
     // MARK: - SVG Image Placement
 
+    enum PlaceError: Error, CustomStringConvertible {
+        case canvasNotAttached
+        case renderFailed
+        case notInViewHierarchy
+
+        var description: String {
+            switch self {
+            case .canvasNotAttached: return "Canvas view not attached — open a document first"
+            case .renderFailed: return "SVG render failed — WKWebView snapshot returned nil"
+            case .notInViewHierarchy: return "View added but not in window hierarchy — container may be detached"
+            }
+        }
+    }
+
+    struct PlaceImageResult {
+        let id: UUID
+        let size: CGSize
+        let requestedPosition: CGPoint
+        let placedPosition: CGPoint
+        let clampedToViewport: Bool
+    }
+
     /// Renders an SVG string to a rasterized UIImage and places it on the canvas instantly.
     @discardableResult
     func placeSVGImage(
         svg: String,
         at position: CGPoint,
         scale: CGFloat = 1.0,
+        clampToViewport: Bool = true,
         background: UIColor? = nil
-    ) async -> (id: UUID, size: CGSize)? {
-        guard let canvasView else { return nil }
+    ) async -> Result<PlaceImageResult, PlaceError> {
+        guard let canvasView else { return .failure(.canvasNotAttached) }
 
         let naturalSize = extractSVGSize(from: svg)
         let scaledSize = CGSize(
@@ -653,16 +684,29 @@ final class CanvasObjectManager: ObservableObject {
         )
 
         guard let image = await renderSVGToImage(svg: svg, size: scaledSize, background: background) else {
-            return nil
+            return .failure(.renderFailed)
         }
+
+        let placedPosition: CGPoint = {
+            guard clampToViewport else { return position }
+            return clampedImageOrigin(position, imageSize: scaledSize)
+        }()
+        let wasClamped = abs(placedPosition.x - position.x) > 0.5 || abs(placedPosition.y - position.y) > 0.5
 
         let id = UUID()
         let imageView = UIImageView(image: image)
-        imageView.frame = CGRect(origin: position, size: scaledSize)
+        imageView.frame = CGRect(origin: placedPosition, size: scaledSize)
         imageView.contentMode = .scaleAspectFit
         imageView.clipsToBounds = true
 
-        canvasView.widgetContainerView().addSubview(imageView)
+        let container = canvasView.imageContainerView()
+        container.addSubview(imageView)
+
+        // Verify the image actually made it into the view hierarchy
+        guard imageView.window != nil else {
+            imageView.removeFromSuperview()
+            return .failure(.notInViewHierarchy)
+        }
 
         // Pop in
         imageView.alpha = 0
@@ -674,14 +718,45 @@ final class CanvasObjectManager: ObservableObject {
 
         let object = CanvasObject(
             id: id,
-            position: position,
+            position: placedPosition,
             size: scaledSize,
             htmlContent: ""
         )
         objects[id] = object
         imageViews[id] = imageView
 
-        return (id, scaledSize)
+        return .success(
+            PlaceImageResult(
+                id: id,
+                size: scaledSize,
+                requestedPosition: position,
+                placedPosition: placedPosition,
+                clampedToViewport: wasClamped
+            )
+        )
+    }
+
+    private func clampedImageOrigin(_ origin: CGPoint, imageSize: CGSize) -> CGPoint {
+        let viewport = viewportCanvasRect()
+        guard viewport.width > 0, viewport.height > 0 else {
+            return origin
+        }
+
+        // Keep rasterized image placement inside the current viewport.
+        let clampedX: CGFloat = {
+            if imageSize.width >= viewport.width {
+                return viewport.minX + ((viewport.width - imageSize.width) * 0.5)
+            }
+            return min(max(origin.x, viewport.minX), viewport.maxX - imageSize.width)
+        }()
+        let clampedY: CGFloat = {
+            if imageSize.height >= viewport.height {
+                return viewport.minY + ((viewport.height - imageSize.height) * 0.5)
+            }
+            return min(max(origin.y, viewport.minY), viewport.maxY - imageSize.height)
+        }()
+
+        return CGPoint(x: clampedX, y: clampedY)
     }
 
     private func extractSVGSize(from svg: String) -> CGSize {

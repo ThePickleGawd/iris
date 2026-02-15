@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""claudec-iris — PTY proxy with Unix socket API for Iris.
+
+Replaces the claudec (claude-commander) binary. Launches `claude` in a PTY
+with full terminal passthrough and exposes a Unix socket for message injection.
+
+Socket protocol (newline-delimited JSON):
+  {"action": "send", "text": "...", "submit": true}   → write text to PTY, optionally send Enter
+  {"action": "status"}                                 → respond {"status": "running"}
+  {"action": "keys", "keys": "..."}                    → write raw bytes to PTY
+"""
+
+import asyncio
+import json
+import os
+import pty
+import signal
+import sys
+import fcntl
+import termios
+import tty
+
+SOCKET_PATH = os.environ.get("CLAUDE_SOCKET", "/tmp/iris-claude.sock")
+CLAUDE_CMD = os.environ.get("CLAUDE_CMD", "claude")
+
+
+def build_claude_args(argv: list[str]) -> tuple[str, list[str]]:
+    """Parse our args and build the claude command line."""
+    cwd = "."
+    args = []
+    i = 0
+    while i < len(argv):
+        if argv[i] == "-d" and i + 1 < len(argv):
+            cwd = argv[i + 1]
+            i += 2
+        elif argv[i] == "--resume" and i + 1 < len(argv):
+            args.extend(["--resume", argv[i + 1]])
+            i += 2
+        else:
+            args.append(argv[i])
+            i += 1
+    return cwd, args
+
+
+def spawn_pty(cwd: str, claude_args: list[str]) -> tuple[int, int]:
+    """Fork a child process in a new PTY running claude.
+
+    Uses pty.fork() which handles setsid, slave setup, and controlling
+    terminal automatically. Returns (child_pid, master_fd) in the parent.
+    """
+    child_pid, master_fd = pty.fork()
+
+    if child_pid == 0:
+        # Child: slave PTY is already stdin/stdout/stderr
+        os.chdir(cwd)
+        os.execvp(CLAUDE_CMD, [CLAUDE_CMD] + claude_args)
+        os._exit(127)
+
+    # Disable ICRNL on the PTY so \r passes through as-is to the child.
+    # Without this, the default line discipline converts \r → \n,
+    # and Ink/Claude Code won't recognize it as the Return key.
+    attrs = termios.tcgetattr(master_fd)
+    attrs[0] &= ~(termios.ICRNL | termios.INLCR | termios.IGNCR)  # iflag
+    termios.tcsetattr(master_fd, termios.TCSANOW, attrs)
+
+    return child_pid, master_fd
+
+
+async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, master_fd: int):
+    """Handle a single socket client connection."""
+    try:
+        data = await asyncio.wait_for(reader.read(65536), timeout=5.0)
+        if not data:
+            return
+
+        for line in data.decode("utf-8", errors="replace").strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                response = json.dumps({"error": "invalid JSON"}) + "\n"
+                writer.write(response.encode())
+                await writer.drain()
+                continue
+
+            action = msg.get("action", "")
+
+            if action == "status":
+                response = json.dumps({"status": "running"}) + "\n"
+                writer.write(response.encode())
+                await writer.drain()
+
+            elif action == "send":
+                text = msg.get("text", "")
+                submit = msg.get("submit", False)
+                os.write(master_fd, text.encode("utf-8"))
+                if submit:
+                    # Send Enter separately after a short delay so the
+                    # TUI event loop has time to process the text first
+                    await asyncio.sleep(0.05)
+                    os.write(master_fd, b"\r")
+                response = json.dumps({"ok": True}) + "\n"
+                writer.write(response.encode())
+                await writer.drain()
+
+            elif action == "keys":
+                keys = msg.get("keys", "")
+                os.write(master_fd, keys.encode("utf-8"))
+                response = json.dumps({"ok": True}) + "\n"
+                writer.write(response.encode())
+                await writer.drain()
+
+            else:
+                response = json.dumps({"error": f"unknown action: {action}"}) + "\n"
+                writer.write(response.encode())
+                await writer.drain()
+    except asyncio.TimeoutError:
+        pass
+    except Exception as e:
+        try:
+            response = json.dumps({"error": str(e)}) + "\n"
+            writer.write(response.encode())
+            await writer.drain()
+        except Exception:
+            pass
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+
+
+async def run(cwd: str, claude_args: list[str]):
+    """Main async entry point."""
+    child_pid, master_fd = spawn_pty(cwd, claude_args)
+
+    # Save and set terminal to raw mode
+    old_attrs = None
+    stdin_fd = sys.stdin.fileno()
+    if os.isatty(stdin_fd):
+        old_attrs = termios.tcgetattr(stdin_fd)
+        tty.setraw(stdin_fd)
+
+    # Match PTY size to terminal
+    def sync_winsize():
+        if os.isatty(stdin_fd):
+            ws = fcntl.ioctl(stdin_fd, termios.TIOCGWINSZ, b"\x00" * 8)
+            fcntl.ioctl(master_fd, termios.TIOCSWINSZ, ws)
+            # Notify child of resize
+            try:
+                os.kill(child_pid, signal.SIGWINCH)
+            except ProcessLookupError:
+                pass
+
+    sync_winsize()
+
+    # Forward SIGWINCH
+    loop = asyncio.get_event_loop()
+
+    def on_sigwinch(signum, frame):
+        loop.call_soon_threadsafe(sync_winsize)
+
+    signal.signal(signal.SIGWINCH, on_sigwinch)
+
+    # Clean up socket if it exists
+    if os.path.exists(SOCKET_PATH):
+        os.unlink(SOCKET_PATH)
+
+    # Start Unix socket server
+    server = await asyncio.start_unix_server(
+        lambda r, w: handle_client(r, w, master_fd),
+        path=SOCKET_PATH,
+    )
+    os.chmod(SOCKET_PATH, 0o600)
+
+    # Set up I/O proxying
+    child_exited = asyncio.Event()
+    exit_code = 0
+
+    def on_master_readable():
+        """PTY master has data → write to stdout."""
+        try:
+            data = os.read(master_fd, 16384)
+            if data:
+                os.write(sys.stdout.fileno(), data)
+            else:
+                child_exited.set()
+        except OSError:
+            child_exited.set()
+
+    def on_stdin_readable():
+        """Terminal stdin has data → write to PTY master."""
+        try:
+            data = os.read(stdin_fd, 16384)
+            if data:
+                os.write(master_fd, data)
+            else:
+                # EOF on stdin
+                pass
+        except OSError:
+            pass
+
+    loop.add_reader(master_fd, on_master_readable)
+    if os.isatty(stdin_fd):
+        loop.add_reader(stdin_fd, on_stdin_readable)
+
+    # Poll for child exit (waitpid with SIGCHLD is tricky with asyncio)
+    async def poll_child():
+        nonlocal exit_code
+        while not child_exited.is_set():
+            try:
+                pid_result, status = os.waitpid(child_pid, os.WNOHANG)
+                if pid_result != 0:
+                    if os.WIFEXITED(status):
+                        exit_code = os.WEXITSTATUS(status)
+                    elif os.WIFSIGNALED(status):
+                        exit_code = 128 + os.WTERMSIG(status)
+                    child_exited.set()
+                    return
+            except ChildProcessError:
+                child_exited.set()
+                return
+            await asyncio.sleep(0.1)
+
+    poll_task = asyncio.create_task(poll_child())
+
+    try:
+        await child_exited.wait()
+    finally:
+        # Cleanup
+        poll_task.cancel()
+        try:
+            await poll_task
+        except asyncio.CancelledError:
+            pass
+
+        loop.remove_reader(master_fd)
+        if os.isatty(stdin_fd):
+            loop.remove_reader(stdin_fd)
+
+        server.close()
+        await server.wait_closed()
+
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+
+        if os.path.exists(SOCKET_PATH):
+            os.unlink(SOCKET_PATH)
+
+        # Restore terminal
+        if old_attrs is not None:
+            termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_attrs)
+
+    return exit_code
+
+
+def main():
+    cwd, claude_args = build_claude_args(sys.argv[1:])
+    try:
+        code = asyncio.run(run(cwd, claude_args))
+    except KeyboardInterrupt:
+        code = 130
+    sys.exit(code)
+
+
+if __name__ == "__main__":
+    main()

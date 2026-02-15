@@ -19,7 +19,7 @@ Draw a diagram onto the PencilKit canvas with animated cursor tracing. The AI cu
 | `stroke_width` | number | no | PencilKit stroke width (default 3) |
 | `x` | number | no | X position offset (default 0) |
 | `y` | number | no | Y position offset (default 0) |
-| `coordinate_space` | string | no | `"viewport_offset"` (default), `"canvas_absolute"`, `"document_axis"` |
+| `coordinate_space` | string | no | `"viewport_offset"` (default). Other spaces are accepted, but drawn images are clamped to stay inside the current viewport. |
 
 **Workflow:** Write D2 source -> render with `d2` CLI -> send SVG to draw endpoint.
 
@@ -143,4 +143,5 @@ Available: `calculator` (320x520), `graph` (420x380), `timer` (320x340).
 2. **Widgets = interactive HTML only** — calculators, timers, documents, not diagrams.
 3. **Prefer library widgets** — `read_widget` -> adapt -> `push_widget`.
 4. **Always specify coordinates** — `x`, `y`, `coordinate_space` for every placement.
-5. **Widget must contain the answer** — no restating the problem.
+5. **Drawn images must stay in view** — image placement is constrained to the active viewport.
+6. **Widget must contain the answer** — no restating the problem.

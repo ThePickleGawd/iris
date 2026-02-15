@@ -194,6 +194,7 @@ struct CanvasView: UIViewRepresentable {
 }
 
 final class NoteCanvasView: PKCanvasView {
+    private let imageOverlay = ImageOverlayView()
     private let widgetOverlay = WidgetOverlayView()
     private let edgeTriggerInset: CGFloat = 540
     private let expansionChunk: CGFloat = 1_536
@@ -211,6 +212,13 @@ final class NoteCanvasView: PKCanvasView {
     }
 
     private func setup() {
+        imageOverlay.isUserInteractionEnabled = false
+        imageOverlay.backgroundColor = .clear
+        imageOverlay.layer.zPosition = 0
+        imageOverlay.layer.anchorPoint = .zero
+        imageOverlay.layer.position = .zero
+        insertSubview(imageOverlay, at: 0)
+
         widgetOverlay.isUserInteractionEnabled = true
         widgetOverlay.backgroundColor = .clear
         widgetOverlay.layer.zPosition = 10
@@ -222,7 +230,9 @@ final class NoteCanvasView: PKCanvasView {
     func configureForInfiniteCanvas() {
         CanvasState.resetCanvasGeometry()
         contentSize = CanvasState.canvasContentSize
-        widgetOverlay.frame = CGRect(origin: .zero, size: bounds.size)
+        let overlayFrame = CGRect(origin: .zero, size: bounds.size)
+        imageOverlay.frame = overlayFrame
+        widgetOverlay.frame = overlayFrame
         updateWidgetOverlayTransform()
     }
 
@@ -241,6 +251,7 @@ final class NoteCanvasView: PKCanvasView {
     }
 
     func widgetContainerView() -> UIView { widgetOverlay }
+    func imageContainerView() -> UIView { imageOverlay }
 
     func screenPoint(forCanvasPoint point: CGPoint) -> CGPoint {
         point.applying(widgetOverlay.transform)
@@ -254,7 +265,9 @@ final class NoteCanvasView: PKCanvasView {
         let z = zoomScale
         let ox = contentOffset.x + adjustedContentInset.left
         let oy = contentOffset.y + adjustedContentInset.top
-        widgetOverlay.transform = CGAffineTransform(a: z, b: 0, c: 0, d: z, tx: -ox * z, ty: -oy * z)
+        let t = CGAffineTransform(a: z, b: 0, c: 0, d: z, tx: -ox * z, ty: -oy * z)
+        imageOverlay.transform = t
+        widgetOverlay.transform = t
     }
 
     @discardableResult
@@ -311,7 +324,9 @@ final class NoteCanvasView: PKCanvasView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        widgetOverlay.frame = CGRect(origin: .zero, size: bounds.size)
+        let overlayFrame = CGRect(origin: .zero, size: bounds.size)
+        imageOverlay.frame = overlayFrame
+        widgetOverlay.frame = overlayFrame
         updateWidgetOverlayTransform()
     }
 
@@ -327,6 +342,12 @@ final class NoteCanvasView: PKCanvasView {
             return target
         }
         return super.hitTest(point, with: event)
+    }
+}
+
+final class ImageOverlayView: UIView {
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        nil  // Always pass through — images are drawn on, never tapped
     }
 }
 

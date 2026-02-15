@@ -745,85 +745,18 @@ export function initializeIpcHandlers(appState: AppState): void {
       // Take a screenshot at query time
       await takeQueryScreenshot()
 
-      const conversationId = String(params?.conversationId || "").trim()
       const prompt = String(params?.prompt || "").trim()
-      const cwd = String(params?.cwd || "").trim()
-      if (!conversationId) {
-        throw new Error("Claude Code conversation id is required")
-      }
       if (!prompt) {
         throw new Error("Prompt is required")
       }
 
-      const args = [
-        "-p",
-        "-r",
-        conversationId,
-        prompt,
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--system-prompt",
-        getLinkedProviderSystemPrompt(),
-        "--dangerously-skip-permissions",
-        "--permission-mode",
-        "bypassPermissions",
-      ]
-      if (cwd) {
-        args.push("--add-dir", cwd)
+      // Inject into the live claudei session via the backend socket bridge
+      const result = await agentServerPost("/api/claude-code/inject", { text: prompt })
+      if (result?.error) {
+        throw new Error(result.error)
       }
 
-      const run = await new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve, reject) => {
-        const child = spawn("claude", args, {
-          cwd: cwd || undefined,
-          env: process.env,
-        })
-        let stdout = ""
-        let stderr = ""
-        child.stdout.on("data", (chunk) => {
-          stdout += chunk.toString()
-        })
-        child.stderr.on("data", (chunk) => {
-          stderr += chunk.toString()
-        })
-        child.on("error", reject)
-        child.on("close", (code) => {
-          resolve({
-            exitCode: typeof code === "number" ? code : 1,
-            stdout,
-            stderr,
-          })
-        })
-      })
-
-      const assistantTexts: string[] = []
-      for (const rawLine of run.stdout.split(/\r?\n/)) {
-        const line = rawLine.trim()
-        if (!line || !line.startsWith("{")) continue
-        try {
-          const parsed = JSON.parse(line)
-          if (parsed?.type !== "assistant") continue
-          const text = extractClaudeCodeMessageText(parsed)
-          if (text) assistantTexts.push(text)
-        } catch {
-          // ignore malformed line
-        }
-      }
-
-      if (assistantTexts.length > 0) {
-        return { text: assistantTexts[assistantTexts.length - 1] }
-      }
-
-      const detail = extractClaudeCodeError(run.stdout) || extractClaudeCodeError(run.stderr)
-      if (detail) {
-        return { text: detail }
-      }
-
-      if (run.exitCode !== 0) {
-        throw new Error(`Claude Code exited with status ${run.exitCode}`)
-      }
-
-      throw new Error("Claude Code returned no assistant text")
+      return { text: "Message sent to live Claude Code session." }
     }
   )
 

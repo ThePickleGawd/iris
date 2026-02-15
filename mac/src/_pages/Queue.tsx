@@ -256,11 +256,21 @@ const Queue: React.FC = () => {
     setShowModelPicker(false)
     setPickerPhase("choosing")
     setShowSessionDrawer(false)
+
+    // Reuse existing session for the same Claude Code CWD instead of creating a duplicate
+    const existing = sessions.find(
+      (s) => s.model === CLAUDE_CODE_MODEL_ID && s.metadata?.claude_code_cwd === session.cwd
+    )
+    if (existing) {
+      await handleSelectSession(existing)
+      return
+    }
+
     await handleNewChat(CLAUDE_CODE_MODEL_ID, {
       claude_code_conversation_id: session.socket_path,
       claude_code_cwd: session.cwd,
     })
-  }, [handleNewChat])
+  }, [handleNewChat, sessions, handleSelectSession])
 
   const handlePickerBack = useCallback(() => {
     setPickerPhase("choosing")

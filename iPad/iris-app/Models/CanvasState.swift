@@ -9,7 +9,7 @@ enum DrawingTool: String, CaseIterable {
 }
 
 final class CanvasState: ObservableObject {
-    static let initialCanvasExtent: CGFloat = 8_192
+    static let initialCanvasExtent: CGFloat = 4_096
     static private(set) var canvasSize: CGFloat = initialCanvasExtent
     static private(set) var canvasCenter = CGPoint(x: initialCanvasExtent / 2, y: initialCanvasExtent / 2)
     static private(set) var canvasContentSize = CGSize(width: initialCanvasExtent, height: initialCanvasExtent)

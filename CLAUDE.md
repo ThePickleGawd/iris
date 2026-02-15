@@ -44,7 +44,7 @@ Parameters:
 - `svg` (required): SVG string content
 - `scale`: Scale factor (default 1.0, use 1.5-2.0 for readable size)
 - `x`, `y`: Position offset (default 0,0)
-- `coordinate_space`: `viewport_offset` (default) | `canvas_absolute` | `document_axis`
+- `coordinate_space`: `viewport_offset` (default). Other spaces are accepted, but placed images are clamped inside the current viewport.
 - `background`: Hex color for background (default transparent)
 - Returns 201 with `id`, `width`, `height`, and position info
 

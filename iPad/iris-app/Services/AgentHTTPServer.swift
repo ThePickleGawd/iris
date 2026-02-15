@@ -351,17 +351,23 @@ class AgentHTTPServer {
             let size = CGSize(width: w, height: h)
             let axis = mgr.axisPoint(forCanvasPoint: canvasPos)
 
-            let obj = await mgr.place(html: html, at: canvasPos, size: size, animated: anim)
-            self?.respondJSON(conn, status: 201, body: [
-                "id": obj.id.uuidString,
-                "x": x, "y": y,
-                "coordinate_space_used": canonicalSpace,
-                "rendered_as": "widget",
-                "width": w, "height": h,
-                "viewport_center": ["x": viewport.x, "y": viewport.y],
-                "canvas_position": ["x": canvasPos.x, "y": canvasPos.y],
-                "document_axis_position": ["x": axis.x, "y": axis.y]
-            ])
+            let result = await mgr.place(html: html, at: canvasPos, size: size, animated: anim)
+            switch result {
+            case .failure(let error):
+                let status = error == .canvasNotAttached ? 503 : 500
+                self?.respondJSON(conn, status: status, body: ["error": error.description])
+            case .success(let obj):
+                self?.respondJSON(conn, status: 201, body: [
+                    "id": obj.id.uuidString,
+                    "x": x, "y": y,
+                    "coordinate_space_used": canonicalSpace,
+                    "rendered_as": "widget",
+                    "width": w, "height": h,
+                    "viewport_center": ["x": viewport.x, "y": viewport.y],
+                    "canvas_position": ["x": canvasPos.x, "y": canvasPos.y],
+                    "document_axis_position": ["x": axis.x, "y": axis.y]
+                ])
+            }
         }
     }
 
@@ -624,35 +630,40 @@ class AgentHTTPServer {
                 manager: mgr
             )
             let viewport = mgr.viewportCenter
-            let axis = mgr.axisPoint(forCanvasPoint: canvasPos)
 
             let background: UIColor? = backgroundHex.flatMap { hex in
                 let cleaned = hex.trimmingCharacters(in: .whitespacesAndNewlines)
                 return cleaned.isEmpty ? nil : UIColor(hex: cleaned)
             }
 
-            guard let result = await mgr.placeSVGImage(
+            let placeResult = await mgr.placeSVGImage(
                 svg: svg,
                 at: canvasPos,
                 scale: CGFloat(scale),
                 background: background
-            ) else {
-                self.respondJSON(conn, status: 400, body: ["error": "Failed to render SVG — no image produced"])
-                return
-            }
+            )
 
-            self.respondJSON(conn, status: 201, body: [
-                "id": result.id.uuidString,
-                "status": "placed",
-                "width": result.size.width,
-                "height": result.size.height,
-                "x": x,
-                "y": y,
-                "coordinate_space_used": canonicalSpace,
-                "viewport_center": ["x": viewport.x, "y": viewport.y],
-                "canvas_position": ["x": canvasPos.x, "y": canvasPos.y],
-                "document_axis_position": ["x": axis.x, "y": axis.y]
-            ])
+            switch placeResult {
+            case .failure(let error):
+                let status = error == .canvasNotAttached ? 503 : 500
+                self.respondJSON(conn, status: status, body: ["error": error.description])
+            case .success(let result):
+                let placedAxis = mgr.axisPoint(forCanvasPoint: result.placedPosition)
+                self.respondJSON(conn, status: 201, body: [
+                    "id": result.id.uuidString,
+                    "status": "placed",
+                    "width": result.size.width,
+                    "height": result.size.height,
+                    "x": x,
+                    "y": y,
+                    "coordinate_space_used": canonicalSpace,
+                    "viewport_center": ["x": viewport.x, "y": viewport.y],
+                    "requested_canvas_position": ["x": result.requestedPosition.x, "y": result.requestedPosition.y],
+                    "canvas_position": ["x": result.placedPosition.x, "y": result.placedPosition.y],
+                    "document_axis_position": ["x": placedAxis.x, "y": placedAxis.y],
+                    "clamped_to_viewport": result.clampedToViewport
+                ])
+            }
         }
     }
 

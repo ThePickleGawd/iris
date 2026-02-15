@@ -620,6 +620,16 @@ private struct AgentPickerOverlay: View {
     }
 
     private func selectClaudeCodeSession(_ session: RemoteSession) {
+        // Reuse existing document for the same Claude Code session (matched by CWD)
+        if let existing = documentStore.documents.first(where: {
+            $0.model.lowercased() == "claude_code" && $0.claudeCodeCWD == session.cwd
+        }) {
+            documentStore.updateLastOpened(existing)
+            isPresented = false
+            onCreated(existing)
+            return
+        }
+
         let doc = Document(
             name: session.name,
             model: "claude_code",

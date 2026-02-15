@@ -23,13 +23,9 @@ DEFAULT_MODEL = "gpt-5.2-mini"
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-5"
 DEFAULT_GEMINI_MODEL = "gemini-3-flash"
 MAX_TOOL_ROUNDS = 6
-BROWSER_SERVICE_URL = os.environ.get("BROWSER_SERVICE_URL", "http://127.0.0.1:8010").rstrip("/")
-try:
-    BROWSER_TOOL_TIMEOUT_SECONDS = max(
-        30, int(os.environ.get("BROWSER_TOOL_TIMEOUT_SECONDS", "150"))
-    )
-except ValueError:
-    BROWSER_TOOL_TIMEOUT_SECONDS = 150
+BROWSER_TOOL_TIMEOUT_SECONDS = max(
+    30, int(os.environ.get("BROWSER_TOOL_TIMEOUT_SECONDS", "180"))
+) if os.environ.get("BROWSER_TOOL_TIMEOUT_SECONDS", "").strip().isdigit() else 180
 try:
     ANTHROPIC_MAX_TOKENS = max(
         256, min(4096, int(os.environ.get("ANTHROPIC_MAX_TOKENS", "3072")))
@@ -98,6 +94,15 @@ You are Iris, a visual assistant that lives across a user's devices (iPad and Ma
 
 You can push widgets to devices using the push_widget tool.
 You can run web actions using the run_browser_task tool when browsing is the most direct way to complete the user's request.
+
+## Browser Skill (Hardcoded)
+
+When the user asks for browser navigation or web actions, use `run_browser_task`.
+- `start_url`: set this when the user gives a URL to open first.
+- `instruction`: the concrete browser task to execute.
+- `max_steps`: optional limit for autonomous runs.
+- If the request is only "open/go to this URL", prefer a simple open instruction.
+- If both `start_url` and a task are needed, provide both.
 
 ## Widget Types
 
@@ -195,6 +200,7 @@ Every widget goes to exactly one device. Think about what the user is doing and 
 - Screenshots of the Mac and/or iPad are attached inline with each message when available.
   Use them directly for spatial awareness — no tool call needed.
 - Call `push_widget` with explicit `x`, `y`, `coordinate_space`, and `anchor`.
+- For diagram/image placements on iPad, use `coordinate_space = viewport_offset` so images remain in the visible viewport.
 - Prefer `coordinate_space = document_axis` when the request references stable canvas geometry.
 - Use `coordinate_space = viewport_offset` for "near what the user is currently viewing".
 - If coordinate snapshot includes `mostRecentStrokeCenterAxis`, prefer placing assistance widgets near that point when no explicit response area is provided.
@@ -341,7 +347,7 @@ TOOLS = [
         "function": {
             "name": "run_browser_task",
             "description": (
-                "Execute browser automation using the standalone browser service. "
+                "Execute browser automation using the browser-use CLI. "
                 "Use this when the user asks for web actions like navigating sites, filling forms, "
                 "searching content, or completing browser workflows."
             ),
@@ -362,14 +368,14 @@ TOOLS = [
                     },
                     "max_steps": {
                         "type": "number",
-                        "description": "Optional max browser action steps. Default 30, max 200.",
+                        "description": "Optional max browser action steps. Default 12, max 200.",
                     },
                     "include_attached_screenshots": {
                         "type": "boolean",
                         "description": "Include current attached screenshots as image context. Default true.",
                     },
                 },
-                "required": ["instruction"],
+                "required": [],
             },
         },
     },
@@ -1589,88 +1595,96 @@ def _handle_run_browser_task(
 ) -> str:
     instruction = str(args.get("instruction") or "").strip()
     start_url = str(args.get("start_url") or "").strip()
-    if not instruction and start_url:
-        instruction = f"Open {start_url} in a new tab and stop."
-    if not instruction:
-        return json.dumps({"ok": False, "error": "Missing 'instruction' parameter."})
-
-    payload: dict[str, Any] = {"instruction": instruction}
-
     context_text = str(args.get("context_text") or "").strip()
-    if context_text:
-        payload["context_text"] = context_text
 
     if not start_url:
         start_url = _infer_url_from_text(instruction) or _infer_url_from_text(context_text)
 
-    if start_url:
-        payload["start_url"] = start_url
+    if not instruction and not start_url:
+        return json.dumps({"ok": False, "error": "Missing 'instruction' or 'start_url' parameter."})
 
     try:
         max_steps = int(args.get("max_steps", 12))
     except (TypeError, ValueError):
         max_steps = 12
-    payload["max_steps"] = max(1, min(max_steps, 200))
+    max_steps = max(1, min(max_steps, 200))
 
-    include_screenshots = args.get("include_attached_screenshots")
-    # Default to no screenshots for browser tasks. It avoids unnecessary latency
-    # and vision failures for simple navigation commands.
-    use_screenshots = bool(include_screenshots) if include_screenshots is not None else False
-    if use_screenshots and screenshots:
-        images: list[dict[str, Any]] = []
-        for name in sorted(screenshots.keys()):
-            media_type = _guess_image_media_type(screenshots[name])
-            images.append(
-                {
-                    "name": name,
-                    "media_type": media_type,
-                    "data_base64": base64.b64encode(screenshots[name]).decode("ascii"),
-                }
-            )
-        if images:
-            payload["images"] = images
+    # browser-use CLI accepts --json as a global flag and does not support
+    # --start-url on the `run` subcommand in current versions.
+    cmd: list[str] = ["uvx", "browser-use[cli]", "--headed", "--json"]
 
-    url = f"{BROWSER_SERVICE_URL}/api/browser/run"
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
-        method="POST",
+    raw_instruction = instruction.strip()
+    lower_instruction = raw_instruction.lower()
+    simple_open_request = (
+        not raw_instruction
+        or lower_instruction.startswith("open ")
+        or " go to " in f" {lower_instruction} "
+        or lower_instruction.startswith("go to ")
+        or lower_instruction.startswith("navigate to ")
     )
 
+    if start_url and simple_open_request and not context_text:
+        cmd += ["open", start_url]
+    else:
+        task_parts: list[str] = []
+        if start_url:
+            task_parts.append(f"Start at {start_url}.")
+        if raw_instruction:
+            task_parts.append(raw_instruction)
+        if context_text:
+            task_parts.append(f"Context: {context_text}")
+        full_instruction = "\n\n".join(part for part in task_parts if part).strip()
+        if not full_instruction:
+            full_instruction = f"Open {start_url} in a new tab and stop."
+        cmd += ["run", full_instruction, "--max-steps", str(max_steps)]
+
     try:
-        with urllib.request.urlopen(req, timeout=BROWSER_TOOL_TIMEOUT_SECONDS) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=BROWSER_TOOL_TIMEOUT_SECONDS,
+        )
+        raw = proc.stdout.strip()
+        stderr = proc.stderr.strip()
+
+        # Try to parse JSON output
+        if raw:
             try:
                 parsed = json.loads(raw)
                 if isinstance(parsed, dict):
+                    parsed["ok"] = parsed.get("ok", proc.returncode == 0)
                     return json.dumps(parsed, ensure_ascii=False)
             except json.JSONDecodeError:
                 pass
-            return json.dumps({"ok": False, "error": "Invalid JSON from browser service", "raw": raw[:1000]})
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        detail = body[:1500] if body else f"HTTP {exc.code}"
-        return json.dumps(
-            {
+
+        # Fallback: return raw output
+        if proc.returncode == 0:
+            return json.dumps({
+                "ok": True,
+                "result": {"final_result": raw or "Browser task completed."},
+            }, ensure_ascii=False)
+        else:
+            return json.dumps({
                 "ok": False,
-                "error": f"Browser service request failed with HTTP {exc.code}",
-                "details": detail,
-            },
-            ensure_ascii=False,
-        )
-    except urllib.error.URLError as exc:
-        return json.dumps(
-            {
-                "ok": False,
-                "error": f"Browser service unavailable at {BROWSER_SERVICE_URL}",
-                "details": str(exc.reason),
-            },
-            ensure_ascii=False,
-        )
+                "error": "browser-use command failed",
+                "details": stderr[:1500] or raw[:1500] or f"Exit code {proc.returncode}",
+            }, ensure_ascii=False)
+
+    except subprocess.TimeoutExpired:
+        return json.dumps({
+            "ok": False,
+            "error": f"Browser task timed out after {BROWSER_TOOL_TIMEOUT_SECONDS}s",
+            "details": "The browser session is still running. You can interact with it manually.",
+        }, ensure_ascii=False)
+    except FileNotFoundError:
+        return json.dumps({
+            "ok": False,
+            "error": "browser-use CLI not found. Install with: uv pip install 'browser-use[cli]'",
+        }, ensure_ascii=False)
     except Exception as exc:
         return json.dumps(
-            {"ok": False, "error": "Browser service request failed", "details": str(exc)},
+            {"ok": False, "error": "Browser task failed", "details": str(exc)},
             ensure_ascii=False,
         )
 
