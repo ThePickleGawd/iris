@@ -825,7 +825,7 @@ final class CanvasObjectManager: ObservableObject {
         _ latex: String,
         at position: CGPoint,
         maxWidth: CGFloat = 420,
-        color: UIColor = UIColor(red: 0.10, green: 0.12, blue: 0.16, alpha: 1)
+        color: UIColor = .black
     ) async -> CGSize {
         guard let canvasView else { return .zero }
 
@@ -890,6 +890,11 @@ final class CanvasObjectManager: ObservableObject {
             options: .regularExpression
         )
         return normalizedEscapes
+            .replacingOccurrences(of: #"\\begin\{[^}]+\}"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\\end\{[^}]+\}"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\\displaystyle"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\\textstyle"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\\\\\s*"#, with: " ", options: .regularExpression)
             .replacingOccurrences(of: "$$", with: "")
             .replacingOccurrences(of: "$", with: "")
             .replacingOccurrences(of: "\\(", with: "")
@@ -898,6 +903,7 @@ final class CanvasObjectManager: ObservableObject {
             .replacingOccurrences(of: "\\]", with: "")
             .replacingOccurrences(of: "\\left", with: "")
             .replacingOccurrences(of: "\\right", with: "")
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -1321,9 +1327,9 @@ final class CanvasObjectManager: ObservableObject {
             let childStroke = max(2.8, strokeWidth * 1.0)
             let radMeasure = measureLaTeXMetrics(radicand, fontSize: childFont)
 
-            let rootPrefix = max(28, fontSize * 0.82)
+            let rootPrefix = max(30, fontSize * 0.86)
             let radX = origin.x + rootPrefix
-            let radY = origin.y + max(10, fontSize * 0.22)
+            let radY = origin.y + max(8, fontSize * 0.16)
             let indexFont = max(12, fontSize * 0.45)
 
             let radRendered = renderLaTeXNode(
@@ -1335,10 +1341,10 @@ final class CanvasObjectManager: ObservableObject {
                 strokeWidth: childStroke
             )
 
-            let overbarY = radY + max(2, childFont * 0.06)
-            let overbarStartX = origin.x + rootPrefix - 5
+            let overbarY = radY + max(1.5, childFont * 0.045)
+            let overbarStartX = origin.x + rootPrefix - 6
             let radWidth = max(radMeasure.size.width, radRendered.size.width)
-            let overbarEndX = overbarStartX + max(16, radWidth + 14)
+            let overbarEndX = overbarStartX + max(18, radWidth + 20)
 
             var strokes = radRendered.strokes
             var indexWidth: CGFloat = 0
@@ -1357,9 +1363,9 @@ final class CanvasObjectManager: ObservableObject {
                 indexHeight = indexResult.size.height
             }
             let radicalPoints = [
-                CGPoint(x: origin.x + 2, y: overbarY + 15),
-                CGPoint(x: origin.x + 9, y: overbarY + 22),
-                CGPoint(x: origin.x + 17, y: overbarY + 4),
+                CGPoint(x: origin.x + 2, y: overbarY + 14),
+                CGPoint(x: origin.x + 10, y: overbarY + 21),
+                CGPoint(x: origin.x + 18, y: overbarY + 4),
                 CGPoint(x: overbarStartX, y: overbarY)
             ]
             strokes.append(
@@ -1524,21 +1530,21 @@ final class CanvasObjectManager: ObservableObject {
         case .symbol(let symbol):
             switch symbol {
             case "+":
-                let height = max(20, fontSize * 0.9)
-                let width = max(18, fontSize * 0.78)
-                return LaTeXMetrics(size: CGSize(width: width, height: height), baseline: height * 0.56)
+                let height = max(18, fontSize * 0.80)
+                let width = max(16, fontSize * 0.72)
+                return LaTeXMetrics(size: CGSize(width: width, height: height), baseline: height * 0.76)
             case "±":
-                let height = max(24, fontSize * 1.0)
-                let width = max(20, fontSize * 0.82)
-                return LaTeXMetrics(size: CGSize(width: width, height: height), baseline: height * 0.62)
+                let height = max(22, fontSize * 0.94)
+                let width = max(18, fontSize * 0.76)
+                return LaTeXMetrics(size: CGSize(width: width, height: height), baseline: height * 0.78)
             case "-":
-                let height = max(18, fontSize * 0.68)
-                let width = max(18, fontSize * 0.75)
-                return LaTeXMetrics(size: CGSize(width: width, height: height), baseline: height * 0.56)
+                let height = max(14, fontSize * 0.5)
+                let width = max(16, fontSize * 0.68)
+                return LaTeXMetrics(size: CGSize(width: width, height: height), baseline: height * 0.76)
             case "=":
-                let height = max(20, fontSize * 0.86)
-                let width = max(20, fontSize * 0.82)
-                return LaTeXMetrics(size: CGSize(width: width, height: height), baseline: height * 0.56)
+                let height = max(16, fontSize * 0.6)
+                let width = max(18, fontSize * 0.72)
+                return LaTeXMetrics(size: CGSize(width: width, height: height), baseline: height * 0.76)
             default:
                 let size = HandwrittenInkRenderer.measure(text: String(symbol), fontSize: fontSize)
                 return LaTeXMetrics(size: size, baseline: max(1, size.height * 0.78))
@@ -1738,85 +1744,70 @@ final class CanvasObjectManager: ObservableObject {
         let size = measureLaTeXMetrics(.symbol(symbol), fontSize: fontSize).size
         let width = max(12, size.width)
         let height = max(12, size.height)
-        let lineW = max(3.1, strokeWidth * 1.12)
+        let lineW = max(3.45, strokeWidth * 1.18)
+        let fillOffset = max(0.52, lineW * 0.24)
         var strokes: [PKStroke] = []
+
+        func addFilledLine(from start: CGPoint, to end: CGPoint) {
+            let offsets: [CGFloat] = [-2, -1, 0, 1, 2]
+            for step in offsets {
+                let yOffset = step * fillOffset
+                let widthScale: CGFloat = step == 0 ? 1.0 : (step.magnitude == 1 ? 0.82 : 0.62)
+                strokes.append(
+                    makeLineStroke(
+                        from: CGPoint(x: start.x, y: start.y + yOffset),
+                        to: CGPoint(x: end.x, y: end.y + yOffset),
+                        color: color,
+                        width: lineW * widthScale
+                    )
+                )
+            }
+        }
 
         switch symbol {
         case "+":
             let cx = origin.x + width * 0.5
-            let cy = origin.y + height * 0.56
-            strokes.append(
-                makeLineStroke(
-                    from: CGPoint(x: cx, y: cy - height * 0.36),
-                    to: CGPoint(x: cx, y: cy + height * 0.36),
-                    color: color,
-                    width: lineW
-                )
+            let cy = origin.y + height * 0.5
+            addFilledLine(
+                from: CGPoint(x: cx, y: cy - height * 0.31),
+                to: CGPoint(x: cx, y: cy + height * 0.31)
             )
-            strokes.append(
-                makeLineStroke(
-                    from: CGPoint(x: origin.x + width * 0.12, y: cy),
-                    to: CGPoint(x: origin.x + width * 0.88, y: cy),
-                    color: color,
-                    width: lineW
-                )
+            addFilledLine(
+                from: CGPoint(x: origin.x + width * 0.12, y: cy),
+                to: CGPoint(x: origin.x + width * 0.88, y: cy)
             )
         case "±":
             let cx = origin.x + width * 0.5
-            let plusY = origin.y + height * 0.42
+            let plusY = origin.y + height * 0.4
             let minusY = origin.y + height * 0.76
-            strokes.append(
-                makeLineStroke(
-                    from: CGPoint(x: cx, y: plusY - height * 0.22),
-                    to: CGPoint(x: cx, y: plusY + height * 0.22),
-                    color: color,
-                    width: lineW
-                )
+            addFilledLine(
+                from: CGPoint(x: cx, y: plusY - height * 0.18),
+                to: CGPoint(x: cx, y: plusY + height * 0.18)
             )
-            strokes.append(
-                makeLineStroke(
-                    from: CGPoint(x: origin.x + width * 0.16, y: plusY),
-                    to: CGPoint(x: origin.x + width * 0.84, y: plusY),
-                    color: color,
-                    width: lineW
-                )
+            addFilledLine(
+                from: CGPoint(x: origin.x + width * 0.14, y: plusY),
+                to: CGPoint(x: origin.x + width * 0.86, y: plusY)
             )
-            strokes.append(
-                makeLineStroke(
-                    from: CGPoint(x: origin.x + width * 0.16, y: minusY),
-                    to: CGPoint(x: origin.x + width * 0.84, y: minusY),
-                    color: color,
-                    width: lineW
-                )
+            addFilledLine(
+                from: CGPoint(x: origin.x + width * 0.14, y: minusY),
+                to: CGPoint(x: origin.x + width * 0.86, y: minusY)
             )
         case "-":
-            let cy = origin.y + height * 0.56
-            strokes.append(
-                makeLineStroke(
-                    from: CGPoint(x: origin.x + width * 0.1, y: cy),
-                    to: CGPoint(x: origin.x + width * 0.9, y: cy),
-                    color: color,
-                    width: lineW
-                )
+            let cy = origin.y + height * 0.5
+            addFilledLine(
+                from: CGPoint(x: origin.x + width * 0.12, y: cy),
+                to: CGPoint(x: origin.x + width * 0.88, y: cy)
             )
         case "=":
-            let cy = origin.y + height * 0.56
-            let gap = max(3, height * 0.2)
-            strokes.append(
-                makeLineStroke(
-                    from: CGPoint(x: origin.x + width * 0.12, y: cy - gap * 0.5),
-                    to: CGPoint(x: origin.x + width * 0.88, y: cy - gap * 0.5),
-                    color: color,
-                    width: lineW
-                )
+            let cy = origin.y + height * 0.5
+            let gap = max(2.8, height * 0.28)
+            addFilledLine(
+                from: CGPoint(x: origin.x + width * 0.1, y: cy - gap * 0.5),
+                to: CGPoint(x: origin.x + width * 0.9, y: cy - gap * 0.5)
             )
-            strokes.append(
-                makeLineStroke(
-                    from: CGPoint(x: origin.x + width * 0.12, y: cy + gap * 0.5),
-                    to: CGPoint(x: origin.x + width * 0.88, y: cy + gap * 0.5),
-                    color: color,
-                    width: lineW
-                )
+            addFilledLine(
+                from: CGPoint(x: origin.x + width * 0.1, y: cy + gap * 0.5),
+                to: CGPoint(x: origin.x + width * 0.9, y: cy + gap * 0.5)
             )
         default:
             let rendered = HandwrittenInkRenderer.render(
@@ -1834,9 +1825,13 @@ final class CanvasObjectManager: ObservableObject {
         let baseline: CGFloat = {
             switch symbol {
             case "±":
-                return max(1, height * 0.62)
+                return max(1, height * 0.78)
+            case "=":
+                return max(1, height * 0.76)
+            case "-":
+                return max(1, height * 0.76)
             default:
-                return max(1, height * 0.56)
+                return max(1, height * 0.76)
             }
         }()
         return LaTeXRenderResult(strokes: strokes, size: CGSize(width: width, height: height), baseline: baseline)

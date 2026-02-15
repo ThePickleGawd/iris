@@ -804,7 +804,7 @@ struct CanvasScreen: View {
     @Environment(\.dismiss) var dismiss
 
     var body: some View {
-        ContentView(document: document, documentStore: documentStore, onBack: { dismiss() })
+        ContentView(document: document, onBack: { dismiss() })
             .environmentObject(canvasState)
             .navigationBarBackButtonHidden(true)
     }

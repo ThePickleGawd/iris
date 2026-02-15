@@ -27,12 +27,15 @@ final class SVGStrokeAnimator {
         var completedStrokes: [PKStroke] = []
         let ink = PKInk(.pen, color: color)
         let traceWidthMultiplier: CGFloat = 1.24
+        // Cursor should move at 1/5 normal speed.
+        let cursorSpeedScale: Double = 0.2
+        let cursorDurationScale: Double = 5.0
         let fps: Double = 60
-        let frameNanos = UInt64(1_000_000_000.0 / fps)
+        let frameNanos = UInt64((1_000_000_000.0 / fps) * cursorDurationScale)
         let effectiveSpeed = max(0.65, speed)
-        let desiredPointsPerSecond = 260.0 * effectiveSpeed
+        let desiredPointsPerSecond = 260.0 * effectiveSpeed * cursorSpeedScale
         let computedPointsPerFrame = max(1, Int(ceil(desiredPointsPerSecond / fps)))
-        let pointsPerFrame = min(2, computedPointsPerFrame)
+        let pointsPerFrame = min(1, computedPointsPerFrame)
 
         // Separate outline strokes (animated) from fill strokes (batched)
         let outlineStrokes = strokes.filter { !$0.isFill }
@@ -73,7 +76,7 @@ final class SVGStrokeAnimator {
         // (1) Move to first start before any SVG pixels appear.
         let firstStartScreen = screenPt(strokeTraces[0].densePoints[0], origin: origin, scale: scale)
         cursor.appear(at: firstStartScreen)
-        try? await Task.sleep(nanoseconds: 70_000_000)
+        try? await Task.sleep(nanoseconds: UInt64(70_000_000 * cursorDurationScale))
 
         // (2) Draw/trace with cursor.
         for (strokeIndex, trace) in strokeTraces.enumerated() {
@@ -83,7 +86,7 @@ final class SVGStrokeAnimator {
 
             if strokeIndex > 0 {
                 await moveCursorLinearly(to: strokeStartScreen, fps: fps)
-                try? await Task.sleep(nanoseconds: 24_000_000)
+                try? await Task.sleep(nanoseconds: UInt64(24_000_000 * cursorDurationScale))
             } else {
                 cursor.position = strokeStartScreen
             }
@@ -106,7 +109,7 @@ final class SVGStrokeAnimator {
 
             let fullPath = PKStrokePath(controlPoints: pkPoints, creationDate: Date())
             completedStrokes.append(PKStroke(ink: ink, path: fullPath))
-            try? await Task.sleep(nanoseconds: 8_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(8_000_000 * cursorDurationScale))
         }
 
         // Add all fill strokes at once (no animation — they appear instantly)
@@ -129,7 +132,7 @@ final class SVGStrokeAnimator {
         var finalDrawing = baseDrawing
         for s in completedStrokes { finalDrawing.strokes.append(s) }
         canvasView.drawing = finalDrawing
-        try? await Task.sleep(nanoseconds: 24_000_000)
+        try? await Task.sleep(nanoseconds: UInt64(24_000_000 * cursorDurationScale))
 
         // (3) Disappear cursor.
         cursor.disappear()
@@ -185,7 +188,7 @@ final class SVGStrokeAnimator {
             return
         }
 
-        let pixelsPerSecond: CGFloat = 1800
+        let pixelsPerSecond: CGFloat = 360
         let duration = min(0.18, max(0.04, Double(distance / pixelsPerSecond)))
         let steps = max(1, Int(ceil(duration * fps)))
         let stepNanos = UInt64((duration / Double(steps)) * 1_000_000_000.0)

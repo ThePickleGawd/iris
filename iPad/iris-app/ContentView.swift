@@ -796,7 +796,7 @@ struct ContentView: View {
             }
             if aiOutputInkEnabled {
                 await renderAgentOutputAsHandwriting(
-                    response: AgentResponse(text: "", widgets: [widget]),
+                    response: AgentResponse(text: "", widgets: [widget], sessionName: nil),
                     prefix: nil,
                     widgetAnchors: [widget.id: widgetOrigin(for: widget)]
                 )
@@ -1147,6 +1147,12 @@ struct ContentView: View {
                 continue
             }
 
+            if let inlineLatex = extractLikelyLatexExpression(from: line) {
+                flushParagraph()
+                blocks.append(makeEquationBlock(latex: inlineLatex))
+                continue
+            }
+
             paragraphBuffer.append(line)
         }
 
@@ -1341,6 +1347,44 @@ struct ContentView: View {
             value = String(value.dropFirst(2).dropLast(2))
         }
         return value
+    }
+
+    private func extractLikelyLatexExpression(from line: String) -> String? {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if trimmed.range(of: #"\\[A-Za-z]+|[_^]|\\\(|\\\[|\$"#, options: .regularExpression) == nil {
+            return nil
+        }
+
+        if let range = trimmed.range(of: #"\$(.+?)\$"#, options: .regularExpression) {
+            let body = String(trimmed[range])
+                .replacingOccurrences(of: "$", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return body.isEmpty ? nil : body
+        }
+
+        let commandRegex = try? NSRegularExpression(pattern: #"\\[A-Za-z]+"#)
+        let ns = trimmed as NSString
+        if let match = commandRegex?.firstMatch(in: trimmed, range: NSRange(location: 0, length: ns.length)),
+           let swift = Range(match.range, in: trimmed) {
+            var candidate = String(trimmed[swift.lowerBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            candidate = candidate.replacingOccurrences(of: #"^[\:\-\s]+"#, with: "", options: .regularExpression)
+            candidate = candidate.replacingOccurrences(of: #"[\,\.\;\:]\s*$"#, with: "", options: .regularExpression)
+            if !candidate.isEmpty {
+                return candidate
+            }
+        }
+
+        // Treat short formula-like lines without command prefixes (e.g. x^2 + y^2 = z^2).
+        let looksFormulaLike =
+            trimmed.range(of: #"[_^].*[=+\-]|[=+\-].*[_^]"#, options: .regularExpression) != nil
+            || trimmed.range(of: #"[=+\-].*\d|\d.*[=+\-]"#, options: .regularExpression) != nil
+        if looksFormulaLike, trimmed.count <= 120 {
+            return trimmed
+        }
+
+        return nil
     }
 
     private func makeBlock(text: String, kind: ParsedInkKind) -> ParsedInkBlock {
