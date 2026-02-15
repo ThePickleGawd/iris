@@ -1,22 +1,45 @@
 import Foundation
 import CoreGraphics
+import CoreText
+
+enum SVGStrokeSource {
+    case vector
+    case text
+}
 
 struct SVGStroke {
     let points: [CGPoint]
     let color: String?
     let strokeWidth: CGFloat?
     let isFill: Bool
+    let source: SVGStrokeSource
 
-    init(points: [CGPoint], color: String?, strokeWidth: CGFloat?, isFill: Bool = false) {
+    init(
+        points: [CGPoint],
+        color: String?,
+        strokeWidth: CGFloat?,
+        isFill: Bool = false,
+        source: SVGStrokeSource = .vector
+    ) {
         self.points = points
         self.color = color
         self.strokeWidth = strokeWidth
         self.isFill = isFill
+        self.source = source
     }
+}
+
+struct SVGTextRun {
+    let text: String
+    let anchor: CGPoint
+    let fontSize: CGFloat
+    let fontFamily: String
+    let color: String
 }
 
 struct SVGParseResult {
     let strokes: [SVGStroke]
+    let textRuns: [SVGTextRun]
     let viewBox: CGRect
 }
 
@@ -25,6 +48,7 @@ struct SVGParseResult {
 final class SVGPathParser: NSObject, XMLParserDelegate {
 
     private var strokes: [SVGStroke] = []
+    private var textRuns: [SVGTextRun] = []
     private var viewBox: CGRect = .zero
     private var svgWidth: CGFloat = 0
     private var svgHeight: CGFloat = 0
@@ -33,6 +57,9 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
     private var groupStyleStack: [(stroke: String?, strokeWidth: String?)] = []
     private var transformStack: [CGAffineTransform] = []
     private var suppressedElementDepth: Int = 0
+    private var textCaptureDepth: Int = 0
+    private var capturedTextAttributes: [String: String] = [:]
+    private var capturedTextBuffer: String = ""
     private let ignoredContainers: Set<String> = [
         "defs", "marker", "clippath", "mask", "symbol", "pattern",
         "lineargradient", "radialgradient", "filter", "style",
@@ -41,15 +68,19 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
 
     func parse(svgString: String) -> SVGParseResult {
         strokes = []
+        textRuns = []
         viewBox = .zero
         svgWidth = 0
         svgHeight = 0
         groupStyleStack = []
         transformStack = []
         suppressedElementDepth = 0
+        textCaptureDepth = 0
+        capturedTextAttributes = [:]
+        capturedTextBuffer = ""
 
         guard let data = svgString.data(using: .utf8) else {
-            return SVGParseResult(strokes: [], viewBox: .zero)
+            return SVGParseResult(strokes: [], textRuns: [], viewBox: .zero)
         }
 
         let parser = XMLParser(data: data)
@@ -63,7 +94,7 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
 
         normalizeToViewBoxOrigin()
 
-        return SVGParseResult(strokes: strokes, viewBox: viewBox)
+        return SVGParseResult(strokes: strokes, textRuns: textRuns, viewBox: viewBox)
     }
 
     // MARK: - XMLParserDelegate
@@ -108,9 +139,22 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
             parseCircle(attrs)
         case "ellipse":
             parseEllipse(attrs)
+        case "text":
+            textCaptureDepth = 1
+            capturedTextAttributes = attrs
+            capturedTextBuffer = ""
+        case "tspan":
+            if textCaptureDepth > 0 {
+                textCaptureDepth += 1
+            }
         default:
             break
         }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        guard suppressedElementDepth == 0, textCaptureDepth > 0 else { return }
+        capturedTextBuffer.append(string)
     }
 
     func parser(_ parser: XMLParser, didEndElement element: String,
@@ -121,6 +165,17 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
         }
 
         let lower = element.lowercased()
+        if lower == "tspan", textCaptureDepth > 0 {
+            textCaptureDepth -= 1
+        }
+        if lower == "text", textCaptureDepth > 0 {
+            textCaptureDepth -= 1
+            if textCaptureDepth == 0 {
+                parseText(capturedTextAttributes, text: capturedTextBuffer)
+                capturedTextAttributes = [:]
+                capturedTextBuffer = ""
+            }
+        }
         if lower == "g" {
             _ = groupStyleStack.popLast()
         }
@@ -327,6 +382,70 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
         ))
     }
 
+    private func parseText(_ attrs: [String: String], text rawText: String) {
+        let text = normalizeTextContent(rawText)
+        guard !text.isEmpty else { return }
+
+        let x = firstNumericValue(attrs["x"]) ?? 0
+        let y = firstNumericValue(attrs["y"]) ?? 0
+        let fontSize = max(1, firstNumericValue(
+            attrs["font-size"] ?? styleValue("font-size", from: attrs["style"])
+        ) ?? 16)
+        let fontFamily = attrs["font-family"]
+            ?? styleValue("font-family", from: attrs["style"])
+            ?? "Helvetica"
+
+        let fill = attrs["fill"] ?? styleValue("fill", from: attrs["style"])
+        let (strokeColor, strokeWidthAttr) = resolveStyle(attrs, allowFillFallback: false)
+        let color: String = {
+            if isVisibleFill(fill), let fill { return fill }
+            if let strokeColor, hasVisibleStroke(color: strokeColor, width: strokeWidthAttr) {
+                return strokeColor
+            }
+            return "#111111"
+        }()
+        // Use dense scanlines for text so filled glyphs do not look hollow.
+        let fillStep = max(0.24, min(0.52, fontSize * 0.0075))
+        let fillLineWidth = max(1.0, fillStep * 5.0)
+
+        let transform = elementTransform(attrs)
+        textRuns.append(SVGTextRun(
+            text: text,
+            anchor: CGPoint(x: x, y: y).applying(transform),
+            fontSize: fontSize,
+            fontFamily: fontFamily,
+            color: color
+        ))
+
+        guard let glyphPath = glyphOutlinePath(
+            text: text,
+            fontFamily: fontFamily,
+            fontSize: fontSize
+        ) else {
+            return
+        }
+
+        let polylines = flattenPath(glyphPath)
+        guard !polylines.isEmpty else { return }
+
+        let contours: [[CGPoint]] = polylines.compactMap { polyline in
+            guard polyline.count >= 2 else { return nil }
+            // CoreText path coordinates are y-up at baseline origin.
+            let positioned = polyline.map { p in
+                CGPoint(x: x + p.x, y: y - p.y)
+            }
+            return applyTransform(positioned, transform: transform)
+        }
+
+        let fillStrokes = scanlineFillContoursEvenOdd(
+            contours: contours,
+            color: color,
+            step: fillStep,
+            lineWidth: fillLineWidth
+        )
+        strokes.append(contentsOf: fillStrokes)
+    }
+
     // MARK: - Style Resolution
 
     private func resolveStyle(
@@ -472,6 +591,66 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
         return fills
     }
 
+    /// Even-odd scanline fill across multiple closed contours (supports holes).
+    private func scanlineFillContoursEvenOdd(
+        contours: [[CGPoint]],
+        color: String,
+        step: CGFloat,
+        lineWidth: CGFloat
+    ) -> [SVGStroke] {
+        let validContours = contours.compactMap { contour -> [CGPoint]? in
+            var c = contour
+            if let first = c.first, let last = c.last, first == last {
+                c.removeLast()
+            }
+            return c.count >= 3 ? c : nil
+        }
+        guard !validContours.isEmpty else { return [] }
+
+        let minY = validContours.flatMap { $0.map(\.y) }.min() ?? 0
+        let maxY = validContours.flatMap { $0.map(\.y) }.max() ?? 0
+        guard maxY > minY else { return [] }
+
+        var fills: [SVGStroke] = []
+        var y = minY + step / 2
+        while y < maxY {
+            var intersections: [CGFloat] = []
+            for contour in validContours {
+                for i in 0..<contour.count {
+                    let j = (i + 1) % contour.count
+                    let p1 = contour[i]
+                    let p2 = contour[j]
+                    let yMin = min(p1.y, p2.y)
+                    let yMax = max(p1.y, p2.y)
+                    if y >= yMin && y < yMax && yMax != yMin {
+                        let x = p1.x + (y - p1.y) * (p2.x - p1.x) / (p2.y - p1.y)
+                        intersections.append(x)
+                    }
+                }
+            }
+            intersections.sort()
+
+            var i = 0
+            while i + 1 < intersections.count {
+                let x1 = intersections[i]
+                let x2 = intersections[i + 1]
+                if x2 - x1 > 0.1 {
+                    fills.append(SVGStroke(
+                        points: [CGPoint(x: x1, y: y), CGPoint(x: x2, y: y)],
+                        color: color,
+                        strokeWidth: lineWidth,
+                        isFill: true,
+                        source: .text
+                    ))
+                }
+                i += 2
+            }
+            y += step
+        }
+
+        return fills
+    }
+
     // MARK: - Geometry Helpers
 
     private func sampleEllipse(cx: CGFloat, cy: CGFloat, rx: CGFloat, ry: CGFloat, samples: Int) -> [CGPoint] {
@@ -523,10 +702,176 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
                 points: applyTransform(stroke.points, transform: shift),
                 color: stroke.color,
                 strokeWidth: stroke.strokeWidth,
-                isFill: stroke.isFill
+                isFill: stroke.isFill,
+                source: stroke.source
+            )
+        }
+        textRuns = textRuns.map { run in
+            SVGTextRun(
+                text: run.text,
+                anchor: CGPoint(x: run.anchor.x - viewBox.minX, y: run.anchor.y - viewBox.minY),
+                fontSize: run.fontSize,
+                fontFamily: run.fontFamily,
+                color: run.color
             )
         }
         viewBox = CGRect(x: 0, y: 0, width: viewBox.width, height: viewBox.height)
+    }
+
+    private func normalizeTextContent(_ raw: String) -> String {
+        let collapsed = raw.replacingOccurrences(
+            of: #"\s+"#,
+            with: " ",
+            options: .regularExpression
+        )
+        return collapsed.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func firstNumericValue(_ input: String?) -> CGFloat? {
+        guard let input, !input.isEmpty else { return nil }
+        guard let regex = try? NSRegularExpression(
+            pattern: #"[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?"#
+        ) else {
+            return nil
+        }
+        let ns = input as NSString
+        guard let match = regex.firstMatch(
+            in: input,
+            range: NSRange(location: 0, length: ns.length)
+        ) else {
+            return nil
+        }
+        let token = ns.substring(with: match.range)
+        guard let value = Double(token), value.isFinite else { return nil }
+        return CGFloat(value)
+    }
+
+    private func glyphOutlinePath(text: String, fontFamily: String, fontSize: CGFloat) -> CGPath? {
+        let requestedFont = CTFontCreateWithName(fontFamily as CFString, fontSize, nil)
+        let fallbackFont = CTFontCreateWithName("Helvetica" as CFString, fontSize, nil)
+        let baseFont = requestedFont
+
+        let attributed = NSAttributedString(
+            string: text,
+            attributes: [kCTFontAttributeName as NSAttributedString.Key: baseFont]
+        )
+        let line = CTLineCreateWithAttributedString(attributed)
+        let runs = CTLineGetGlyphRuns(line) as NSArray
+
+        let path = CGMutablePath()
+        var hasGlyphPath = false
+
+        for case let run as CTRun in runs {
+            // Use the base fallback font for path extraction to avoid CF bridging issues.
+            let runFont = fallbackFont
+            let count = CTRunGetGlyphCount(run)
+            guard count > 0 else { continue }
+
+            var glyphs = Array(repeating: CGGlyph(), count: count)
+            var positions = Array(repeating: CGPoint.zero, count: count)
+            CTRunGetGlyphs(run, CFRange(location: 0, length: 0), &glyphs)
+            CTRunGetPositions(run, CFRange(location: 0, length: 0), &positions)
+
+            for i in 0..<count {
+                guard let glyphPath = CTFontCreatePathForGlyph(runFont, glyphs[i], nil) else { continue }
+                let t = CGAffineTransform(translationX: positions[i].x, y: positions[i].y)
+                path.addPath(glyphPath, transform: t)
+                hasGlyphPath = true
+            }
+        }
+
+        return hasGlyphPath ? path.copy() : nil
+    }
+
+    private func flattenPath(_ path: CGPath) -> [[CGPoint]] {
+        var polylines: [[CGPoint]] = []
+        var current: [CGPoint] = []
+        var currentPoint: CGPoint = .zero
+        var subpathStart: CGPoint = .zero
+
+        path.applyWithBlock { elementPointer in
+            let element = elementPointer.pointee
+            let points = element.points
+
+            switch element.type {
+            case .moveToPoint:
+                if current.count >= 2 { polylines.append(current) }
+                let p = points[0]
+                current = [p]
+                currentPoint = p
+                subpathStart = p
+
+            case .addLineToPoint:
+                let p = points[0]
+                current.append(p)
+                currentPoint = p
+
+            case .addQuadCurveToPoint:
+                let c = points[0]
+                let p = points[1]
+                sampleQuad(from: currentPoint, control: c, to: p, into: &current)
+                currentPoint = p
+
+            case .addCurveToPoint:
+                let c1 = points[0]
+                let c2 = points[1]
+                let p = points[2]
+                sampleCubic(from: currentPoint, c1: c1, c2: c2, to: p, into: &current)
+                currentPoint = p
+
+            case .closeSubpath:
+                if !current.isEmpty {
+                    if let last = current.last, hypot(last.x - subpathStart.x, last.y - subpathStart.y) > 0.01 {
+                        current.append(subpathStart)
+                    }
+                    if current.count >= 2 { polylines.append(current) }
+                }
+                current = []
+                currentPoint = subpathStart
+
+            @unknown default:
+                break
+            }
+        }
+
+        if current.count >= 2 {
+            polylines.append(current)
+        }
+
+        return polylines
+    }
+
+    private func sampleCubic(
+        from p0: CGPoint,
+        c1: CGPoint,
+        c2: CGPoint,
+        to p3: CGPoint,
+        into points: inout [CGPoint]
+    ) {
+        let samples = 10
+        for i in 1...samples {
+            let t = CGFloat(i) / CGFloat(samples)
+            let mt = 1 - t
+            let x = mt*mt*mt*p0.x + 3*mt*mt*t*c1.x + 3*mt*t*t*c2.x + t*t*t*p3.x
+            let y = mt*mt*mt*p0.y + 3*mt*mt*t*c1.y + 3*mt*t*t*c2.y + t*t*t*p3.y
+            points.append(CGPoint(x: x, y: y))
+        }
+    }
+
+    private func sampleQuad(
+        from p0: CGPoint,
+        control: CGPoint,
+        to p2: CGPoint,
+        into points: inout [CGPoint]
+    ) {
+        let samples = 10
+        for i in 1...samples {
+            let t = CGFloat(i) / CGFloat(samples)
+            let mt = 1 - t
+            let x = mt*mt*p0.x + 2*mt*t*control.x + t*t*p2.x
+            let y = mt*mt*p0.y + 2*mt*t*control.y + t*t*p2.y
+            points.append(CGPoint(x: x, y: y))
+        }
     }
 
     private func parseTransform(_ value: String?) -> CGAffineTransform {

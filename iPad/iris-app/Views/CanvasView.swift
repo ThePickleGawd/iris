@@ -15,7 +15,11 @@ struct CanvasView: UIViewRepresentable {
 
         view.backgroundColor = Self.makeDotPattern()
         view.isOpaque = true
+        #if targetEnvironment(simulator)
+        view.drawingPolicy = .anyInput
+        #else
         view.drawingPolicy = .pencilOnly
+        #endif
         view.overrideUserInterfaceStyle = .light
 
         view.minimumZoomScale = 0.5

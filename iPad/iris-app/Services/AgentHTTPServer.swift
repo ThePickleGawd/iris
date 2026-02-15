@@ -599,21 +599,29 @@ class AgentHTTPServer {
             return
         }
 
-        // Parse stroke count upfront for the response
+        // Parse drawable content upfront for the response
         let parser = SVGPathParser()
         let parsed = parser.parse(svgString: svg)
-        let strokeCount = parsed.strokes.count
+        let vectorStrokes = parsed.strokes.filter { $0.source != .text }
+        let textRuns = parsed.textRuns
+        let strokeCount = vectorStrokes.count + textRuns.count
 
         guard strokeCount > 0 else {
-            respondJSON(conn, status: 400, body: ["error": "SVG contains no drawable strokes"])
+            respondJSON(conn, status: 400, body: ["error": "SVG contains no drawable content"])
             return
         }
 
-        // Estimate duration: ~30 points/sec per stroke, with pauses
-        let totalPoints = parsed.strokes.reduce(0) { $0 + $1.points.count }
-        let drawTime = Double(totalPoints) / (30.0 * max(speed, 0.1))
-        let pauseTime = Double(strokeCount) * 0.15
-        let estimatedDuration = (drawTime + pauseTime).rounded(toPlaces: 1)
+        // Estimate path tracing + typed text separately for more realistic timing.
+        let vectorPointCount = vectorStrokes.reduce(0) { $0 + $1.points.count }
+        let vectorDrawTime = Double(vectorPointCount) / (240.0 * max(speed, 0.1))
+        let vectorPauseTime = Double(vectorStrokes.count) * 0.05
+        let totalTextChars = textRuns.reduce(0) { $0 + $1.text.count }
+        let textCharsPerSecond = max(24.0, 62.0 * max(0.4, speed))
+        let textDrawTime = Double(totalTextChars) / textCharsPerSecond
+        let textRunPause = Double(textRuns.count) * 0.22
+        let estimatedDuration = (
+            vectorDrawTime + vectorPauseTime + textDrawTime + textRunPause
+        ).rounded(toPlaces: 1)
 
         // Respond immediately (202), then animate asynchronously
         respondJSON(conn, status: 202, body: [

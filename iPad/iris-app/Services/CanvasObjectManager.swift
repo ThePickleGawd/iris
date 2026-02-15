@@ -419,8 +419,9 @@ final class CanvasObjectManager: ObservableObject {
 
         let parser = SVGPathParser()
         let result = parser.parse(svgString: svg)
-        guard !result.strokes.isEmpty else { return 0 }
-        let normalizedStrokes = normalizeStrokesToLocalOrigin(result.strokes)
+        guard !result.strokes.isEmpty || !result.textRuns.isEmpty else { return 0 }
+        let (normalizedStrokes, shift) = normalizeStrokesToLocalOrigin(result.strokes)
+        let normalizedTextRuns = normalizeTextRunsToLocalOrigin(result.textRuns, shift: shift)
 
         isAnimatingDraw = true
         defer { isAnimatingDraw = false }
@@ -433,6 +434,7 @@ final class CanvasObjectManager: ObservableObject {
 
         await animator.animate(
             strokes: normalizedStrokes,
+            textRuns: normalizedTextRuns,
             origin: position,
             scale: scale,
             color: color,
@@ -445,10 +447,10 @@ final class CanvasObjectManager: ObservableObject {
             updateMostRecentStrokeBounds(recentStroke.renderBounds)
         }
 
-        return result.strokes.count
+        return result.strokes.count + result.textRuns.count
     }
 
-    private func normalizeStrokesToLocalOrigin(_ strokes: [SVGStroke]) -> [SVGStroke] {
+    private func normalizeStrokesToLocalOrigin(_ strokes: [SVGStroke]) -> ([SVGStroke], CGPoint) {
         var minX = CGFloat.greatestFiniteMagnitude
         var minY = CGFloat.greatestFiniteMagnitude
 
@@ -459,10 +461,10 @@ final class CanvasObjectManager: ObservableObject {
             }
         }
 
-        guard minX.isFinite, minY.isFinite else { return strokes }
-        guard abs(minX) > 0.001 || abs(minY) > 0.001 else { return strokes }
+        guard minX.isFinite, minY.isFinite else { return (strokes, .zero) }
+        guard abs(minX) > 0.001 || abs(minY) > 0.001 else { return (strokes, .zero) }
 
-        return strokes.map { stroke in
+        let shiftedStrokes = strokes.map { stroke in
             let shifted = stroke.points.map { point in
                 CGPoint(x: point.x - minX, y: point.y - minY)
             }
@@ -470,7 +472,22 @@ final class CanvasObjectManager: ObservableObject {
                 points: shifted,
                 color: stroke.color,
                 strokeWidth: stroke.strokeWidth,
-                isFill: stroke.isFill
+                isFill: stroke.isFill,
+                source: stroke.source
+            )
+        }
+        return (shiftedStrokes, CGPoint(x: minX, y: minY))
+    }
+
+    private func normalizeTextRunsToLocalOrigin(_ runs: [SVGTextRun], shift: CGPoint) -> [SVGTextRun] {
+        guard shift != .zero else { return runs }
+        return runs.map { run in
+            SVGTextRun(
+                text: run.text,
+                anchor: CGPoint(x: run.anchor.x - shift.x, y: run.anchor.y - shift.y),
+                fontSize: run.fontSize,
+                fontFamily: run.fontFamily,
+                color: run.color
             )
         }
     }
