@@ -54,34 +54,61 @@ def _load_state() -> dict[str, Any] | None:
     return session
 
 
-def _send_payload(socket_path: str, payload: dict[str, Any]) -> bool:
+def _send_json_payload(
+    socket_path: str,
+    payload: dict[str, Any],
+    *,
+    allow_silent_success: bool,
+) -> bool:
     path = Path(socket_path)
     if not path.exists():
         return False
 
-    encoded_json = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
-    fallback_text = (
-        str(payload.get("prompt") or payload.get("text") or "").strip() + "\n"
-    ).encode("utf-8")
+    encoded = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
 
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.settimeout(2.0)
             client.connect(str(path))
-            client.sendall(encoded_json)
+            client.sendall(encoded)
+
+            # Newer claudec-iris endpoints return an explicit JSON ack; legacy
+            # commander variants may not return any data before close.
+            try:
+                client.settimeout(0.35)
+                raw = client.recv(4096)
+            except socket.timeout:
+                return allow_silent_success
+
+            if not raw:
+                return allow_silent_success
+
+            first_line = raw.decode("utf-8", errors="replace").strip().splitlines()[0]
+            try:
+                reply = json.loads(first_line)
+            except json.JSONDecodeError:
+                return allow_silent_success
+
+            if isinstance(reply, dict) and str(reply.get("error") or "").strip():
+                return False
             return True
     except OSError:
-        # Fallback for plain-text socket protocols.
-        if not fallback_text.strip():
-            return False
-        try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                client.settimeout(2.0)
-                client.connect(str(path))
-                client.sendall(fallback_text)
-                return True
-        except OSError:
-            return False
+        return False
+
+
+def _send_plain_text(socket_path: str, text: str) -> bool:
+    path = Path(socket_path)
+    if not path.exists():
+        return False
+    wire = (text + "\n").encode("utf-8")
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(2.0)
+            client.connect(str(path))
+            client.sendall(wire)
+            return True
+    except OSError:
+        return False
 
 
 def register_session(socket_path: str, cwd: str | None = None, pid: int | None = None) -> None:
@@ -136,10 +163,20 @@ def inject_text(text: str, socket_path: str | None = None) -> bool:
     message = str(text or "").strip()
     if not message:
         return False
-    return _send_payload(
-        str(socket_path or DEFAULT_SOCKET_PATH),
-        {"type": "text", "text": message, "prompt": message},
-    )
+    resolved_socket = str(socket_path or DEFAULT_SOCKET_PATH)
+
+    # Legacy claude-commander payload format.
+    legacy_payload = {"type": "text", "text": message, "prompt": message}
+    if _send_json_payload(resolved_socket, legacy_payload, allow_silent_success=True):
+        return True
+
+    # claudec-iris payload format.
+    modern_payload = {"action": "send", "text": message, "submit": True}
+    if _send_json_payload(resolved_socket, modern_payload, allow_silent_success=False):
+        return True
+
+    # Last-resort compatibility for simple plaintext socket writers.
+    return _send_plain_text(resolved_socket, message)
 
 
 def inject_image(
@@ -171,20 +208,20 @@ def inject_image(
         return False
 
     text_prompt = str(prompt or "").strip()
-    payload = {
+    resolved_socket = str(socket_path or DEFAULT_SOCKET_PATH)
+    legacy_payload = {
         "type": "image",
         "image_path": chosen_path,
         "prompt": text_prompt,
         "text": text_prompt,
     }
-    ok = _send_payload(str(socket_path or DEFAULT_SOCKET_PATH), payload)
-    if ok:
+    if _send_json_payload(resolved_socket, legacy_payload, allow_silent_success=True):
         return True
 
-    fallback = f"[Iris: Image at {chosen_path}]"
+    message = f"[Iris: Image from iPad at {chosen_path} — use Read tool to view it]"
     if text_prompt:
-        fallback = f"{fallback}\n{text_prompt}"
-    return inject_text(fallback, socket_path=socket_path)
+        message = f"{message}\n{text_prompt}"
+    return inject_text(message, socket_path=resolved_socket)
 
 
 def mark_busy() -> None:
