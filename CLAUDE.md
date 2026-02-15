@@ -96,6 +96,55 @@ curl -s -X DELETE http://dylans-ipad.local:8935/api/v1/objects                # 
 curl -s http://dylans-ipad.local:8935/api/v1/device                           # Device info
 ```
 
+## Live Session (claude-commander)
+
+Iris supports a **live session** mode where the iPad can inject messages into an interactive Claude Code terminal via [claude-commander](https://github.com/sstraus/claude-commander).
+
+### Starting a Live Session
+
+```bash
+# From the project root:
+tools/iris-session
+
+# With a specific working directory:
+tools/iris-session --cwd /path/to/project
+
+# Resume an existing session:
+tools/iris-session --resume <session_id>
+```
+
+This launches `claudec` with a fixed socket at `/tmp/iris-claude.sock`. The iPad backend can then push messages into the session.
+
+### Injected Messages
+
+Messages prefixed with `[Iris:]` come from the iPad app. If they reference an image path, **use the Read tool to view it** before responding. Example:
+
+```
+[Iris: Image from iPad at /tmp/iris/images/1234.png — use Read tool to view it]
+Please use this sketch as reference for a flowchart.
+```
+
+### Image Pipeline
+
+When an image arrives from the iPad:
+1. It's saved to `/tmp/iris/images/<timestamp>.png`
+2. A text message is injected referencing the file path
+3. Use the `Read` tool on the path to see the image (Claude Code is multimodal)
+4. Describe what you see, then use it to inform diagrams, code, or widgets
+
+### Parallel Execution with Subagents
+
+When creating **both a diagram and a widget**, use the Task tool to launch subagents simultaneously:
+
+```
+Task: iris-draw agent — "Draw a flowchart showing user login flow"
+Task: iris-widget agent — "Create a timer widget at x=200, y=0"
+```
+
+Both agents run in parallel, reducing total wait time. Available agents:
+- **iris-draw** — D2 → SVG → draw pipeline (diagrams on PencilKit canvas)
+- **iris-widget** — HTML generation → POST to objects endpoint (interactive widgets)
+
 ## Key Principles
 
 - **Diagrams = draw** — always `POST /api/v1/draw` (D2 -> SVG -> PencilKit strokes with cursor). Never use widgets for diagrams.

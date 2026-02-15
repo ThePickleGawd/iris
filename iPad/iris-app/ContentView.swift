@@ -5,6 +5,7 @@ struct ContentView: View {
     @EnvironmentObject var canvasState: CanvasState
 
     let document: Document
+    var documentStore: DocumentStore?
     var onBack: (() -> Void)?
 
     @StateObject private var objectManager = CanvasObjectManager()
@@ -81,6 +82,8 @@ struct ContentView: View {
                 onBack: onBack,
                 onAITap: { canvasState.isRecording.toggle() },
                 isRecording: canvasState.isRecording,
+                document: document,
+                documentStore: documentStore,
                 onZoomIn: { objectManager.zoom(by: 0.06) },
                 onZoomOut: { objectManager.zoom(by: -0.06) },
                 onZoomReset: { objectManager.setZoomScale(1.0) },
@@ -90,24 +93,14 @@ struct ContentView: View {
             .zIndex(20)
 
             VStack {
-                HStack {
-                    Spacer()
-                    connectionStatusIndicator
-                        .padding(.top, 54)
-                        .padding(.trailing, 18)
-                }
-                Spacer()
-            }
-            .allowsHitTesting(false)
-            .zIndex(22)
-
-            VStack {
                 Spacer()
                 HStack {
                     Spacer()
                     AIButton(isRecording: canvasState.isRecording) {
                         canvasState.isRecording.toggle()
                     }
+                    .opacity(isConnected ? 1.0 : 0.35)
+                    .disabled(!isConnected)
                     .padding(.trailing, 16)
                     .padding(.bottom, 26)
                 }
@@ -147,7 +140,11 @@ struct ContentView: View {
         }
         .onChange(of: canvasState.lastPencilDoubleTapAt) { _, tappedAt in
             guard tappedAt != nil else { return }
-            Task { await handlePencilDoubleTapExplicitAnswer() }
+            if canvasState.currentTool == .eraser {
+                canvasState.currentTool = .pen
+            } else {
+                canvasState.currentTool = .eraser
+            }
         }
         .onDisappear {
             canvasState.isRecording = false
@@ -171,28 +168,8 @@ struct ContentView: View {
         }
     }
 
-    private var connectionStatusIndicator: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(macConnectionStatus.indicatorColor)
-                .frame(width: 7, height: 7)
-            Text(macConnectionStatus.compactLabel)
-                .font(.system(size: 10.5, weight: .semibold))
-                .foregroundColor(.white.opacity(0.82))
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(
-            Capsule(style: .continuous)
-                .fill(Color(red: 0.03, green: 0.04, blue: 0.09).opacity(0.72))
-                .overlay(
-                    Capsule(style: .continuous)
-                        .strokeBorder(.white.opacity(0.14), lineWidth: 0.6)
-                )
-        )
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Mac connection")
-        .accessibilityValue(macConnectionStatus.accessibilityValue)
+    private var isConnected: Bool {
+        macConnectionStatus == .connected || macConnectionStatus == .degraded
     }
 
     private var placementTapOverlay: some View {
@@ -2215,47 +2192,4 @@ private enum MacConnectionStatus {
     case degraded
     case disconnected
     case checking
-
-    var indicatorColor: Color {
-        switch self {
-        case .connected:
-            return Color(red: 0.33, green: 0.78, blue: 0.44)
-        case .degraded:
-            return Color(red: 0.95, green: 0.72, blue: 0.24)
-        case .disconnected:
-            return Color(red: 0.89, green: 0.35, blue: 0.35)
-        case .unlinked, .checking:
-            return Color.white.opacity(0.55)
-        }
-    }
-
-    var compactLabel: String {
-        switch self {
-        case .connected:
-            return "Mac"
-        case .degraded:
-            return "Mac!"
-        case .disconnected:
-            return "Mac?"
-        case .unlinked:
-            return "Link"
-        case .checking:
-            return "Mac..."
-        }
-    }
-
-    var accessibilityValue: String {
-        switch self {
-        case .connected:
-            return "connected"
-        case .degraded:
-            return "partially connected"
-        case .disconnected:
-            return "not reachable"
-        case .unlinked:
-            return "not linked"
-        case .checking:
-            return "checking"
-        }
-    }
 }

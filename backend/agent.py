@@ -159,12 +159,13 @@ Every widget goes to exactly one device. Think about what the user is doing and 
 
 ## Spatial Placement Rules
 
-- For precise placement requests (arrows, callouts, specific regions), call `read_screenshot` first.
-- Then call `push_widget` with explicit `x`, `y`, `coordinate_space`, and `anchor`.
+- Screenshots of the Mac and/or iPad are attached inline with each message when available.
+  Use them directly for spatial awareness — no tool call needed.
+- Call `push_widget` with explicit `x`, `y`, `coordinate_space`, and `anchor`.
 - Prefer `coordinate_space = document_axis` when the request references stable canvas geometry.
 - Use `coordinate_space = viewport_offset` for "near what the user is currently viewing".
 - If coordinate snapshot includes `mostRecentStrokeCenterAxis`, prefer placing assistance widgets near that point when no explicit response area is provided.
-- If screenshot analysis yields pixel anchors and coordinate snapshot provides viewport bounds:
+- If you can identify pixel anchors in the attached screenshot and coordinate snapshot provides viewport bounds:
   map using:
   - canvas_x = viewport_min_x + (pixel_x / image_width) * viewport_width
   - canvas_y = viewport_min_y + (pixel_y / image_height) * viewport_height
@@ -172,7 +173,7 @@ Every widget goes to exactly one device. Think about what the user is doing and 
 
 ## Latency + Accuracy Contract
 
-- Minimize round trips: at most one `read_screenshot` call before first `push_widget`.
+- Screenshots are already provided — no extra round trip needed for visual context.
 - Do not ask clarifying questions unless critical ambiguity blocks safe placement.
 - If confidence is sufficient, emit widgets immediately in the same turn.
 - Prefer 1-2 high-value widgets over many low-confidence widgets.
@@ -344,24 +345,30 @@ TOOLS = [
 ]
 
 
-def run(messages: list[dict], user_message: str, *, model: str | None = None) -> dict:
+def run(
+    messages: list[dict],
+    user_message: str,
+    *,
+    model: str | None = None,
+    screenshots: dict[str, bytes] | None = None,
+) -> dict:
     """Run agent routed by model/provider, with compatibility fallback."""
     chosen_model = (model or "").strip() or DEFAULT_MODEL
     provider = _provider_for_model(chosen_model)
 
     if provider == "gemini":
         resolved = _resolve_gemini_model(chosen_model)
-        return _run_gemini(messages, user_message, model=resolved)
+        return _run_gemini(messages, user_message, model=resolved, screenshots=screenshots)
 
     if provider == "anthropic":
-        return _run_anthropic(messages, user_message, model=_resolve_anthropic_model(chosen_model))
+        return _run_anthropic(messages, user_message, model=_resolve_anthropic_model(chosen_model), screenshots=screenshots)
 
     if provider == "openai":
         try:
-            return _run_openai(messages, user_message, model=chosen_model)
+            return _run_openai(messages, user_message, model=chosen_model, screenshots=screenshots)
         except Exception as openai_exc:
             try:
-                return _run_anthropic(messages, user_message, model=None)
+                return _run_anthropic(messages, user_message, model=None, screenshots=screenshots)
             except Exception as anthropic_exc:
                 raise RuntimeError(
                     f"OpenAI failed: {openai_exc}; Anthropic fallback failed: {anthropic_exc}"
@@ -370,12 +377,12 @@ def run(messages: list[dict], user_message: str, *, model: str | None = None) ->
     # Unknown alias fallback for compatibility.
     anthropic_error: Exception | None = None
     try:
-        return _run_anthropic(messages, user_message, model=None)
+        return _run_anthropic(messages, user_message, model=None, screenshots=screenshots)
     except Exception as exc:
         anthropic_error = exc
 
     try:
-        return _run_openai(messages, user_message, model=chosen_model)
+        return _run_openai(messages, user_message, model=chosen_model, screenshots=screenshots)
     except Exception as openai_exc:
         if anthropic_error is not None:
             raise RuntimeError(
@@ -384,7 +391,61 @@ def run(messages: list[dict], user_message: str, *, model: str | None = None) ->
         raise
 
 
-def _run_openai(messages: list[dict], user_message: str, *, model: str) -> dict:
+def _build_screenshot_label(screenshots: dict[str, bytes]) -> str:
+    """Build a short note listing which screenshots are attached."""
+    names = sorted(screenshots.keys())
+    return f"[Screenshots attached: {', '.join(names)}. These show the current state of the user's screens.]"
+
+
+def _build_user_content_openai(
+    user_message: str, screenshots: dict[str, bytes] | None
+) -> str | list[dict[str, Any]]:
+    """Build the user message content for OpenAI, with optional inline images."""
+    if not screenshots:
+        return user_message
+    parts: list[dict[str, Any]] = []
+    parts.append({"type": "text", "text": f"{user_message}\n\n{_build_screenshot_label(screenshots)}"})
+    for name in sorted(screenshots.keys()):
+        b64 = base64.b64encode(screenshots[name]).decode("ascii")
+        parts.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "low"},
+        })
+    return parts
+
+
+def _build_user_content_anthropic(
+    user_message: str, screenshots: dict[str, bytes] | None
+) -> str | list[dict[str, Any]]:
+    """Build the user message content for Anthropic, with optional inline images."""
+    if not screenshots:
+        return user_message
+    blocks: list[dict[str, Any]] = []
+    blocks.append({"type": "text", "text": f"{user_message}\n\n{_build_screenshot_label(screenshots)}"})
+    for name in sorted(screenshots.keys()):
+        b64 = base64.b64encode(screenshots[name]).decode("ascii")
+        blocks.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/jpeg", "data": b64},
+        })
+    return blocks
+
+
+def _build_user_parts_gemini(
+    user_message: str, screenshots: dict[str, bytes] | None
+) -> list[dict[str, Any]]:
+    """Build the user parts list for Gemini, with optional inline images."""
+    if not screenshots:
+        return [{"text": user_message}]
+    parts: list[dict[str, Any]] = []
+    parts.append({"text": f"{user_message}\n\n{_build_screenshot_label(screenshots)}"})
+    for name in sorted(screenshots.keys()):
+        b64 = base64.b64encode(screenshots[name]).decode("ascii")
+        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
+    return parts
+
+
+def _run_openai(messages: list[dict], user_message: str, *, model: str, screenshots: dict[str, bytes] | None = None) -> dict:
     try:
         from openai import OpenAI
     except Exception as exc:
@@ -395,10 +456,11 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str) -> dict:
         raise RuntimeError("OPENAI_API_KEY is not set")
 
     client = OpenAI(api_key=api_key)
+    user_content = _build_user_content_openai(user_message, screenshots)
     msgs = (
         [{"role": "system", "content": _build_system_prompt()}]
         + messages
-        + [{"role": "user", "content": user_message}]
+        + [{"role": "user", "content": user_content}]
     )
     widgets: list[dict] = []
     tool_calls: list[dict] = []
@@ -456,7 +518,7 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str) -> dict:
     return {"text": "Tool loop exhausted. Please try again.", "widgets": widgets, "tool_calls": tool_calls}
 
 
-def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None = None) -> dict:
+def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None = None, screenshots: dict[str, bytes] | None = None) -> dict:
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not set")
@@ -468,7 +530,8 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
     )
     widgets: list[dict] = []
     tool_calls: list[dict] = []
-    anth_messages = _to_anthropic_messages(messages + [{"role": "user", "content": user_message}])
+    user_content = _build_user_content_anthropic(user_message, screenshots)
+    anth_messages = _to_anthropic_messages(messages + [{"role": "user", "content": user_content}])
 
     for _ in range(MAX_TOOL_ROUNDS):
         body = {
@@ -543,7 +606,7 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
     return {"text": "Tool loop exhausted. Please try again.", "widgets": widgets, "tool_calls": tool_calls}
 
 
-def _run_gemini(messages: list[dict], user_message: str, *, model: str) -> dict:
+def _run_gemini(messages: list[dict], user_message: str, *, model: str, screenshots: dict[str, bytes] | None = None) -> dict:
     api_key = (
         os.environ.get("GEMINI_API_KEY", "").strip()
         or os.environ.get("GOOGLE_API_KEY", "").strip()
@@ -551,7 +614,9 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str) -> dict:
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY or GOOGLE_API_KEY is not set")
 
-    contents = _to_gemini_contents(messages + [{"role": "user", "content": user_message}])
+    # Build contents: history + final user message with screenshots
+    user_parts = _build_user_parts_gemini(user_message, screenshots)
+    contents = _to_gemini_contents(messages) + [{"role": "user", "parts": user_parts}]
     widgets: list[dict[str, Any]] = []
     tool_calls: list[dict] = []
     no_candidate_count = 0
@@ -1307,60 +1372,9 @@ def _normalize_widget_args(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _handle_read_screenshot(args: dict[str, Any]) -> str:
-    device_id = str(args.get("device_id") or "").strip() or None
-    session_id = str(args.get("session_id") or "").strip() or None
-    question = str(args.get("question") or "").strip() or (
-        "Identify key visual anchors, arrows, and useful widget placement locations."
-    )
-
-    backend_dir = Path(__file__).resolve().parent
-    meta_dir = backend_dir / "data" / "screenshot_meta"
-    rows: list[dict[str, Any]] = []
-    for meta_path in meta_dir.glob("*.json"):
-        try:
-            row = json.loads(meta_path.read_text(encoding="utf-8"))
-            if not isinstance(row, dict):
-                continue
-            rows.append(row)
-        except (OSError, json.JSONDecodeError):
-            continue
-
-    if device_id:
-        rows = [row for row in rows if str(row.get("device_id") or "") == device_id]
-    if session_id:
-        rows = [row for row in rows if str(row.get("session_id") or "") == session_id]
-
-    rows.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
-    if not rows:
-        return "No screenshot available for the requested filters."
-
-    row = rows[0]
-    file_path = Path(str(row.get("file_path") or ""))
-    if not file_path.exists():
-        return f"Latest screenshot metadata found (id={row.get('id')}), but file is missing."
-
-    meta_summary = {
-        "screenshot_id": row.get("id"),
-        "device_id": row.get("device_id"),
-        "session_id": row.get("session_id"),
-        "created_at": row.get("created_at"),
-        "notes": row.get("notes"),
-    }
-    dimensions = _image_dimensions(file_path, str(row.get("mime_type") or ""))
-    if dimensions is not None:
-        meta_summary["image_width"] = dimensions[0]
-        meta_summary["image_height"] = dimensions[1]
-
-    vision_text = _analyze_screenshot_with_openai(file_path, row, question)
-    return json.dumps(
-        {
-            "metadata": meta_summary,
-            "analysis": vision_text,
-            "instruction": (
-                "Use this analysis with coordinate metadata from the request to place widgets precisely."
-            ),
-        },
-        ensure_ascii=False,
+    return (
+        "Screenshots are now provided inline with each user message. "
+        "Look at the attached images in this conversation for visual context — no tool call needed."
     )
 
 

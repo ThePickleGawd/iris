@@ -1,11 +1,136 @@
 import SwiftUI
 
-private let generalModelChoices: [(id: String, name: String)] = [
-    ("gpt-5.2-mini", "GPT-5.2 Mini"),
-    ("gpt-5.2", "GPT-5.2"),
-    ("gemini-3-flash", "Gemini 3 Flash"),
-    ("claude-opus-4-5", "Claude Opus 4.5"),
-    ("claude-sonnet-4-5", "Claude Sonnet 4.5"),
+// MARK: - Provider Logos (inline paths)
+
+private enum ModelProvider {
+    case openai
+    case google
+    case anthropic
+    case unknown
+
+    var color: Color {
+        switch self {
+        case .openai:    return .white
+        case .google:    return Color(red: 0.52, green: 0.67, blue: 0.98) // Google blue
+        case .anthropic: return Color(red: 0.85, green: 0.65, blue: 0.47) // Anthropic tan
+        case .unknown:   return Color.white.opacity(0.6)
+        }
+    }
+}
+
+private func providerFor(_ modelID: String) -> ModelProvider {
+    let l = modelID.lowercased()
+    if l.hasPrefix("gpt") || l.hasPrefix("o1") || l.hasPrefix("o3") || l.hasPrefix("o4") { return .openai }
+    if l.hasPrefix("gemini") { return .google }
+    if l.hasPrefix("claude") { return .anthropic }
+    return .unknown
+}
+
+/// OpenAI hexagon logo — simplified path at 12×12
+private struct OpenAILogo: Shape {
+    func path(in rect: CGRect) -> Path {
+        let s = min(rect.width, rect.height)
+        let cx = rect.midX, cy = rect.midY
+        var p = Path()
+        // Outer hexagon
+        for i in 0..<6 {
+            let angle = Angle.degrees(Double(i) * 60 - 90)
+            let x = cx + cos(angle.radians) * s * 0.48
+            let y = cy + sin(angle.radians) * s * 0.48
+            if i == 0 { p.move(to: CGPoint(x: x, y: y)) }
+            else { p.addLine(to: CGPoint(x: x, y: y)) }
+        }
+        p.closeSubpath()
+        // Inner spokes (3 lines from center toward alternating vertices)
+        for i in stride(from: 0, to: 6, by: 2) {
+            let angle = Angle.degrees(Double(i) * 60 - 90)
+            p.move(to: CGPoint(x: cx, y: cy))
+            p.addLine(to: CGPoint(
+                x: cx + cos(angle.radians) * s * 0.32,
+                y: cy + sin(angle.radians) * s * 0.32
+            ))
+        }
+        return p
+    }
+}
+
+/// Google four-color "G" — simplified as four arc segments
+private struct GoogleLogo: Shape {
+    func path(in rect: CGRect) -> Path {
+        let s = min(rect.width, rect.height)
+        let cx = rect.midX, cy = rect.midY
+        let r = s * 0.42
+        var p = Path()
+        // Full circle
+        p.addArc(center: CGPoint(x: cx, y: cy), radius: r,
+                 startAngle: .degrees(0), endAngle: .degrees(360), clockwise: false)
+        // Horizontal bar (the dash of the G)
+        p.move(to: CGPoint(x: cx, y: cy))
+        p.addLine(to: CGPoint(x: cx + r, y: cy))
+        return p
+    }
+}
+
+/// Anthropic — stylized "A" spark
+private struct AnthropicLogo: Shape {
+    func path(in rect: CGRect) -> Path {
+        let w = rect.width, h = rect.height
+        let ox = rect.minX, oy = rect.minY
+        var p = Path()
+        // Upward triangle "A" shape
+        p.move(to: CGPoint(x: ox + w * 0.5, y: oy + h * 0.08))
+        p.addLine(to: CGPoint(x: ox + w * 0.15, y: oy + h * 0.92))
+        p.addLine(to: CGPoint(x: ox + w * 0.35, y: oy + h * 0.92))
+        p.addLine(to: CGPoint(x: ox + w * 0.5, y: oy + h * 0.52))
+        p.addLine(to: CGPoint(x: ox + w * 0.65, y: oy + h * 0.92))
+        p.addLine(to: CGPoint(x: ox + w * 0.85, y: oy + h * 0.92))
+        p.closeSubpath()
+        return p
+    }
+}
+
+private struct ProviderIcon: View {
+    let provider: ModelProvider
+    let size: CGFloat
+
+    var body: some View {
+        Group {
+            switch provider {
+            case .openai:
+                OpenAILogo()
+                    .stroke(provider.color, lineWidth: 1.2)
+                    .frame(width: size, height: size)
+            case .google:
+                GoogleLogo()
+                    .stroke(provider.color, lineWidth: 1.4)
+                    .frame(width: size, height: size)
+            case .anthropic:
+                AnthropicLogo()
+                    .fill(provider.color)
+                    .frame(width: size, height: size)
+            case .unknown:
+                Image(systemName: "circle.grid.2x2.fill")
+                    .font(.system(size: size * 0.75))
+                    .foregroundColor(provider.color)
+            }
+        }
+    }
+}
+
+// MARK: - Model Choices
+
+private struct ModelChoice: Identifiable {
+    let id: String
+    let name: String
+    let provider: ModelProvider
+}
+
+private let generalModelChoices: [ModelChoice] = [
+    ModelChoice(id: "gpt-5.2-mini", name: "GPT-5.2 Mini", provider: .openai),
+    ModelChoice(id: "gpt-5.2", name: "GPT-5.2", provider: .openai),
+    ModelChoice(id: "gemini-3-flash", name: "Gemini 3 Flash", provider: .google),
+    ModelChoice(id: "claude-opus-4-5", name: "Claude Opus 4.5", provider: .anthropic),
+    ModelChoice(id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", provider: .anthropic),
 ]
 
 struct ToolbarView: View {
@@ -113,6 +238,7 @@ struct ToolbarView: View {
             if let doc = document, doc.isGeneralChat {
                 ModelSelectorButton(
                     modelName: doc.modelDisplayName,
+                    modelID: doc.model,
                     showPicker: $showModelPicker
                 )
                 .popover(isPresented: $showModelPicker, arrowEdge: .top) {
@@ -205,18 +331,21 @@ struct ToolbarColorCircle: View {
 
 struct ModelSelectorButton: View {
     let modelName: String
+    let modelID: String
     @Binding var showPicker: Bool
 
     var body: some View {
+        let provider = providerFor(modelID)
         Button { showPicker.toggle() } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 7) {
+                ProviderIcon(provider: provider, size: 13)
                 Text(modelName)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(.white.opacity(0.85))
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundColor(.white.opacity(0.5))
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundColor(.white.opacity(0.4))
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
@@ -239,35 +368,44 @@ struct ModelPickerPopover: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ForEach(generalModelChoices, id: \.id) { choice in
+            ForEach(generalModelChoices) { choice in
                 let isSelected = choice.id.lowercased() == currentModelID.lowercased()
                 Button {
                     onSelect(choice.id)
                 } label: {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 10) {
+                        ZStack {
+                            Circle()
+                                .fill(choice.provider.color.opacity(isSelected ? 0.22 : 0.12))
+                                .frame(width: 28, height: 28)
+                            ProviderIcon(provider: choice.provider, size: 14)
+                        }
+
                         Text(choice.name)
                             .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
                             .foregroundColor(isSelected ? .white : .white.opacity(0.8))
+
                         Spacer()
+
                         if isSelected {
                             Image(systemName: "checkmark")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(.accentColor)
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(choice.provider.color)
                         }
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
                     .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(isSelected ? Color.white.opacity(0.08) : Color.clear)
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(isSelected ? Color.white.opacity(0.07) : Color.clear)
                     )
                 }
                 .buttonStyle(.plain)
             }
         }
         .padding(8)
-        .frame(width: 220)
-        .background(Color(red: 0.1, green: 0.1, blue: 0.12))
+        .frame(width: 240)
+        .background(Color(red: 0.09, green: 0.09, blue: 0.11))
         .presentationCompactAdaptation(.popover)
     }
 }

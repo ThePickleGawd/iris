@@ -239,6 +239,9 @@ class AgentHTTPServer {
         case ("POST", "link", nil, nil):
             handleLink(req, conn)
 
+        case ("GET", "screenshot", nil, nil):
+            handleScreenshot(conn)
+
         case ("GET", "link", nil, nil):
             handleListLinked(conn)
 
@@ -867,6 +870,49 @@ class AgentHTTPServer {
         }
     }
 
+    // MARK: - Screenshot Handler
+
+    private func handleScreenshot(_ conn: NWConnection) {
+        Task { @MainActor [weak self] in
+            guard let self, let mgr = self.objectManager else {
+                self?.respondJSON(conn, status: 503, body: ["error": "Canvas not ready"])
+                return
+            }
+
+            guard let pngData = mgr.captureViewportPNGData() else {
+                self.respondJSON(conn, status: 500, body: ["error": "Failed to capture viewport"])
+                return
+            }
+
+            guard let pngImage = UIImage(data: pngData) else {
+                self.respondJSON(conn, status: 500, body: ["error": "Failed to decode captured image"])
+                return
+            }
+
+            // Resize to max 1280px on the longest side
+            let maxDimension: CGFloat = 1280
+            let resized: UIImage
+            let size = pngImage.size
+            if max(size.width, size.height) > maxDimension {
+                let scale = maxDimension / max(size.width, size.height)
+                let newSize = CGSize(width: size.width * scale, height: size.height * scale)
+                let renderer = UIGraphicsImageRenderer(size: newSize)
+                resized = renderer.image { _ in
+                    pngImage.draw(in: CGRect(origin: .zero, size: newSize))
+                }
+            } else {
+                resized = pngImage
+            }
+
+            guard let jpegData = resized.jpegData(compressionQuality: 0.7) else {
+                self.respondJSON(conn, status: 500, body: ["error": "JPEG compression failed"])
+                return
+            }
+
+            self.respondBinary(conn, status: 200, contentType: "image/jpeg", body: jpegData)
+        }
+    }
+
     // MARK: - Device & Link Handlers
 
     private func handleDeviceInfo(_ conn: NWConnection) {
@@ -991,6 +1037,22 @@ class AgentHTTPServer {
 
         var data = Data(header.utf8)
         data.append(bodyData)
+
+        conn.send(content: data, completion: .contentProcessed { _ in conn.cancel() })
+    }
+
+    private func respondBinary(_ conn: NWConnection, status: Int, contentType: String, body: Data) {
+        let header = [
+            "HTTP/1.1 \(status) \(Self.statusText(status))",
+            "Content-Type: \(contentType)",
+            "Content-Length: \(body.count)",
+            "Access-Control-Allow-Origin: *",
+            "Connection: close",
+            "", ""
+        ].joined(separator: "\r\n")
+
+        var data = Data(header.utf8)
+        data.append(body)
 
         conn.send(content: data, completion: .contentProcessed { _ in conn.cancel() })
     }
