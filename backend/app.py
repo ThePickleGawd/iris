@@ -137,7 +137,7 @@ def _delete_session(session_id: str) -> bool:
 def _make_session(
     session_id: str,
     name: str = "Untitled",
-    model: str = "gpt-5.2",
+    model: str = "gpt-5.2-mini",
     metadata: dict[str, Any] | None = None,
 ) -> dict:
     ts = _now()
@@ -165,7 +165,7 @@ def _session_summary(session: dict) -> dict:
     return {
         "id": session["id"],
         "name": session.get("name", "Untitled"),
-        "model": session.get("model", "gpt-5.2"),
+        "model": session.get("model", "gpt-5.2-mini"),
         "status": session.get("status", "active"),
         "metadata": session.get("metadata", {}),
         "created_at": session.get("created_at", ""),
@@ -191,6 +191,28 @@ def _iris_system_prompt() -> str:
         "You are Iris. Operate as a cross-device assistant, prioritize actionable outputs, "
         "and preserve consistency across Mac, iPad, and iPhone workflows."
     )
+
+
+def _session_needs_auto_name(session: dict) -> bool:
+    """Check if a session still has a generic/placeholder name."""
+    name = str(session.get("name") or "").strip()
+    session_id = str(session.get("id") or "").strip()
+    return (
+        not name
+        or name == "Untitled"
+        or name == session_id
+        or name.startswith("Chat ")
+    )
+
+
+def _auto_name_session(session: dict, user_message: str) -> None:
+    """Generate and set a brief title for the session from the first user message."""
+    try:
+        title = agent_module.generate_session_title(user_message)
+        if title and title != "Untitled":
+            session["name"] = title
+    except Exception:
+        pass
 
 
 def _spatial_context_text(metadata: dict[str, Any] | None) -> str:
@@ -1344,7 +1366,7 @@ def health() -> Any:
 def create_session() -> Any:
     body = request.get_json(silent=True) or {}
     session_id = (body.get("id") or "").strip() or str(uuid.uuid4())
-    model = (body.get("model") or body.get("agent") or "gpt-5.2").strip()
+    model = (body.get("model") or body.get("agent") or "gpt-5.2-mini").strip()
     name = (body.get("name") or "Untitled").strip()
     metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else None
 
@@ -1352,7 +1374,11 @@ def create_session() -> Any:
     if existing:
         existing["updated_at"] = _now()
         if body.get("name"):
-            existing["name"] = name
+            # Don't overwrite a meaningful name with a generic placeholder
+            existing_has_real_name = not _session_needs_auto_name(existing)
+            incoming_is_generic = _session_needs_auto_name({"name": name, "id": session_id})
+            if not (existing_has_real_name and incoming_is_generic):
+                existing["name"] = name
         if body.get("model") or body.get("agent"):
             existing["model"] = model
         if metadata is not None:
@@ -1934,7 +1960,7 @@ def v1_agent() -> Any:
     if not message:
         return jsonify({"error": "input.text is required"}), 400
 
-    model = (body.get("model") or "").strip() or "gpt-5.2"
+    model = (body.get("model") or "").strip() or "gpt-5.2-mini"
     device = body.get("device") or {}
     request_metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
     ephemeral = bool(request_metadata.get("ephemeral"))
@@ -1942,12 +1968,15 @@ def v1_agent() -> Any:
     session: dict[str, Any] | None = None
     context: list[dict[str, str]] = []
 
+    is_first_prompt = False
+
     if not ephemeral:
         # Load or create session
         session = _load_session(session_id)
         if not session:
             session = _make_session(session_id, session_id, model)
         session.setdefault("metadata", {})
+        is_first_prompt = not session.get("messages") and _session_needs_auto_name(session)
 
         # Merge provider-link metadata from request into persisted session metadata.
         conversation_id = request_metadata.get("claude_code_conversation_id")
@@ -1983,12 +2012,15 @@ def v1_agent() -> Any:
             except RuntimeError as exc:
                 return jsonify({"error": str(exc)}), 502
 
+            if is_first_prompt:
+                _auto_name_session(session, message)
             _save_session(session)
             return jsonify(
                 {
                     "kind": "message.final",
                     "request_id": body.get("request_id", ""),
                     "session_id": session_id,
+                    "session_name": session.get("name", ""),
                     "model": "claude_code",
                     "text": linked_result["text"],
                     "events": [],
@@ -2014,12 +2046,15 @@ def v1_agent() -> Any:
             except RuntimeError as exc:
                 return jsonify({"error": str(exc)}), 502
 
+            if is_first_prompt:
+                _auto_name_session(session, message)
             _save_session(session)
             return jsonify(
                 {
                     "kind": "message.final",
                     "request_id": body.get("request_id", ""),
                     "session_id": session_id,
+                    "session_name": session.get("name", ""),
                     "model": "codex",
                     "text": linked_result["text"],
                     "events": [],
@@ -2188,6 +2223,8 @@ def v1_agent() -> Any:
         })
 
     if not ephemeral and session is not None:
+        if is_first_prompt:
+            _auto_name_session(session, message)
         session["updated_at"] = ts
         _save_session(session)
 
@@ -2196,6 +2233,7 @@ def v1_agent() -> Any:
             "kind": "message.final",
             "request_id": body.get("request_id", ""),
             "session_id": session_id,
+            "session_name": session.get("name", "") if session else "",
             "model": model,
             "text": result["text"],
             "events": events,

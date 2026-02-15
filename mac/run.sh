@@ -1,15 +1,18 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
+
 cd "$(dirname "$0")"
 
-# Load repository-root .env into process env, if present.
 if [ -f "../.env" ]; then
   set -a
   source "../.env"
   set +a
 fi
 
-# Kill any existing Electron/Vite processes for this app
-lsof -ti:5180 | xargs kill -9 2>/dev/null
-pkill -f "electron \\." 2>/dev/null
+PIDS="$(lsof -ti:5180 2>/dev/null || true)"
+if [ -n "$PIDS" ]; then
+  kill $PIDS 2>/dev/null || true
+fi
+pkill -f "electron \\." 2>/dev/null || true
 
 npm run app:dev

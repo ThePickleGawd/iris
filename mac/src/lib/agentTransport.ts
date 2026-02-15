@@ -13,6 +13,7 @@ export interface AgentStreamCallbacks {
   onToolCall?: (name: string, input?: unknown) => void
   onToolResult?: (name: string, output?: unknown) => void
   onWidgetOpen?: (widget: WidgetSpec) => void
+  onSessionName?: (name: string) => void
   onError: (message: string) => void
 }
 
@@ -81,6 +82,11 @@ async function requestViaBackend(params: {
   const events = Array.isArray(root.events) ? root.events : []
   let finalText = typeof root.text === "string" ? root.text : ""
   let emittedFinal = false
+
+  // Emit auto-generated session name if present
+  if (typeof root.session_name === "string" && root.session_name.trim() && root.session_name !== "Untitled") {
+    callbacks.onSessionName?.(root.session_name as string)
+  }
 
   for (const rawEvent of events) {
     const event = normalizeIncomingEvent(rawEvent)

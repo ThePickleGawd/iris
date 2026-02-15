@@ -17,6 +17,7 @@ struct AgentWidget {
 struct AgentResponse {
     let text: String
     let widgets: [AgentWidget]
+    let sessionName: String?
 }
 
 struct ProactiveDescriptionResult {
@@ -344,11 +345,19 @@ enum AgentClient {
     private static func parseFullResponse(_ data: Data) -> AgentResponse {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             let raw = String(data: data, encoding: .utf8) ?? ""
-            return AgentResponse(text: raw, widgets: [])
+            return AgentResponse(text: raw, widgets: [], sessionName: nil)
         }
 
         // Extract text
         let text = (json["text"] as? String) ?? (json["response"] as? String) ?? ""
+
+        // Extract session name (auto-generated on first prompt)
+        let sessionName: String? = {
+            guard let name = json["session_name"] as? String,
+                  !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  name != "Untitled" else { return nil }
+            return name
+        }()
 
         // Extract widgets from events
         var widgets: [AgentWidget] = []
@@ -365,7 +374,7 @@ enum AgentClient {
             }
         }
 
-        return AgentResponse(text: text, widgets: widgets)
+        return AgentResponse(text: text, widgets: widgets, sessionName: sessionName)
     }
 
     private static func parseWidgetFromEvent(_ dict: [String: Any]) -> AgentWidget? {

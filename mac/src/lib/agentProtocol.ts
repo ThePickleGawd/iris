@@ -87,10 +87,10 @@ export function buildAgentRequestEnvelope(params: {
     context: {
       recent_messages: history.slice(-20).map((m) => ({ role: m.role, text: m.text }))
     },
-    model: settings.model || "gpt-5.2",
+    model: settings.model || "gpt-5.2-mini",
     metadata: {
-      model: settings.model || "gpt-5.2",
-      agent: settings.model || "gpt-5.2",
+      model: settings.model || "gpt-5.2-mini",
+      agent: settings.model || "gpt-5.2-mini",
       ...(settings.claudeCodeConversationId
         ? { claude_code_conversation_id: settings.claudeCodeConversationId }
         : {}),

@@ -59,12 +59,18 @@ function formatRelativeTime(iso: string): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" })
 }
 
-const modelChoices = [
-  { id: "gpt-5.2", name: "GPT-5.2", subtitle: "OpenAI general-purpose model" },
-  { id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5", subtitle: "Best for screenshot and widget workflows" },
-  { id: "claude_code", name: "Claude Code", subtitle: "Link this Iris session to a Claude Code conversation" },
-  { id: "codex", name: "Codex", subtitle: "Link this Iris session to a Codex conversation" },
-  { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", subtitle: "Fast multimodal model for lightweight tasks" },
+const chatTypeChoices = [
+  { id: "gpt-5.2-mini", name: "General", subtitle: "New chat (GPT-5.2 Mini default)" },
+  { id: "claude_code", name: "Claude Code", subtitle: "Link to a Claude Code conversation" },
+  { id: "codex", name: "Codex", subtitle: "Link to a Codex conversation" },
+] as const
+
+const generalModelChoices = [
+  { id: "gpt-5.2-mini", name: "GPT-5.2 Mini" },
+  { id: "gpt-5.2", name: "GPT-5.2" },
+  { id: "gemini-3-flash", name: "Gemini 3 Flash" },
+  { id: "claude-opus-4-5", name: "Claude Opus 4.5" },
+  { id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" },
 ] as const
 
 const CLAUDE_CODE_MODEL_ID = "claude_code"
@@ -85,6 +91,7 @@ const Queue: React.FC = () => {
   const [showClaudeCodeSessionPicker, setShowClaudeCodeSessionPicker] = useState(false)
   const [showCodexSessionPicker, setShowCodexSessionPicker] = useState(false)
   const [showSessionDrawer, setShowSessionDrawer] = useState(false)
+  const [showModelSelector, setShowModelSelector] = useState(false)
 
   const [backendBaseUrl] = useState("http://localhost:8000")
   const [backendPath] = useState("/v1/agent")
@@ -206,7 +213,7 @@ const Queue: React.FC = () => {
     }
   }, [])
 
-  const handleNewChat = useCallback(async (model = "gpt-5.2", metadata?: SessionInfo["metadata"]) => {
+  const handleNewChat = useCallback(async (model = "gpt-5.2-mini", metadata?: SessionInfo["metadata"]) => {
     const id = crypto.randomUUID().toUpperCase()
     const name = `Chat ${new Date().toLocaleTimeString()}`
 
@@ -413,6 +420,27 @@ const Queue: React.FC = () => {
     }
   }, [])
 
+  const isGeneralChat = currentSession && currentSession.model !== CLAUDE_CODE_MODEL_ID && currentSession.model !== CODEX_MODEL_ID
+
+  const currentModelDisplayName = useMemo(() => {
+    if (!currentSession) return "GPT-5.2 Mini"
+    const match = generalModelChoices.find((c) => c.id === currentSession.model)
+    return match?.name || currentSession.model || "GPT-5.2 Mini"
+  }, [currentSession?.model])
+
+  const handleModelChange = useCallback(async (newModel: string) => {
+    setShowModelSelector(false)
+    if (!currentSession) return
+    const updated = { ...currentSession, model: newModel }
+    setCurrentSession(updated)
+    setSessions((prev) => prev.map((s) => s.id === currentSession.id ? { ...s, model: newModel } : s))
+    try {
+      await window.electronAPI.setCurrentSession(updated)
+    } catch {
+      // non-fatal
+    }
+  }, [currentSession])
+
   const sortedSessions = useMemo(() => {
     return [...sessions].sort((a, b) => {
       const ta = (a as any).updated_at || (a as any).created_at || ""
@@ -537,7 +565,7 @@ const Queue: React.FC = () => {
       mode: "backend",
       backendBaseUrl: backendBaseUrl.trim(),
       backendPath: backendPath.trim() || "/v1/agent",
-      model: selectedSession?.model || "gpt-5.2",
+      model: selectedSession?.model || "gpt-5.2-mini",
       workspaceId: selectedSession?.id || workspaceId,
       sessionId: selectedSession?.id || sessionId,
       claudeCodeConversationId: selectedSession?.metadata?.claude_code_conversation_id || "",
@@ -629,6 +657,21 @@ const Queue: React.FC = () => {
             onWidgetOpen: (widget) => {
               if (activeStreamRequestRef.current !== requestId) return
               void openWidget(widget)
+            },
+            onSessionName: (name) => {
+              if (activeStreamRequestRef.current !== requestId) return
+              setSessions((prev) =>
+                prev.map((s) => s.id === selectedSession.id ? { ...s, name } : s)
+              )
+              setCurrentSession((prev) =>
+                prev && prev.id === selectedSession.id ? { ...prev, name } : prev
+              )
+              // Persist to backend
+              window.electronAPI.createSession({
+                id: selectedSession.id,
+                name,
+                model: selectedSession.model
+              }).catch(() => {})
             },
             onError: (msg) => {
               if (activeStreamRequestRef.current !== requestId) return
@@ -783,7 +826,7 @@ const Queue: React.FC = () => {
         <div className="iris-agent-picker-backdrop interactive" onClick={() => setShowModelPicker(false)}>
           <div className="iris-agent-picker" onClick={(e) => e.stopPropagation()}>
             <div className="iris-agent-picker-title">New Chat</div>
-            {modelChoices.map((choice) => (
+            {chatTypeChoices.map((choice) => (
               <button
                 key={choice.id}
                 type="button"
@@ -913,6 +956,37 @@ const Queue: React.FC = () => {
                 className={`iris-session-chevron ${showSessionDrawer ? "open" : ""}`}
               />
             </button>
+            {isGeneralChat && (
+              <div className="iris-model-selector-wrap">
+                <button
+                  type="button"
+                  className="iris-model-selector-btn interactive"
+                  onClick={() => setShowModelSelector((v) => !v)}
+                  title="Change model"
+                >
+                  <span className="iris-model-selector-label">{currentModelDisplayName}</span>
+                  <ChevronDown size={8} className={`iris-model-selector-chevron ${showModelSelector ? "open" : ""}`} />
+                </button>
+                {showModelSelector && (
+                  <>
+                  <div className="iris-model-selector-backdrop" onClick={() => setShowModelSelector(false)} />
+                  <div className="iris-model-selector-dropdown interactive">
+                    {generalModelChoices.map((choice) => (
+                      <button
+                        key={choice.id}
+                        type="button"
+                        className={`iris-model-selector-option ${currentSession?.model === choice.id ? "active" : ""}`}
+                        onClick={() => handleModelChange(choice.id)}
+                      >
+                        <span>{choice.name}</span>
+                        {currentSession?.model === choice.id && <span className="iris-model-check">✓</span>}
+                      </button>
+                    ))}
+                  </div>
+                  </>
+                )}
+              </div>
+            )}
             <button
               type="button"
               className="iris-toggle interactive"
@@ -933,17 +1007,18 @@ const Queue: React.FC = () => {
                   sortedSessions.map((s) => {
                     const isActive = currentSession?.id === s.id
                     const ts = (s as any).updated_at || (s as any).created_at || ""
+                    const modelMatch = generalModelChoices.find((c) => c.id === s.model)
                     const modelLabel = s.model === CLAUDE_CODE_MODEL_ID
                       ? "Claude Code"
                       : s.model === CODEX_MODEL_ID
                         ? "Codex"
+                      : modelMatch
+                        ? modelMatch.name
                       : s.model?.includes("claude")
                         ? "Claude"
                       : s.model?.includes("gemini")
                         ? "Gemini"
-                        : s.model === "gpt-5.2"
-                          ? "GPT-5.2"
-                          : s.model || "GPT-5.2"
+                        : s.model || "GPT-5.2 Mini"
                     return (
                       <button
                         key={s.id}
