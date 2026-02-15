@@ -15,7 +15,6 @@ struct ContentView: View {
     var onBack: (() -> Void)?
 
     @StateObject private var objectManager = CanvasObjectManager()
-    @StateObject private var cursor = AgentCursorController()
     @StateObject private var audioService = AudioCaptureService()
     @StateObject private var transcriber = SpeechTranscriber()
 
@@ -80,7 +79,7 @@ struct ContentView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            CanvasView(document: document, objectManager: objectManager, cursor: cursor)
+            CanvasView(document: document, objectManager: objectManager)
                 .environmentObject(canvasState)
 
             SiriGlowView(isActive: canvasState.isRecording, audioLevel: audioService.audioLevel)
@@ -113,9 +112,6 @@ struct ContentView: View {
                 }
             }
             .zIndex(21)
-
-            AgentCursorView(controller: cursor)
-                .zIndex(50)
 
             if awaitingPlacementTap {
                 placementTapOverlay

@@ -6,7 +6,6 @@ struct CanvasView: UIViewRepresentable {
     @EnvironmentObject var canvasState: CanvasState
     let document: Document?
     let objectManager: CanvasObjectManager
-    let cursor: AgentCursorController
 
     func makeUIView(context: Context) -> NoteCanvasView {
         let view = NoteCanvasView()
@@ -35,7 +34,7 @@ struct CanvasView: UIViewRepresentable {
         }
 
         applyTool(to: view)
-        objectManager.attach(to: view, cursor: cursor)
+        objectManager.attach(to: view)
 
         let pencilInteraction = UIPencilInteraction()
         pencilInteraction.delegate = context.coordinator

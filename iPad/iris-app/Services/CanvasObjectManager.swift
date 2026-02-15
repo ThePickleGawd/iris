@@ -287,13 +287,11 @@ final class CanvasObjectManager: ObservableObject {
     let httpServer = AgentHTTPServer.shared
 
     private weak var canvasView: NoteCanvasView?
-    private weak var cursor: AgentCursorController?
     private var mostRecentStrokeBoundsCanvas: CGRect?
     private var mostRecentStrokeUpdatedAt: Date?
 
-    func attach(to canvas: NoteCanvasView, cursor: AgentCursorController) {
+    func attach(to canvas: NoteCanvasView) {
         self.canvasView = canvas
-        self.cursor = cursor
         httpServer.start(objectManager: self)
     }
 
@@ -429,14 +427,6 @@ final class CanvasObjectManager: ObservableObject {
         )
         guard let canvasView else { return object }
 
-        if animated {
-            let widgetCenterCanvas = CGPoint(
-                x: position.x + (size.width * 0.5),
-                y: position.y + (size.height * 0.5)
-            )
-            await cursorNavigateAndClick(to: widgetCenterCanvas)
-        }
-
         let widget = CanvasObjectWebView(id: object.id, size: size, htmlContent: html)
         widget.frame = CGRect(origin: position, size: size)
         widget.alpha = animated ? 0 : 1
@@ -466,8 +456,6 @@ final class CanvasObjectManager: ObservableObject {
                 widget.alpha = 1
                 widget.transform = .identity
             }
-            try? await Task.sleep(nanoseconds: 220_000_000)
-            cursor?.disappear()
         }
 
         return object
@@ -616,44 +604,21 @@ final class CanvasObjectManager: ObservableObject {
     }
 
     func cursorAppear(at point: CGPoint) {
-        guard let canvasView, let cursor else { return }
-        cursor.appear(at: canvasView.screenPoint(forCanvasPoint: point))
+        _ = point
     }
 
     func cursorMove(to point: CGPoint) {
-        guard let canvasView, let cursor else { return }
-        cursor.moveTo(canvasView.screenPoint(forCanvasPoint: point), duration: 0.28)
+        _ = point
     }
 
-    func cursorClick() { cursor?.click() }
-    func cursorDisappear() { cursor?.disappear() }
+    func cursorClick() {}
+    func cursorDisappear() {}
 
     /// Moves the cursor to a canvas-space target, clicks, then returns.
     /// If the cursor is already visible it glides from its current position;
     /// otherwise it appears at a slight offset first.
     func cursorNavigateAndClick(to canvasPoint: CGPoint) async {
-        guard let canvasView, let cursor else { return }
-
-        let targetScreen = canvasView.screenPoint(forCanvasPoint: canvasPoint)
-
-        if cursor.isVisible {
-            // Glide from wherever the cursor currently is
-            cursor.moveTo(targetScreen, duration: 0.28)
-            try? await Task.sleep(nanoseconds: 300_000_000)
-        } else {
-            // Appear near target, then glide in
-            let startScreen = CGPoint(
-                x: targetScreen.x - 48,
-                y: targetScreen.y - 56
-            )
-            cursor.appear(at: startScreen)
-            try? await Task.sleep(nanoseconds: 140_000_000)
-            cursor.moveTo(targetScreen, duration: 0.24)
-            try? await Task.sleep(nanoseconds: 260_000_000)
-        }
-
-        cursor.click()
-        try? await Task.sleep(nanoseconds: 120_000_000)
+        _ = canvasPoint
     }
 
     /// Captures the current visible canvas viewport as PNG data.
@@ -691,13 +656,6 @@ final class CanvasObjectManager: ObservableObject {
             return nil
         }
 
-        // Cursor navigates to image center, clicks, then image appears
-        let imageCenter = CGPoint(
-            x: position.x + scaledSize.width * 0.5,
-            y: position.y + scaledSize.height * 0.5
-        )
-        await cursorNavigateAndClick(to: imageCenter)
-
         let id = UUID()
         let imageView = UIImageView(image: image)
         imageView.frame = CGRect(origin: position, size: scaledSize)
@@ -713,8 +671,6 @@ final class CanvasObjectManager: ObservableObject {
             imageView.alpha = 1
             imageView.transform = .identity
         }
-        try? await Task.sleep(nanoseconds: 180_000_000)
-        cursor?.disappear()
 
         let object = CanvasObject(
             id: id,
@@ -826,33 +782,36 @@ final class CanvasObjectManager: ObservableObject {
         strokeWidth: CGFloat = 3,
         speed: Double = 1.0
     ) async -> Int {
-        guard let canvasView, let cursor else { return 0 }
+        guard let canvasView else { return 0 }
+        _ = speed
 
         let parser = SVGPathParser()
         let result = parser.parse(svgString: svg)
         guard !result.strokes.isEmpty else { return 0 }
         let normalizedStrokes = normalizeStrokesToLocalOrigin(result.strokes)
 
-        isAnimatingDraw = true
-        defer { isAnimatingDraw = false }
-
-        let animator = SVGStrokeAnimator(
-            canvasView: canvasView,
-            cursor: cursor,
-            objectManager: self
-        )
-
-        await animator.animate(
-            strokes: normalizedStrokes,
-            origin: position,
-            scale: scale,
-            color: color,
-            strokeWidth: strokeWidth,
-            speed: speed
-        )
+        var drawing = canvasView.drawing
+        let ink = PKInk(.pen, color: color)
+        for stroke in normalizedStrokes where stroke.points.count >= 2 {
+            let width = (stroke.strokeWidth ?? strokeWidth) * scale
+            let controlPoints = stroke.points.enumerated().map { idx, pt in
+                PKStrokePoint(
+                    location: CGPoint(x: position.x + pt.x * scale, y: position.y + pt.y * scale),
+                    timeOffset: TimeInterval(idx) / 60.0,
+                    size: CGSize(width: width, height: width),
+                    opacity: 1,
+                    force: 1,
+                    azimuth: 0,
+                    altitude: .pi / 2
+                )
+            }
+            let path = PKStrokePath(controlPoints: controlPoints, creationDate: Date())
+            drawing.strokes.append(PKStroke(ink: ink, path: path))
+        }
+        canvasView.drawing = drawing
 
         // Trigger final save by notifying drawing changed
-        if let recentStroke = canvasView.drawing.strokes.last {
+        if let recentStroke = drawing.strokes.last {
             updateMostRecentStrokeBounds(recentStroke.renderBounds)
         }
 
@@ -917,11 +876,6 @@ final class CanvasObjectManager: ObservableObject {
         var maxLineWidth: CGFloat = 0
         let batchSize = max(1, wordsPerBatch)
 
-        if let cursor {
-            let startPoint = canvasView.screenPoint(forCanvasPoint: CGPoint(x: position.x, y: position.y + 12))
-            cursor.appear(at: startPoint)
-        }
-
         for lineWords in lines {
             if lineWords.isEmpty {
                 cursorY += lineHeight
@@ -935,11 +889,6 @@ final class CanvasObjectManager: ObservableObject {
                 var segment = segmentWords.joined(separator: " ")
                 if end < lineWords.count {
                     segment += " "
-                }
-
-                if let cursor {
-                    let target = canvasView.screenPoint(forCanvasPoint: CGPoint(x: lineX, y: cursorY + 12))
-                    cursor.moveTo(target, duration: 0.08)
                 }
 
                 let rendered = HandwrittenInkRenderer.render(
@@ -966,8 +915,6 @@ final class CanvasObjectManager: ObservableObject {
 
             cursorY += lineHeight
         }
-
-        cursor?.disappear()
         return CGSize(
             width: min(normalizedMaxWidth, maxLineWidth),
             height: max(lineHeight, cursorY - position.y)
