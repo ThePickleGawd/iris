@@ -697,6 +697,118 @@ final class CanvasObjectManager: ObservableObject {
         return result.size
     }
 
+    @discardableResult
+    func drawHandwrittenTextStreaming(
+        _ text: String,
+        at position: CGPoint,
+        maxWidth: CGFloat = 420,
+        color: UIColor = UIColor(red: 0.10, green: 0.12, blue: 0.16, alpha: 1),
+        wordsPerBatch: Int = 2
+    ) async -> CGSize {
+        guard let canvasView else { return .zero }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .zero }
+
+        let font = UIFont(name: "BradleyHandITCTT-Bold", size: 30)
+            ?? UIFont.italicSystemFont(ofSize: 30)
+        let lineHeight = font.lineHeight * 1.2
+        let normalizedMaxWidth = max(140, maxWidth)
+        let lines = streamingWrappedLines(trimmed, font: font, maxWidth: normalizedMaxWidth)
+        guard !lines.isEmpty else { return .zero }
+
+        var drawing = canvasView.drawing
+        var cursorY = position.y
+        var maxLineWidth: CGFloat = 0
+        let batchSize = max(1, wordsPerBatch)
+
+        if let cursor {
+            let startPoint = canvasView.screenPoint(forCanvasPoint: CGPoint(x: position.x, y: position.y + 12))
+            cursor.appear(at: startPoint)
+        }
+
+        for lineWords in lines {
+            if lineWords.isEmpty {
+                cursorY += lineHeight
+                continue
+            }
+
+            var lineX = position.x
+            for start in stride(from: 0, to: lineWords.count, by: batchSize) {
+                let end = min(start + batchSize, lineWords.count)
+                let segmentWords = Array(lineWords[start..<end])
+                var segment = segmentWords.joined(separator: " ")
+                if end < lineWords.count {
+                    segment += " "
+                }
+
+                if let cursor {
+                    let target = canvasView.screenPoint(forCanvasPoint: CGPoint(x: lineX, y: cursorY + 12))
+                    cursor.moveTo(target, duration: 0.08)
+                }
+
+                let rendered = HandwrittenInkRenderer.render(
+                    text: segment,
+                    origin: CGPoint(x: lineX, y: cursorY),
+                    maxWidth: max(120, normalizedMaxWidth - (lineX - position.x)),
+                    color: color
+                )
+
+                if !rendered.strokes.isEmpty {
+                    for stroke in rendered.strokes {
+                        drawing.strokes.append(stroke)
+                    }
+                    canvasView.drawing = drawing
+                    if let recentStroke = drawing.strokes.last {
+                        updateMostRecentStrokeBounds(recentStroke.renderBounds)
+                    }
+                }
+
+                lineX += (segment as NSString).size(withAttributes: [.font: font]).width
+                maxLineWidth = max(maxLineWidth, lineX - position.x)
+                try? await Task.sleep(nanoseconds: 35_000_000)
+            }
+
+            cursorY += lineHeight
+        }
+
+        cursor?.disappear()
+        return CGSize(
+            width: min(normalizedMaxWidth, maxLineWidth),
+            height: max(lineHeight, cursorY - position.y)
+        )
+    }
+
+    private func streamingWrappedLines(_ text: String, font: UIFont, maxWidth: CGFloat) -> [[String]] {
+        var output: [[String]] = []
+        let rawLines = text.components(separatedBy: .newlines)
+        for raw in rawLines {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty {
+                output.append([])
+                continue
+            }
+            var currentWords: [String] = []
+            var currentText = ""
+            for token in line.split(separator: " ") {
+                let word = String(token)
+                let candidate = currentText.isEmpty ? word : "\(currentText) \(word)"
+                let width = (candidate as NSString).size(withAttributes: [.font: font]).width
+                if width <= maxWidth || currentWords.isEmpty {
+                    currentWords.append(word)
+                    currentText = candidate
+                } else {
+                    output.append(currentWords)
+                    currentWords = [word]
+                    currentText = word
+                }
+            }
+            if !currentWords.isEmpty {
+                output.append(currentWords)
+            }
+        }
+        return output
+    }
+
     private func normalizeStrokesToLocalOrigin(_ strokes: [SVGStroke]) -> [SVGStroke] {
         var minX = CGFloat.greatestFiniteMagnitude
         var minY = CGFloat.greatestFiniteMagnitude

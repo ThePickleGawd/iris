@@ -48,71 +48,19 @@ enum AgentClient {
         claudeCodeCWD: String? = nil,
         serverURL: URL
     ) async throws -> AgentResponse {
-        let url = serverURL
-            .appendingPathComponent("v1")
-            .appendingPathComponent("agent")
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-
-        let requestID = "\(Int(Date().timeIntervalSince1970 * 1000))-\(UUID().uuidString.prefix(8))"
-        var metadata: [String: Any] = [
-            "model": model,
-            "agent": model,
-            "ephemeral": ephemeral,
-            "coordinate_snapshot": coordinateSnapshot ?? [:]
-        ]
-        if let codexConversationID {
-            let value = codexConversationID.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !value.isEmpty {
-                metadata["codex_conversation_id"] = value
-            }
-        }
-        if let codexCWD {
-            let value = codexCWD.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !value.isEmpty {
-                metadata["codex_cwd"] = value
-            }
-        }
-        if let claudeCodeConversationID {
-            let value = claudeCodeConversationID.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !value.isEmpty {
-                metadata["claude_code_conversation_id"] = value
-            }
-        }
-        if let claudeCodeCWD {
-            let value = claudeCodeCWD.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !value.isEmpty {
-                metadata["claude_code_cwd"] = value
-            }
-        }
-
-        let payload: [String: Any] = [
-            "protocol_version": "1.0",
-            "kind": "agent.request",
-            "request_id": requestID,
-            "timestamp": ISO8601DateFormatter().string(from: Date()),
-            "workspace_id": chatID,
-            "session_id": chatID,
-            "device": [
-                "id": getOrCreateDeviceID(),
-                "name": UIDevice.current.name,
-                "platform": "iPadOS",
-                "app_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
-            ],
-            "input": [
-                "type": "text",
-                "text": message
-            ],
-            "context": [
-                "recent_messages": []
-            ],
-            "model": model,
-            "metadata": metadata
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        let request = try makeAgentRequest(
+            message: message,
+            model: model,
+            chatID: chatID,
+            ephemeral: ephemeral,
+            coordinateSnapshot: coordinateSnapshot,
+            codexConversationID: codexConversationID,
+            codexCWD: codexCWD,
+            claudeCodeConversationID: claudeCodeConversationID,
+            claudeCodeCWD: claudeCodeCWD,
+            serverURL: serverURL,
+            stream: false
+        )
 
         let (data, response) = try await session.data(for: request)
 
@@ -125,6 +73,108 @@ enum AgentClient {
         }
 
         return parseFullResponse(data)
+    }
+
+    /// Send a message and stream response deltas over SSE/chunked transfer.
+    static func sendMessageStreaming(
+        _ message: String,
+        model: String,
+        chatID: String,
+        ephemeral: Bool = false,
+        coordinateSnapshot: [String: Any]? = nil,
+        codexConversationID: String? = nil,
+        codexCWD: String? = nil,
+        claudeCodeConversationID: String? = nil,
+        claudeCodeCWD: String? = nil,
+        serverURL: URL,
+        onDelta: ((String) async -> Void)? = nil
+    ) async throws -> AgentResponse {
+        let request = try makeAgentRequest(
+            message: message,
+            model: model,
+            chatID: chatID,
+            ephemeral: ephemeral,
+            coordinateSnapshot: coordinateSnapshot,
+            codexConversationID: codexConversationID,
+            codexCWD: codexCWD,
+            claudeCodeConversationID: claudeCodeConversationID,
+            claudeCodeCWD: claudeCodeCWD,
+            serverURL: serverURL,
+            stream: true
+        )
+
+        let (bytes, response) = try await session.bytes(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw AgentClientError.invalidResponse
+        }
+
+        if !(200...299).contains(http.statusCode) {
+            var body = ""
+            var seen = 0
+            for try await line in bytes.lines {
+                body += line + "\n"
+                seen += 1
+                if seen >= 20 { break }
+            }
+            throw AgentClientError.serverError(
+                statusCode: http.statusCode,
+                body: body.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+
+        var eventName = ""
+        var dataLines: [String] = []
+        var finalResponse: AgentResponse?
+        var fallbackText = ""
+
+        for try await rawLine in bytes.lines {
+            let line = String(rawLine)
+            if line.hasPrefix("event:") {
+                eventName = line.dropFirst("event:".count).trimmingCharacters(in: .whitespaces)
+                continue
+            }
+            if line.hasPrefix("data:") {
+                let payload = line.dropFirst("data:".count).trimmingCharacters(in: .whitespaces)
+                dataLines.append(payload)
+                continue
+            }
+            if line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if dataLines.isEmpty {
+                    eventName = ""
+                    continue
+                }
+                let payload = dataLines.joined(separator: "\n")
+                dataLines.removeAll(keepingCapacity: true)
+
+                switch eventName {
+                case "delta":
+                    if let data = payload.data(using: .utf8),
+                       let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let chunk = obj["text"] as? String,
+                       !chunk.isEmpty {
+                        fallbackText += chunk
+                        if let onDelta {
+                            await onDelta(chunk)
+                        }
+                    }
+                case "final":
+                    if let data = payload.data(using: .utf8) {
+                        finalResponse = parseFullResponse(data)
+                    }
+                case "error":
+                    throw AgentClientError.serverError(statusCode: 502, body: payload)
+                default:
+                    break
+                }
+
+                eventName = ""
+            }
+        }
+
+        if let finalResponse {
+            return finalResponse
+        }
+        return AgentResponse(text: fallbackText, widgets: [])
     }
 
     /// Register a session with the agents server so it appears on the Mac.
@@ -200,6 +250,96 @@ enum AgentClient {
     }
 
     // MARK: - Parsing
+
+    private static func makeAgentRequest(
+        message: String,
+        model: String,
+        chatID: String,
+        ephemeral: Bool,
+        coordinateSnapshot: [String: Any]?,
+        codexConversationID: String?,
+        codexCWD: String?,
+        claudeCodeConversationID: String?,
+        claudeCodeCWD: String?,
+        serverURL: URL,
+        stream: Bool
+    ) throws -> URLRequest {
+        var endpoint = serverURL
+            .appendingPathComponent("v1")
+            .appendingPathComponent("agent")
+        if stream, var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) {
+            var items = components.queryItems ?? []
+            items.append(URLQueryItem(name: "stream", value: "1"))
+            components.queryItems = items
+            if let streamURL = components.url {
+                endpoint = streamURL
+            }
+        }
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(stream ? "text/event-stream" : "application/json", forHTTPHeaderField: "Accept")
+
+        let requestID = "\(Int(Date().timeIntervalSince1970 * 1000))-\(UUID().uuidString.prefix(8))"
+        var metadata: [String: Any] = [
+            "model": model,
+            "agent": model,
+            "ephemeral": ephemeral,
+            "coordinate_snapshot": coordinateSnapshot ?? [:]
+        ]
+        if let codexConversationID {
+            let value = codexConversationID.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty {
+                metadata["codex_conversation_id"] = value
+            }
+        }
+        if let codexCWD {
+            let value = codexCWD.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty {
+                metadata["codex_cwd"] = value
+            }
+        }
+        if let claudeCodeConversationID {
+            let value = claudeCodeConversationID.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty {
+                metadata["claude_code_conversation_id"] = value
+            }
+        }
+        if let claudeCodeCWD {
+            let value = claudeCodeCWD.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty {
+                metadata["claude_code_cwd"] = value
+            }
+        }
+
+        let payload: [String: Any] = [
+            "protocol_version": "1.0",
+            "kind": "agent.request",
+            "request_id": requestID,
+            "timestamp": ISO8601DateFormatter().string(from: Date()),
+            "workspace_id": chatID,
+            "session_id": chatID,
+            "device": [
+                "id": getOrCreateDeviceID(),
+                "name": UIDevice.current.name,
+                "platform": "iPadOS",
+                "app_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
+            ],
+            "input": [
+                "type": "text",
+                "text": message
+            ],
+            "context": [
+                "recent_messages": []
+            ],
+            "model": model,
+            "metadata": metadata,
+            "stream": stream
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        return request
+    }
 
     private static func parseFullResponse(_ data: Data) -> AgentResponse {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {

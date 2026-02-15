@@ -45,6 +45,7 @@ struct ContentView: View {
     private let proactiveForceSuggestAfterTicks = 4
     private let screenshotAIProcessingEnabled = false
     private let aiOutputInkEnabled = true
+    private let aiOutputStreamingEnabled = true
     private let proactiveTriageModel = "gemini-2.0-flash"
     private let proactiveWidgetModel = "gemini-2.0-flash"
     private var sessionID: String { document.resolvedSessionID }
@@ -339,23 +340,23 @@ struct ContentView: View {
                     serverURL: serverURL
                 )
 
-            if aiOutputInkEnabled {
-                let widgetInkAnchors = Dictionary(
-                    uniqueKeysWithValues: agentResponse.widgets.enumerated().map { idx, widget in
-                        let origin = (idx == 0)
-                            ? preferredWidgetOrigin(for: widget, anchorCanvas: placementAnchor)
-                            : widgetOrigin(for: widget)
-                        return (widget.id, origin)
-                    }
-                )
-                await renderAgentOutputAsHandwriting(
-                    response: agentResponse,
-                    prefix: screenshotUploadWarning,
-                    startAnchor: placementAnchor,
-                    widgetAnchors: widgetInkAnchors
-                )
-                await MainActor.run {
-                    lastResponse = screenshotUploadWarning
+                if aiOutputInkEnabled {
+                    let widgetInkAnchors = Dictionary(
+                        uniqueKeysWithValues: agentResponse.widgets.enumerated().map { idx, widget in
+                            let origin = (idx == 0)
+                                ? preferredWidgetOrigin(for: widget, anchorCanvas: placementAnchor)
+                                : widgetOrigin(for: widget)
+                            return (widget.id, origin)
+                        }
+                    )
+                    await renderAgentOutputAsHandwriting(
+                        response: agentResponse,
+                        prefix: screenshotUploadWarning,
+                        startAnchor: placementAnchor,
+                        widgetAnchors: widgetInkAnchors
+                    )
+                    await MainActor.run {
+                        lastResponse = screenshotUploadWarning
                         isProcessing = false
                         if screenshotUploadWarning != nil {
                             autoDismissResponse()
@@ -861,11 +862,20 @@ struct ContentView: View {
 
             for block in flowBlocks where !block.isEmpty {
                 let clipped = String(block.prefix(900))
-                let drawn = await objectManager.drawHandwrittenText(
-                    clipped,
-                    at: anchor,
-                    maxWidth: maxWidth
-                )
+                let drawn: CGSize
+                if aiOutputStreamingEnabled {
+                    drawn = await objectManager.drawHandwrittenTextStreaming(
+                        clipped,
+                        at: anchor,
+                        maxWidth: maxWidth
+                    )
+                } else {
+                    drawn = await objectManager.drawHandwrittenText(
+                        clipped,
+                        at: anchor,
+                        maxWidth: maxWidth
+                    )
+                }
                 anchor.y += max(40, drawn.height + 18)
             }
             return
@@ -880,22 +890,39 @@ struct ContentView: View {
 
             for block in textBlocks {
                 let clipped = String(block.prefix(900))
-                let drawn = await objectManager.drawHandwrittenText(
-                    clipped,
-                    at: anchor,
-                    maxWidth: maxWidth
-                )
+                let drawn: CGSize
+                if aiOutputStreamingEnabled {
+                    drawn = await objectManager.drawHandwrittenTextStreaming(
+                        clipped,
+                        at: anchor,
+                        maxWidth: maxWidth
+                    )
+                } else {
+                    drawn = await objectManager.drawHandwrittenText(
+                        clipped,
+                        at: anchor,
+                        maxWidth: maxWidth
+                    )
+                }
                 anchor.y += max(48, drawn.height + 24)
             }
         }
 
         for widget in widgetBlocks {
             let clipped = String(widget.text.prefix(900))
-            _ = await objectManager.drawHandwrittenText(
-                clipped,
-                at: widget.anchor,
-                maxWidth: 420
-            )
+            if aiOutputStreamingEnabled {
+                _ = await objectManager.drawHandwrittenTextStreaming(
+                    clipped,
+                    at: widget.anchor,
+                    maxWidth: 420
+                )
+            } else {
+                _ = await objectManager.drawHandwrittenText(
+                    clipped,
+                    at: widget.anchor,
+                    maxWidth: 420
+                )
+            }
         }
     }
 
