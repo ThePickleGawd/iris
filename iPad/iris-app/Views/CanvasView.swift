@@ -30,6 +30,7 @@ struct CanvasView: UIViewRepresentable {
 
         if let document {
             view.drawing = document.loadDrawing()
+            _ = view.expandCanvasIfNeeded(for: view.drawing.bounds, allowLeadingExpansion: false)
             canvasState.drawing = view.drawing
         }
 
@@ -102,7 +103,6 @@ struct CanvasView: UIViewRepresentable {
     final class Coordinator: NSObject, PKCanvasViewDelegate, UIPencilInteractionDelegate {
         var parent: CanvasView
         private var saveTimer: Timer?
-        private var squeezePreviousTool: DrawingTool?
 
         init(_ parent: CanvasView) {
             self.parent = parent
@@ -145,6 +145,13 @@ struct CanvasView: UIViewRepresentable {
             }
         }
 
+        func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
+            guard let noteCanvas = canvasView as? NoteCanvasView else { return }
+            guard let recentStroke = canvasView.drawing.strokes.last else { return }
+            let adjustedBounds = noteCanvas.expandCanvasIfNeeded(for: recentStroke.renderBounds)
+            parent.objectManager.updateMostRecentStrokeBounds(adjustedBounds)
+        }
+
         // MARK: - Finger tap gestures
 
         @objc func handleTwoFingerTap() {
@@ -172,15 +179,9 @@ struct CanvasView: UIViewRepresentable {
             DispatchQueue.main.async {
                 switch squeeze.phase {
                 case .began, .changed:
-                    if self.squeezePreviousTool == nil {
-                        self.squeezePreviousTool = self.parent.canvasState.currentTool
-                        self.parent.canvasState.currentTool = .eraser
-                    }
+                    self.parent.canvasState.isRecording = true
                 case .ended, .cancelled:
-                    if let previousTool = self.squeezePreviousTool {
-                        self.parent.canvasState.currentTool = previousTool
-                        self.squeezePreviousTool = nil
-                    }
+                    self.parent.canvasState.isRecording = false
                 @unknown default:
                     break
                 }
@@ -198,6 +199,8 @@ struct CanvasView: UIViewRepresentable {
 
 final class NoteCanvasView: PKCanvasView {
     private let widgetOverlay = WidgetOverlayView()
+    private let edgeTriggerInset: CGFloat = 540
+    private let expansionChunk: CGFloat = 1_536
 
     weak var objectManager: CanvasObjectManager?
 
@@ -221,8 +224,8 @@ final class NoteCanvasView: PKCanvasView {
     }
 
     func configureForInfiniteCanvas() {
-        let size = CanvasState.canvasSize
-        contentSize = CGSize(width: size, height: size)
+        CanvasState.resetCanvasGeometry()
+        contentSize = CanvasState.canvasContentSize
         widgetOverlay.frame = CGRect(origin: .zero, size: bounds.size)
         updateWidgetOverlayTransform()
     }
@@ -256,6 +259,58 @@ final class NoteCanvasView: PKCanvasView {
         let ox = contentOffset.x + adjustedContentInset.left
         let oy = contentOffset.y + adjustedContentInset.top
         widgetOverlay.transform = CGAffineTransform(a: z, b: 0, c: 0, d: z, tx: -ox * z, ty: -oy * z)
+    }
+
+    @discardableResult
+    func expandCanvasIfNeeded(
+        for strokeBounds: CGRect,
+        allowLeadingExpansion: Bool = true
+    ) -> CGRect {
+        guard strokeBounds.width > 0, strokeBounds.height > 0 else { return strokeBounds }
+
+        let leftNeed = max(0, edgeTriggerInset - strokeBounds.minX)
+        let rightNeed = max(0, strokeBounds.maxX - (contentSize.width - edgeTriggerInset))
+        let topNeed = max(0, edgeTriggerInset - strokeBounds.minY)
+        let bottomNeed = max(0, strokeBounds.maxY - (contentSize.height - edgeTriggerInset))
+
+        let addLeft = allowLeadingExpansion ? roundedExpansionAmount(for: leftNeed) : 0
+        let addRight = roundedExpansionAmount(for: rightNeed)
+        let addTop = allowLeadingExpansion ? roundedExpansionAmount(for: topNeed) : 0
+        let addBottom = roundedExpansionAmount(for: bottomNeed)
+
+        guard addLeft > 0 || addRight > 0 || addTop > 0 || addBottom > 0 else {
+            return strokeBounds
+        }
+
+        let translation = CGPoint(x: addLeft, y: addTop)
+        if translation != .zero {
+            drawing = drawing.transformed(using: CGAffineTransform(translationX: translation.x, y: translation.y))
+            objectManager?.translateContent(by: translation)
+            CanvasState.shiftCanvasCenter(by: translation)
+        }
+
+        let updatedContentSize = CGSize(
+            width: contentSize.width + addLeft + addRight,
+            height: contentSize.height + addTop + addBottom
+        )
+        contentSize = updatedContentSize
+        CanvasState.updateCanvasContentSize(updatedContentSize)
+
+        if translation != .zero {
+            let adjustedOffset = CGPoint(
+                x: contentOffset.x + (translation.x * zoomScale),
+                y: contentOffset.y + (translation.y * zoomScale)
+            )
+            setContentOffset(adjustedOffset, animated: false)
+        }
+
+        updateWidgetOverlayTransform()
+        return strokeBounds.offsetBy(dx: translation.x, dy: translation.y)
+    }
+
+    private func roundedExpansionAmount(for requiredMargin: CGFloat) -> CGFloat {
+        guard requiredMargin > 0 else { return 0 }
+        return ceil(requiredMargin / expansionChunk) * expansionChunk
     }
 
     override func layoutSubviews() {

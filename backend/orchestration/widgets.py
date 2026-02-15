@@ -67,8 +67,9 @@ def normalize_widget_specs(raw_widgets: list[Any], *, fallback_target: str) -> l
         if anchor not in VALID_ANCHORS:
             anchor = "top_left"
 
-        normalized.append({
+        entry: dict[str, Any] = {
             "id": str(raw.get("widget_id") or raw.get("id") or str(uuid.uuid4())),
+            "type": str(raw.get("type") or "html").strip().lower(),
             "html": html,
             "target": _resolve_target(raw, fallback_target),
             "width": _safe_int(raw.get("width"), 320, lo=120, hi=1800),
@@ -77,7 +78,10 @@ def normalize_widget_specs(raw_widgets: list[Any], *, fallback_target: str) -> l
             "y": _safe_float(raw.get("y"), 0.0),
             "coordinate_space": coord_space,
             "anchor": anchor,
-        })
+        }
+        if raw.get("svg"):
+            entry["svg"] = raw["svg"]
+        normalized.append(entry)
     return normalized
 
 
@@ -87,6 +91,7 @@ def build_widget_events(normalized_widgets: list[dict[str, Any]]) -> tuple[list[
     for w in normalized_widgets:
         record = {
             "id": w["id"],
+            "type": w.get("type", "html"),
             "html": w["html"],
             "target": w["target"],
             "width": w["width"],
@@ -96,20 +101,38 @@ def build_widget_events(normalized_widgets: list[dict[str, Any]]) -> tuple[list[
             "coordinate_space": w["coordinate_space"],
             "anchor": w["anchor"],
         }
+        if w.get("svg"):
+            record["svg"] = w["svg"]
         records.append(record)
-        events.append({
-            "kind": "widget.open",
-            "widget": {
-                "kind": "html",
-                "id": record["id"],
-                "target": record["target"],
-                "payload": {"html": record["html"]},
-                "width": record["width"],
-                "height": record["height"],
-                "x": record["x"],
-                "y": record["y"],
-                "coordinate_space": record["coordinate_space"],
-                "anchor": record["anchor"],
-            },
-        })
+
+        # Diagram widgets targeting iPad use the draw endpoint, not widget.open
+        is_ipad_diagram = w.get("type") == "diagram" and w.get("target") == "ipad" and w.get("svg")
+        if is_ipad_diagram:
+            events.append({
+                "kind": "draw",
+                "draw": {
+                    "id": record["id"],
+                    "target": record["target"],
+                    "svg": record["svg"],
+                    "x": record["x"],
+                    "y": record["y"],
+                    "coordinate_space": record["coordinate_space"],
+                },
+            })
+        else:
+            events.append({
+                "kind": "widget.open",
+                "widget": {
+                    "kind": "html",
+                    "id": record["id"],
+                    "target": record["target"],
+                    "payload": {"html": record["html"]},
+                    "width": record["width"],
+                    "height": record["height"],
+                    "x": record["x"],
+                    "y": record["y"],
+                    "coordinate_space": record["coordinate_space"],
+                    "anchor": record["anchor"],
+                },
+            })
     return records, events

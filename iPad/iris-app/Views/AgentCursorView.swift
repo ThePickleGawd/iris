@@ -8,8 +8,8 @@ struct AgentCursorView: View {
             if controller.isClicking {
                 Circle()
                     .fill(controller.cursorColor.opacity(0.3))
-                    .frame(width: 36, height: 36)
-                    .offset(x: controller.position.x - 18, y: controller.position.y - 18)
+                    .frame(width: 40, height: 40)
+                    .offset(x: controller.position.x - 20, y: controller.position.y - 20)
                     .transition(.scale(scale: 0.5).combined(with: .opacity))
             }
 
@@ -23,8 +23,8 @@ struct AgentCursorView: View {
                     color: controller.cursorColor
                 )
                 .offset(
-                    x: controller.position.x + 20,
-                    y: controller.position.y + 28
+                    x: controller.position.x + 14,
+                    y: controller.position.y + 24
                 )
             }
         }
@@ -42,37 +42,36 @@ private struct CursorShape: View {
 
     var body: some View {
         Canvas { context, _ in
+            // Outer arrow — solid color with shadow
             let path = Path { p in
                 p.move(to: CGPoint(x: 0, y: 0))
-                p.addLine(to: CGPoint(x: 0, y: 24))
-                p.addLine(to: CGPoint(x: 6.5, y: 19))
-                p.addLine(to: CGPoint(x: 11, y: 28))
-                p.addLine(to: CGPoint(x: 14.5, y: 26.5))
-                p.addLine(to: CGPoint(x: 10, y: 17.5))
-                p.addLine(to: CGPoint(x: 17, y: 17))
+                p.addLine(to: CGPoint(x: 0, y: 26))
+                p.addLine(to: CGPoint(x: 7, y: 20))
+                p.addLine(to: CGPoint(x: 12, y: 30))
+                p.addLine(to: CGPoint(x: 16, y: 28))
+                p.addLine(to: CGPoint(x: 11, y: 18))
+                p.addLine(to: CGPoint(x: 19, y: 18))
                 p.closeSubpath()
             }
 
             context.drawLayer { shadow in
-                shadow.addFilter(.shadow(color: .black.opacity(0.35), radius: 2, x: 0.5, y: 1))
-                shadow.fill(path, with: .color(.white))
+                shadow.addFilter(.shadow(color: .black.opacity(0.25), radius: 3, x: 0.5, y: 1.5))
+                shadow.fill(path, with: .color(color))
             }
 
-            context.fill(path, with: .color(.white))
+            context.fill(path, with: .color(color))
+            context.stroke(path, with: .color(.white.opacity(0.92)), lineWidth: 1.1)
 
-            let insetPath = Path { p in
+            // Subtle inner highlight for depth
+            let highlight = Path { p in
                 p.move(to: CGPoint(x: 2.5, y: 4))
-                p.addLine(to: CGPoint(x: 2.5, y: 20.5))
-                p.addLine(to: CGPoint(x: 7, y: 17))
-                p.addLine(to: CGPoint(x: 11.2, y: 25.5))
-                p.addLine(to: CGPoint(x: 12.8, y: 24.8))
-                p.addLine(to: CGPoint(x: 8.5, y: 16))
-                p.addLine(to: CGPoint(x: 14, y: 15.5))
+                p.addLine(to: CGPoint(x: 2.5, y: 21))
+                p.addLine(to: CGPoint(x: 7.5, y: 17))
                 p.closeSubpath()
             }
-            context.fill(insetPath, with: .color(color))
+            context.fill(highlight, with: .color(.white.opacity(0.18)))
         }
-        .frame(width: 20, height: 30)
+        .frame(width: 24, height: 34)
     }
 }
 
@@ -83,13 +82,28 @@ private struct CollaboratorLabel: View {
     let color: Color
 
     var body: some View {
-        Text(name)
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundColor(.white)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(
-                Capsule().fill(color)
-            )
+        HStack(spacing: 0) {
+            // Small triangular tail pointing left toward the cursor
+            Canvas { context, size in
+                let path = Path { p in
+                    p.move(to: CGPoint(x: size.width, y: size.height * 0.3))
+                    p.addLine(to: CGPoint(x: 0, y: size.height * 0.5))
+                    p.addLine(to: CGPoint(x: size.width, y: size.height * 0.7))
+                    p.closeSubpath()
+                }
+                context.fill(path, with: .color(color))
+            }
+            .frame(width: 6, height: 24)
+
+            Text(name)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(color)
+                )
+        }
     }
 }

@@ -157,6 +157,23 @@ enum AgentClient {
         _ = try? await session.data(for: request)
     }
 
+    /// Delete a widget from the backend session so it doesn't reappear on sync.
+    static func deleteSessionWidget(
+        sessionID: String,
+        widgetID: String,
+        serverURL: URL
+    ) async {
+        let url = serverURL
+            .appendingPathComponent("sessions")
+            .appendingPathComponent(sessionID)
+            .appendingPathComponent("widgets")
+            .appendingPathComponent(widgetID)
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.timeoutInterval = 5
+        _ = try? await session.data(for: request)
+    }
+
     /// Fetch pending widgets for a session (for cross-device delivery).
     static func fetchSessionWidgets(
         sessionID: String,

@@ -16,6 +16,7 @@ const AGENT_GET_TIMEOUT_MS = Number(process.env.IRIS_AGENT_GET_TIMEOUT_MS || 600
 const AGENT_POST_TIMEOUT_MS = Number(process.env.IRIS_AGENT_POST_TIMEOUT_MS || 10000)
 const AGENT_CHAT_TIMEOUT_MS = Number(process.env.IRIS_AGENT_CHAT_TIMEOUT_MS || 120000)
 const AGENT_GET_RETRIES = Number(process.env.IRIS_AGENT_GET_RETRIES || 1)
+const SCREENSHOT_AI_PROCESSING_ENABLED = false
 const DEFAULT_LINKED_PROVIDER_SYSTEM_PROMPT =
   "You are Iris. Operate as a cross-device assistant, prioritize actionable outputs, and preserve consistency across Mac, iPad, and iPhone workflows."
 
@@ -103,6 +104,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     screenshotPath: string,
     source: string
   ) => {
+    if (!SCREENSHOT_AI_PROCESSING_ENABLED) return
     const { chatId } = resolveChatContext()
     await uploadScreenshotToBackend(screenshotPath, {
       deviceId: "mac",
@@ -112,6 +114,9 @@ export function initializeIpcHandlers(appState: AppState): void {
   }
 
   const analyzeImageViaAgent = async (imagePath: string, userPrompt?: string) => {
+    if (!SCREENSHOT_AI_PROCESSING_ENABLED) {
+      throw new Error("Screenshot AI processing is disabled.")
+    }
     await uploadScreenshotForAgentContext(imagePath, "image-analysis")
     const prompt =
       userPrompt && userPrompt.trim()
@@ -374,10 +379,11 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   ipcMain.handle("claude-chat", async (event, message: string) => {
     try {
-      // Upload latest screenshot to backend before sending chat
-      const latestScreenshotPath = getLatestScreenshotPathFromQueues()
-      if (latestScreenshotPath) {
-        await uploadScreenshotForAgentContext(latestScreenshotPath, "chat-context")
+      if (SCREENSHOT_AI_PROCESSING_ENABLED) {
+        const latestScreenshotPath = getLatestScreenshotPathFromQueues()
+        if (latestScreenshotPath) {
+          await uploadScreenshotForAgentContext(latestScreenshotPath, "chat-context")
+        }
       }
 
       // Route through Agents Server
@@ -394,9 +400,11 @@ export function initializeIpcHandlers(appState: AppState): void {
   // Legacy IPC name retained for compatibility, but handled as non-streaming HTTP.
   ipcMain.handle("claude-chat-stream", async (event, requestId: string, message: string) => {
     try {
-      const latestScreenshotPath = getLatestScreenshotPathFromQueues()
-      if (latestScreenshotPath) {
-        await uploadScreenshotForAgentContext(latestScreenshotPath, "chat-context")
+      if (SCREENSHOT_AI_PROCESSING_ENABLED) {
+        const latestScreenshotPath = getLatestScreenshotPathFromQueues()
+        if (latestScreenshotPath) {
+          await uploadScreenshotForAgentContext(latestScreenshotPath, "chat-context")
+        }
       }
 
       const full = await agentChatNonStreaming(message)

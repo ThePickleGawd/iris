@@ -26,6 +26,7 @@ final class SVGStrokeAnimator {
         let baseDrawing = canvasView.drawing
         var completedStrokes: [PKStroke] = []
         let ink = PKInk(.pen, color: color)
+        let traceWidthMultiplier: CGFloat = 1.24
         let fps: Double = 30
         let frameNanos = UInt64(1_000_000_000.0 / (fps * max(speed, 0.1)))
         let pointsPerFrame = max(1, Int(ceil(speed)))
@@ -33,18 +34,26 @@ final class SVGStrokeAnimator {
         // Separate outline strokes (animated) from fill strokes (batched)
         let outlineStrokes = strokes.filter { !$0.isFill }
         let fillStrokes = strokes.filter { $0.isFill }
+        let animatedStrokes = outlineStrokes.isEmpty ? Array(fillStrokes.prefix(1)) : outlineStrokes
+        let nonAnimatedFillStrokes: [SVGStroke] = {
+            if outlineStrokes.isEmpty {
+                return Array(fillStrokes.dropFirst(animatedStrokes.count))
+            }
+            return fillStrokes
+        }()
 
-        // Appear at first point of first outline stroke
-        if let first = outlineStrokes.first?.points.first {
+        cursor.disappear()
+        // Appear at first point of first drawable stroke.
+        if let first = animatedStrokes.first?.points.first {
             cursor.appear(at: screenPt(first, origin: origin, scale: scale))
-            try? await Task.sleep(nanoseconds: 200_000_000)
+            try? await Task.sleep(nanoseconds: 240_000_000)
         }
 
-        // Animate outline strokes with cursor tracking
-        for svgStroke in outlineStrokes {
+        // Animate a stroke sequence with cursor tracking.
+        for svgStroke in animatedStrokes {
             guard svgStroke.points.count >= 2 else { continue }
 
-            let w = svgStroke.strokeWidth.map { $0 * scale } ?? strokeWidth
+            let w = ((svgStroke.strokeWidth ?? strokeWidth) * scale * traceWidthMultiplier)
             let pkPoints = svgStroke.points.enumerated().map { idx, pt -> PKStrokePoint in
                 PKStrokePoint(
                     location: canvasPt(pt, origin: origin, scale: scale),
@@ -77,13 +86,13 @@ final class SVGStrokeAnimator {
 
             let fullPath = PKStrokePath(controlPoints: pkPoints, creationDate: Date())
             completedStrokes.append(PKStroke(ink: ink, path: fullPath))
-            try? await Task.sleep(nanoseconds: 120_000_000)
+            try? await Task.sleep(nanoseconds: 110_000_000)
         }
 
         // Add all fill strokes at once (no animation — they appear instantly)
-        for svgStroke in fillStrokes {
+        for svgStroke in nonAnimatedFillStrokes {
             guard svgStroke.points.count >= 2 else { continue }
-            let fillWidth = (svgStroke.strokeWidth ?? 1) * scale
+            let fillWidth = (svgStroke.strokeWidth ?? 1) * scale * traceWidthMultiplier
             let pkPoints = svgStroke.points.enumerated().map { idx, pt -> PKStrokePoint in
                 PKStrokePoint(
                     location: canvasPt(pt, origin: origin, scale: scale),
@@ -100,6 +109,7 @@ final class SVGStrokeAnimator {
         var finalDrawing = baseDrawing
         for s in completedStrokes { finalDrawing.strokes.append(s) }
         canvasView.drawing = finalDrawing
+        try? await Task.sleep(nanoseconds: 180_000_000)
         cursor.disappear()
     }
 

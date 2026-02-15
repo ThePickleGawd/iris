@@ -6,6 +6,7 @@ import { LLMHelper } from "./LLMHelper"
 const isDev = process.env.NODE_ENV === "development"
 const isDevTest = process.env.IS_DEV_TEST === "true"
 const MOCK_API_WAIT_TIME = Number(process.env.MOCK_API_WAIT_TIME) || 500
+const SCREENSHOT_AI_PROCESSING_ENABLED = false
 
 export class ProcessingHelper {
   private appState: AppState
@@ -56,6 +57,13 @@ export class ProcessingHelper {
       this.appState.setView("solutions")
       this.currentProcessingAbortController = new AbortController()
       try {
+        if (!SCREENSHOT_AI_PROCESSING_ENABLED) {
+          mainWindow.webContents.send(
+            this.appState.PROCESSING_EVENTS.INITIAL_SOLUTION_ERROR,
+            "Screenshot AI processing is disabled."
+          )
+          return
+        }
         const imageResult = await this.llmHelper.analyzeImageFile(lastPath);
         const problemInfo = {
           problem_statement: imageResult.text,
@@ -88,6 +96,13 @@ export class ProcessingHelper {
       this.currentExtraProcessingAbortController = new AbortController()
 
       try {
+        if (!SCREENSHOT_AI_PROCESSING_ENABLED) {
+          mainWindow.webContents.send(
+            this.appState.PROCESSING_EVENTS.DEBUG_ERROR,
+            "Screenshot AI processing is disabled."
+          )
+          return
+        }
         // Get problem info and current solution
         const problemInfo = this.appState.getProblemInfo()
         if (!problemInfo) {

@@ -82,6 +82,7 @@ Best for: flowcharts, system architecture, sequence diagrams, state machines, ER
 - Set `type: "diagram"` and `source` to **D2** diagram code.
 - D2 syntax reference: nodes with `label`, edges with `->`, containers with `{ }`.
 - Do NOT set `html` — the backend renders the D2 to SVG automatically.
+- Prefer plain structure-only D2; avoid custom D2 style maps/properties (`style: { ... }`, `style.radius`, etc.).
 - Example D2:
   ```
   user -> auth: Login
@@ -206,6 +207,19 @@ Every widget goes to exactly one device. Think about what the user is doing and 
 - Do not create widgets that only suggest follow-up questions instead of answering.
 \
 """
+
+def _tool_call_info(name: str, args: dict) -> dict:
+    """Build a compact info dict for a tool invocation."""
+    info: dict = {"name": name}
+    if name == "push_widget":
+        for k in ("target", "widget_id"):
+            if args.get(k):
+                info[k] = str(args[k])
+        for k in ("width", "height"):
+            if args.get(k) is not None:
+                info[k] = int(args[k])
+    return info
+
 
 TOOLS = [
     {
@@ -384,6 +398,7 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str) -> dict:
         + [{"role": "user", "content": user_message}]
     )
     widgets: list[dict] = []
+    tool_calls: list[dict] = []
 
     for _ in range(MAX_TOOL_ROUNDS):
         resp = client.chat.completions.create(model=model, messages=msgs, tools=TOOLS)
@@ -393,6 +408,7 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str) -> dict:
             msgs.append(choice.message.model_dump())
             for tc in choice.message.tool_calls:
                 args = json.loads(tc.function.arguments)
+                tool_calls.append(_tool_call_info(tc.function.name, args))
                 if tc.function.name == "push_widget":
                     widget = _normalize_widget_args(args)
                     widgets.append(widget)
@@ -432,9 +448,9 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str) -> dict:
                     "content": f"Unsupported tool '{tc.function.name}'.",
                 })
         else:
-            return {"text": choice.message.content or "", "widgets": widgets}
+            return {"text": choice.message.content or "", "widgets": widgets, "tool_calls": tool_calls}
 
-    return {"text": "Tool loop exhausted. Please try again.", "widgets": widgets}
+    return {"text": "Tool loop exhausted. Please try again.", "widgets": widgets, "tool_calls": tool_calls}
 
 
 def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None = None) -> dict:
@@ -448,6 +464,7 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
         or DEFAULT_ANTHROPIC_MODEL
     )
     widgets: list[dict] = []
+    tool_calls: list[dict] = []
     anth_messages = _to_anthropic_messages(messages + [{"role": "user", "content": user_message}])
 
     for _ in range(MAX_TOOL_ROUNDS):
@@ -471,6 +488,7 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
                     continue
                 args = block.get("input") or {}
                 tool_name = block.get("name")
+                tool_calls.append(_tool_call_info(tool_name, args))
                 if tool_name == "push_widget":
                     widget = _normalize_widget_args(args)
                     widgets.append(widget)
@@ -517,9 +535,9 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
             for block in content_blocks
             if isinstance(block, dict) and block.get("type") == "text"
         )
-        return {"text": text, "widgets": widgets}
+        return {"text": text, "widgets": widgets, "tool_calls": tool_calls}
 
-    return {"text": "Tool loop exhausted. Please try again.", "widgets": widgets}
+    return {"text": "Tool loop exhausted. Please try again.", "widgets": widgets, "tool_calls": tool_calls}
 
 
 def _run_gemini(messages: list[dict], user_message: str, *, model: str) -> dict:
@@ -532,6 +550,7 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str) -> dict:
 
     contents = _to_gemini_contents(messages + [{"role": "user", "content": user_message}])
     widgets: list[dict[str, Any]] = []
+    tool_calls: list[dict] = []
     no_candidate_count = 0
 
     for _ in range(MAX_TOOL_ROUNDS):
@@ -554,7 +573,7 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str) -> dict:
                 detail = f"{detail} blockReason={block_reason}"
             if block_message:
                 detail = f"{detail} {block_message}"
-            return {"text": detail, "widgets": widgets}
+            return {"text": detail, "widgets": widgets, "tool_calls": tool_calls}
         no_candidate_count = 0
 
         candidate = candidates[0] if isinstance(candidates[0], dict) else {}
@@ -577,6 +596,7 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str) -> dict:
                 args = call.get("args")
                 if not isinstance(args, dict):
                     args = {}
+                tool_calls.append(_tool_call_info(name, args))
 
                 if name == "push_widget":
                     widget = _normalize_widget_args(args)
@@ -631,9 +651,9 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str) -> dict:
             for part in parts
             if isinstance(part, dict) and isinstance(part.get("text"), str)
         )
-        return {"text": text, "widgets": widgets}
+        return {"text": text, "widgets": widgets, "tool_calls": tool_calls}
 
-    return {"text": "Tool loop exhausted. Please try again.", "widgets": widgets}
+    return {"text": "Tool loop exhausted. Please try again.", "widgets": widgets, "tool_calls": tool_calls}
 
 
 def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
@@ -905,12 +925,7 @@ def _render_diagram_html(source: str) -> dict[str, Any]:
                 "width": 400, "height": 180}
 
     try:
-        result = subprocess.run(
-            [d2_bin, "-", "-", "--theme=200", "--pad=20"],
-            input=source.encode("utf-8"),
-            capture_output=True,
-            timeout=30,
-        )
+        result = _run_d2(d2_bin, source)
     except subprocess.TimeoutExpired:
         return {"html": _diagram_error_html("d2 rendering timed out (30s limit)"),
                 "width": 400, "height": 180}
@@ -920,8 +935,35 @@ def _render_diagram_html(source: str) -> dict[str, Any]:
 
     if result.returncode != 0:
         stderr = result.stderr.decode("utf-8", errors="replace").strip()
-        return {"html": _diagram_error_html(f"d2 error (exit {result.returncode}):\n{stderr}"),
-                "width": 400, "height": 180}
+        # Fallback for model-produced D2 that uses unsupported style keys.
+        if _is_d2_invalid_style_error(stderr):
+            stripped_source = _strip_d2_style_constructs(source)
+            if stripped_source.strip() and stripped_source != source:
+                try:
+                    retry = _run_d2(d2_bin, stripped_source)
+                    if retry.returncode == 0:
+                        result = retry
+                    else:
+                        retry_stderr = retry.stderr.decode("utf-8", errors="replace").strip()
+                        return {"html": _diagram_error_html(
+                                    f"d2 error (exit {result.returncode}):\n{stderr}\n\n"
+                                    f"Retry without styles failed (exit {retry.returncode}):\n{retry_stderr}"
+                                ),
+                                "width": 400, "height": 180}
+                except subprocess.TimeoutExpired:
+                    return {"html": _diagram_error_html(
+                                "d2 rendering timed out (30s limit) after style-stripped retry"
+                            ),
+                            "width": 400, "height": 180}
+                except OSError as exc:
+                    return {"html": _diagram_error_html(f"Failed to run d2 retry: {exc}"),
+                            "width": 400, "height": 180}
+            else:
+                return {"html": _diagram_error_html(f"d2 error (exit {result.returncode}):\n{stderr}"),
+                        "width": 400, "height": 180}
+        else:
+            return {"html": _diagram_error_html(f"d2 error (exit {result.returncode}):\n{stderr}"),
+                    "width": 400, "height": 180}
 
     svg = result.stdout.decode("utf-8")
 
@@ -960,7 +1002,70 @@ def _render_diagram_html(source: str) -> dict[str, Any]:
 {svg}
 </body>
 </html>"""
-    return {"html": html, "width": widget_w, "height": widget_h}
+    return {"html": html, "width": widget_w, "height": widget_h, "svg": svg}
+
+
+def _run_d2(d2_bin: str, source: str) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        [d2_bin, "-", "-", "--theme=200", "--pad=20"],
+        input=source.encode("utf-8"),
+        capture_output=True,
+        timeout=30,
+    )
+
+
+def _is_d2_invalid_style_error(stderr: str) -> bool:
+    return "invalid style keyword" in stderr.lower()
+
+
+def _strip_d2_style_constructs(source: str) -> str:
+    stripped = _strip_d2_style_blocks(source)
+    # Remove line-level style assignments that are common LLM mistakes.
+    stripped = re.sub(r"(?mi)^\s*style\.[\w-]+\s*:\s*[^\n]*\n?", "", stripped)
+    stripped = re.sub(r"(?mi)^\s*style\s*:\s*[^\n{][^\n]*\n?", "", stripped)
+    return stripped
+
+
+def _strip_d2_style_blocks(source: str) -> str:
+    out: list[str] = []
+    i = 0
+    n = len(source)
+
+    while i < n:
+        match = re.search(r"\bstyle\s*:\s*\{", source[i:], flags=re.IGNORECASE)
+        if not match:
+            out.append(source[i:])
+            break
+
+        start = i + match.start()
+        brace_start = i + match.end() - 1  # points at "{"
+        out.append(source[i:start])
+
+        depth = 0
+        j = brace_start
+        while j < n:
+            ch = source[j]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    j += 1
+                    break
+            j += 1
+
+        if j >= n:
+            # Unbalanced block; drop to end.
+            i = n
+            break
+
+        while j < n and source[j] in " \t":
+            j += 1
+        if j < n and source[j] in ";,":
+            j += 1
+        i = j
+
+    return "".join(out)
 
 
 def _diagram_error_html(message: str) -> str:
@@ -1156,6 +1261,7 @@ def _normalize_widget_args(args: dict[str, Any]) -> dict[str, Any]:
     # Defaults for width/height — may be overridden by diagram renderer
     natural_width: int | None = None
     natural_height: int | None = None
+    raw_svg: str | None = None
 
     if widget_type == "document":
         document_source = source or str(args.get("html") or "")
@@ -1165,6 +1271,7 @@ def _normalize_widget_args(args: dict[str, Any]) -> dict[str, Any]:
         rendered_html = diagram["html"]
         natural_width = diagram["width"]
         natural_height = diagram["height"]
+        raw_svg = diagram.get("svg")  # preserve for draw endpoint
     elif widget_type == "animation":
         anim = _render_animation_html(source)
         rendered_html = anim["html"]
@@ -1179,8 +1286,9 @@ def _normalize_widget_args(args: dict[str, Any]) -> dict[str, Any]:
         else:
             rendered_html = raw_html
 
-    return {
+    out: dict[str, Any] = {
         "widget_id": str(args.get("widget_id") or "widget"),
+        "type": widget_type,
         "html": rendered_html,
         "target": str(args.get("target") or "mac").strip().lower(),
         "width": _clamp(args.get("width") or natural_width, 320),
@@ -1190,6 +1298,9 @@ def _normalize_widget_args(args: dict[str, Any]) -> dict[str, Any]:
         "coordinate_space": _normalize_coordinate_space(args.get("coordinate_space")),
         "anchor": _normalize_anchor(args.get("anchor")),
     }
+    if raw_svg:
+        out["svg"] = raw_svg
+    return out
 
 
 def _handle_read_screenshot(args: dict[str, Any]) -> str:

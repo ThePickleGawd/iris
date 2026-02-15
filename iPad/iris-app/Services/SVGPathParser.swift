@@ -32,6 +32,12 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
     // Track nested style/transform inheritance.
     private var groupStyleStack: [(stroke: String?, strokeWidth: String?)] = []
     private var transformStack: [CGAffineTransform] = []
+    private var suppressedElementDepth: Int = 0
+    private let ignoredContainers: Set<String> = [
+        "defs", "marker", "clippath", "mask", "symbol", "pattern",
+        "lineargradient", "radialgradient", "filter", "style",
+        "script", "metadata", "title", "desc", "foreignobject"
+    ]
 
     func parse(svgString: String) -> SVGParseResult {
         strokes = []
@@ -40,6 +46,7 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
         svgHeight = 0
         groupStyleStack = []
         transformStack = []
+        suppressedElementDepth = 0
 
         guard let data = svgString.data(using: .utf8) else {
             return SVGParseResult(strokes: [], viewBox: .zero)
@@ -65,7 +72,18 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
                 namespaceURI: String?, qualifiedName: String?,
                 attributes attrs: [String: String]) {
 
-        switch element.lowercased() {
+        let lower = element.lowercased()
+
+        if suppressedElementDepth > 0 {
+            suppressedElementDepth += 1
+            return
+        }
+        if ignoredContainers.contains(lower) || isHiddenElement(attrs) {
+            suppressedElementDepth = 1
+            return
+        }
+
+        switch lower {
         case "svg":
             parseSVGRoot(attrs)
             let parent = transformStack.last ?? .identity
@@ -97,6 +115,11 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
 
     func parser(_ parser: XMLParser, didEndElement element: String,
                 namespaceURI: String?, qualifiedName: String?) {
+        if suppressedElementDepth > 0 {
+            suppressedElementDepth -= 1
+            return
+        }
+
         let lower = element.lowercased()
         if lower == "g" {
             _ = groupStyleStack.popLast()
@@ -130,7 +153,7 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
 
     private func parsePath(_ attrs: [String: String]) {
         guard let d = attrs["d"], !d.isEmpty else { return }
-        let (color, width) = resolveStyle(attrs)
+        let (color, width) = resolveStyle(attrs, allowFillFallback: false)
         guard hasVisibleStroke(color: color, width: width) else { return }
         let strokeWidth = resolvedStrokeWidth(width)
         let transform = elementTransform(attrs)
@@ -159,7 +182,7 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
         rx = min(rx, w / 2)
         ry = min(ry, h / 2)
 
-        let (color, width) = resolveStyle(attrs)
+        let (color, width) = resolveStyle(attrs, allowFillFallback: false)
         guard hasVisibleStroke(color: color, width: width) else { return }
         let strokeWidth = resolvedStrokeWidth(width)
         let transform = elementTransform(attrs)
@@ -216,7 +239,7 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
         let y1 = cgFloat(attrs["y1"]) ?? 0
         let x2 = cgFloat(attrs["x2"]) ?? 0
         let y2 = cgFloat(attrs["y2"]) ?? 0
-        let (color, width) = resolveStyle(attrs)
+        let (color, width) = resolveStyle(attrs, allowFillFallback: false)
         guard hasVisibleStroke(color: color, width: width) else { return }
         let strokeWidth = resolvedStrokeWidth(width)
         let transform = elementTransform(attrs)
@@ -234,7 +257,7 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
             points.append(first)
         }
 
-        let (color, width) = resolveStyle(attrs)
+        let (color, width) = resolveStyle(attrs, allowFillFallback: false)
         let fill = attrs["fill"] ?? styleValue("fill", from: attrs["style"])
         let hasFill = isVisibleFill(fill)
         let hasVisibleOutline = hasVisibleStroke(color: color, width: width)
@@ -274,7 +297,7 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
         let cy = cgFloat(attrs["cy"]) ?? 0
         let r = cgFloat(attrs["r"]) ?? 0
         guard r > 0 else { return }
-        let (color, width) = resolveStyle(attrs)
+        let (color, width) = resolveStyle(attrs, allowFillFallback: false)
         guard hasVisibleStroke(color: color, width: width) else { return }
         let strokeWidth = resolvedStrokeWidth(width)
         let transform = elementTransform(attrs)
@@ -292,7 +315,7 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
         let rx = cgFloat(attrs["rx"]) ?? 0
         let ry = cgFloat(attrs["ry"]) ?? 0
         guard rx > 0, ry > 0 else { return }
-        let (color, width) = resolveStyle(attrs)
+        let (color, width) = resolveStyle(attrs, allowFillFallback: false)
         guard hasVisibleStroke(color: color, width: width) else { return }
         let strokeWidth = resolvedStrokeWidth(width)
         let transform = elementTransform(attrs)
@@ -306,7 +329,10 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
 
     // MARK: - Style Resolution
 
-    private func resolveStyle(_ attrs: [String: String]) -> (color: String?, width: CGFloat?) {
+    private func resolveStyle(
+        _ attrs: [String: String],
+        allowFillFallback: Bool = true
+    ) -> (color: String?, width: CGFloat?) {
         var color = attrs["stroke"] ?? styleValue("stroke", from: attrs["style"])
         var width = cgFloat(attrs["stroke-width"] ?? styleValue("stroke-width", from: attrs["style"]))
 
@@ -316,7 +342,7 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
             if width == nil, let sw = group.strokeWidth { width = cgFloat(sw) }
         }
 
-        if color == nil || color?.lowercased() == "none" || color?.lowercased() == "transparent" {
+        if allowFillFallback && (color == nil || color?.lowercased() == "none" || color?.lowercased() == "transparent") {
             let fill = attrs["fill"] ?? styleValue("fill", from: attrs["style"])
             if let fill, fill.lowercased() != "none", fill.lowercased() != "transparent" {
                 color = fill
@@ -335,6 +361,19 @@ final class SVGPathParser: NSObject, XMLParserDelegate {
             }
         }
         return nil
+    }
+
+    private func isHiddenElement(_ attrs: [String: String]) -> Bool {
+        let display = (attrs["display"] ?? styleValue("display", from: attrs["style"]))?.lowercased()
+        if display == "none" { return true }
+
+        let visibility = (attrs["visibility"] ?? styleValue("visibility", from: attrs["style"]))?.lowercased()
+        if visibility == "hidden" || visibility == "collapse" { return true }
+
+        let opacityValue = attrs["opacity"] ?? styleValue("opacity", from: attrs["style"])
+        if let opacity = Double(opacityValue ?? ""), opacity <= 0.0001 { return true }
+
+        return false
     }
 
     private func resolvedStrokeWidth(_ width: CGFloat?) -> CGFloat {

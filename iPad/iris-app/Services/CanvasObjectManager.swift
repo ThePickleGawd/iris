@@ -41,7 +41,7 @@ struct CanvasSuggestion: Identifiable {
     let title: String
     let summary: String
     let html: String
-    let position: CGPoint
+    var position: CGPoint
     let size: CGSize
     let animateOnPlace: Bool
     let createdAt: Date
@@ -53,6 +53,7 @@ final class CanvasObjectManager: ObservableObject {
     @Published private(set) var suggestions: [UUID: CanvasSuggestion] = [:]
     @Published var isAnimatingDraw: Bool = false
     private(set) var objectViews: [UUID: CanvasObjectWebView] = [:]
+    var onWidgetRemoved: ((String) -> Void)?
 
     let httpServer = AgentHTTPServer()
 
@@ -188,9 +189,15 @@ final class CanvasObjectManager: ObservableObject {
         html: String,
         at position: CGPoint,
         size: CGSize = CGSize(width: 360, height: 220),
+        backendWidgetID: String? = nil,
         animated: Bool = true
     ) async -> CanvasObject {
-        let object = CanvasObject(position: position, size: size, htmlContent: html)
+        let object = CanvasObject(
+            position: position,
+            size: size,
+            htmlContent: html,
+            backendWidgetID: backendWidgetID
+        )
         guard let canvasView else { return object }
 
         if animated, let cursor {
@@ -296,6 +303,7 @@ final class CanvasObjectManager: ObservableObject {
 
     func remove(id: UUID) {
         guard let view = objectViews[id] else { return }
+        let backendID = objects[id]?.backendWidgetID
         UIView.animate(withDuration: 0.18, animations: {
             view.alpha = 0
             view.transform = CGAffineTransform(scaleX: 0.95, y: 0.95)
@@ -304,6 +312,9 @@ final class CanvasObjectManager: ObservableObject {
         })
         objectViews.removeValue(forKey: id)
         objects.removeValue(forKey: id)
+        if let backendID, !backendID.isEmpty {
+            onWidgetRemoved?(backendID)
+        }
     }
 
     func removeAll() {
@@ -330,6 +341,30 @@ final class CanvasObjectManager: ObservableObject {
 
     /// Called by canvas scroll/zoom delegate hooks to keep widget layout in sync with viewport updates.
     func notifyViewportChanged() {
+        syncLayout()
+    }
+
+    func translateContent(by delta: CGPoint) {
+        guard delta != .zero else { return }
+
+        for id in objects.keys {
+            guard var object = objects[id] else { continue }
+            object.position.x += delta.x
+            object.position.y += delta.y
+            objects[id] = object
+        }
+
+        for id in suggestions.keys {
+            guard var suggestion = suggestions[id] else { continue }
+            suggestion.position.x += delta.x
+            suggestion.position.y += delta.y
+            suggestions[id] = suggestion
+        }
+
+        if let bounds = mostRecentStrokeBoundsCanvas {
+            mostRecentStrokeBoundsCanvas = bounds.offsetBy(dx: delta.x, dy: delta.y)
+        }
+
         syncLayout()
     }
 

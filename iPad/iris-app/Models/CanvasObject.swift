@@ -5,12 +5,15 @@ struct CanvasObject: Identifiable {
     var position: CGPoint
     var size: CGSize
     var htmlContent: String
+    /// The widget ID from the backend session, used to sync deletions.
+    var backendWidgetID: String?
 
-    init(id: UUID = UUID(), position: CGPoint, size: CGSize, htmlContent: String) {
+    init(id: UUID = UUID(), position: CGPoint, size: CGSize, htmlContent: String, backendWidgetID: String? = nil) {
         self.id = id
         self.position = position
         self.size = size
         self.htmlContent = htmlContent
+        self.backendWidgetID = backendWidgetID
     }
 }
 

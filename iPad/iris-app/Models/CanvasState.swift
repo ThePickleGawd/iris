@@ -9,8 +9,10 @@ enum DrawingTool: String, CaseIterable {
 }
 
 final class CanvasState: ObservableObject {
-    static let canvasSize: CGFloat = 80_000
-    static let canvasCenter = CGPoint(x: canvasSize / 2, y: canvasSize / 2)
+    static let initialCanvasExtent: CGFloat = 8_192
+    static private(set) var canvasSize: CGFloat = initialCanvasExtent
+    static private(set) var canvasCenter = CGPoint(x: initialCanvasExtent / 2, y: initialCanvasExtent / 2)
+    static private(set) var canvasContentSize = CGSize(width: initialCanvasExtent, height: initialCanvasExtent)
 
     @Published var drawing: PKDrawing = PKDrawing()
     @Published var currentTool: DrawingTool = .pen
@@ -40,5 +42,24 @@ final class CanvasState: ObservableObject {
         drawing = PKDrawing()
         canUndo = false
         canRedo = false
+    }
+
+    static func resetCanvasGeometry() {
+        let size = CGSize(width: initialCanvasExtent, height: initialCanvasExtent)
+        canvasContentSize = size
+        canvasSize = max(size.width, size.height)
+        canvasCenter = CGPoint(x: size.width / 2, y: size.height / 2)
+    }
+
+    static func updateCanvasContentSize(_ size: CGSize) {
+        canvasContentSize = size
+        canvasSize = max(size.width, size.height)
+    }
+
+    static func shiftCanvasCenter(by delta: CGPoint) {
+        canvasCenter = CGPoint(
+            x: canvasCenter.x + delta.x,
+            y: canvasCenter.y + delta.y
+        )
     }
 }

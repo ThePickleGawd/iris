@@ -24,6 +24,13 @@ interface Props {
   onBack: () => void;
 }
 
+function firstToolCallStepIndex(trajectory: TrajectoryFile): number {
+  const idx = trajectory.steps.findIndex(
+    (step) => step.type === "agent_turn" && step.tool_calls.length > 0
+  );
+  return idx >= 0 ? idx : 0;
+}
+
 function StatBadge({
   icon: Icon,
   label,
@@ -48,7 +55,11 @@ function StatBadge({
 }
 
 export function TrajectoryViewer({ trajectory, onBack }: Props) {
-  const [selectedStep, setSelectedStep] = useState(0);
+  const [selectedStep, setSelectedStep] = useState(() => firstToolCallStepIndex(trajectory));
+
+  useEffect(() => {
+    setSelectedStep(firstToolCallStepIndex(trajectory));
+  }, [trajectory]);
 
   // Keyboard navigation
   useEffect(() => {

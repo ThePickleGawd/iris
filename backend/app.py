@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import hashlib
 import subprocess
 import tempfile
 import traceback
+import urllib.request
 import uuid
 from functools import lru_cache
 from datetime import datetime, timezone
@@ -65,6 +67,7 @@ CLAUDE_CODE_SESSIONS_ROOT = Path(
     os.environ.get("CLAUDE_CODE_SESSIONS_ROOT", str(Path.home() / ".claude" / "projects"))
 )
 CLAUDE_CODE_CLI_BIN = os.environ.get("CLAUDE_CODE_CLI_BIN", "claude")
+IRIS_IPAD_URL = os.environ.get("IRIS_IPAD_URL", "http://dylans-ipad.local:8935")
 CODEX_MESSAGE_DEDUP_WINDOW_SECONDS = 20
 
 try:
@@ -1810,6 +1813,41 @@ def unregister_device(device_id: str) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Agent helpers
+# ---------------------------------------------------------------------------
+
+_ipad_draw_log = logging.getLogger("iris.ipad_draw")
+
+
+def _post_ipad_draw(svg: str, widget_record: dict[str, Any]) -> bool:
+    """POST raw SVG to the iPad draw endpoint. Returns True on success."""
+    url = f"{IRIS_IPAD_URL}/api/v1/draw"
+    payload = json.dumps({
+        "svg": svg,
+        "scale": 1.5,
+        "speed": 2.0,
+        "color": "#1A1F28",
+        "stroke_width": 3,
+        "x": widget_record.get("x", 0),
+        "y": widget_record.get("y", 0),
+        "coordinate_space": widget_record.get("coordinate_space", "viewport_offset"),
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            _ipad_draw_log.info("iPad draw OK (%s): %s", resp.status, resp.read(256))
+        return True
+    except Exception as exc:
+        _ipad_draw_log.warning("iPad draw failed, falling back to widget.open: %s", exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Agent
 # ---------------------------------------------------------------------------
 
@@ -1982,22 +2020,30 @@ def v1_agent() -> Any:
     # Persist assistant response only for non-ephemeral requests.
     ts = _now()
     if not ephemeral and session is not None:
-        session["messages"].append(
-            {
-                "id": str(uuid.uuid4()),
-                "role": "assistant",
-                "content": result["text"],
-                "created_at": ts,
-                "device_id": None,
-                "source": "agent.v1",
-            }
-        )
+        assistant_msg: dict[str, Any] = {
+            "id": str(uuid.uuid4()),
+            "role": "assistant",
+            "content": result["text"],
+            "created_at": ts,
+            "device_id": None,
+            "source": "agent.v1",
+        }
+        if result.get("tool_calls"):
+            assistant_msg["tool_calls"] = result["tool_calls"]
+        session["messages"].append(assistant_msg)
 
-    # Store widgets in session
+    # Emit tool.call events + store widgets in session
     events: list[dict] = []
+    for tc in result.get("tool_calls", []):
+        events.append({
+            "kind": "tool.call",
+            "name": tc["name"],
+            "input": {k: v for k, v in tc.items() if k != "name"},
+        })
     for w in result.get("widgets", []):
         widget_record = {
             "id": w.get("widget_id", str(uuid.uuid4())),
+            "type": w.get("type", "html"),
             "html": w.get("html", ""),
             "target": w.get("target", "mac"),
             "width": w.get("width", 320),
@@ -2008,8 +2054,35 @@ def v1_agent() -> Any:
             "anchor": w.get("anchor", "top_left"),
             "created_at": ts,
         }
+        raw_svg = w.get("svg")
+        if raw_svg:
+            widget_record["svg"] = raw_svg
+
         if not ephemeral and session is not None:
             session.setdefault("widgets", []).append(widget_record)
+
+        # Route iPad diagrams to the draw endpoint (PencilKit strokes)
+        is_ipad_diagram = (
+            widget_record["type"] == "diagram"
+            and widget_record["target"] == "ipad"
+            and raw_svg
+        )
+        if is_ipad_diagram:
+            draw_ok = _post_ipad_draw(raw_svg, widget_record)
+            if draw_ok:
+                events.append({
+                    "kind": "draw",
+                    "draw": {
+                        "id": widget_record["id"],
+                        "target": widget_record["target"],
+                        "svg": raw_svg,
+                        "x": widget_record["x"],
+                        "y": widget_record["y"],
+                        "coordinate_space": widget_record["coordinate_space"],
+                    },
+                })
+                continue
+            # Fall through to widget.open if draw failed
 
         events.append({
             "kind": "widget.open",

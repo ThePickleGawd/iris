@@ -5,10 +5,10 @@ final class AgentCursorController: ObservableObject {
     @Published var position: CGPoint = .zero
     @Published var isVisible: Bool = false
     @Published var isClicking: Bool = false
-    @Published var showLabel: Bool = true
+    @Published var showLabel: Bool = false
 
     var collaboratorName: String = "Iris"
-    var cursorColor: Color = Color(red: 0.35, green: 0.8, blue: 0.65)
+    var cursorColor: Color = Color(red: 0.38, green: 0.82, blue: 0.62)
 
     func appear(at point: CGPoint) {
         position = point

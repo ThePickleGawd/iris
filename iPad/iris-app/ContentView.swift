@@ -28,13 +28,19 @@ struct ContentView: View {
     @State private var proactiveIdleCycleID = 0
     @State private var proactiveCapturedIdleCycleID: Int?
     @State private var expandedSuggestionIDs: Set<UUID> = []
+    @State private var connectionMonitorTimer: Timer?
+    @State private var isConnectionCheckInFlight = false
+    @State private var macConnectionStatus: MacConnectionStatus = .checking
 
+    private let proactiveEnabled = false
     private let proactiveIntervalSeconds: TimeInterval = 5
     private let proactiveStrokePauseSeconds: TimeInterval = 0.75
+    private let connectionCheckIntervalSeconds: TimeInterval = 4
     private let proactiveMaxSuggestionsPerTick = 3
     private let proactiveTestSingleSuggestionPerScreenshot = false
     private let proactiveAlwaysSaveScreenshots = false
     private let proactiveForceSuggestAfterTicks = 4
+    private let screenshotAIProcessingEnabled = false
     private let proactiveTriageModel = "gemini-2.0-flash"
     private let proactiveWidgetModel = "gemini-2.0-flash"
     private var sessionID: String { document.resolvedSessionID }
@@ -77,6 +83,18 @@ struct ContentView: View {
             )
             .environmentObject(canvasState)
             .zIndex(20)
+
+            VStack {
+                HStack {
+                    Spacer()
+                    connectionStatusIndicator
+                        .padding(.top, 54)
+                        .padding(.trailing, 18)
+                }
+                Spacer()
+            }
+            .allowsHitTesting(false)
+            .zIndex(22)
 
             VStack {
                 Spacer()
@@ -128,12 +146,39 @@ struct ContentView: View {
             widgetSyncTimer?.invalidate()
             proactiveMonitorTimer?.invalidate()
             proactiveStrokeIdleTask?.cancel()
+            connectionMonitorTimer?.invalidate()
         }
         .onAppear {
             SpeechTranscriber.requestAuthorization { _ in }
+            setupWidgetRemovalSync()
             startWidgetSync()
             startProactiveMonitor()
+            startConnectionMonitor()
         }
+    }
+
+    private var connectionStatusIndicator: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(macConnectionStatus.indicatorColor)
+                .frame(width: 7, height: 7)
+            Text(macConnectionStatus.compactLabel)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundColor(.white.opacity(0.82))
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color(red: 0.03, green: 0.04, blue: 0.09).opacity(0.72))
+                .overlay(
+                    Capsule(style: .continuous)
+                        .strokeBorder(.white.opacity(0.14), lineWidth: 0.6)
+                )
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Mac connection")
+        .accessibilityValue(macConnectionStatus.accessibilityValue)
     }
 
     private func startRecording() {
@@ -167,7 +212,8 @@ struct ContentView: View {
                 var screenshotID: String?
                 var screenshotUploadWarning: String?
                 var uploadedScreenshotBackendURL: URL?
-                if let backendURL = objectManager.httpServer.backendServerURL() {
+                if screenshotAIProcessingEnabled,
+                   let backendURL = objectManager.httpServer.backendServerURL() {
                     uploadedScreenshotBackendURL = backendURL
                     // Non-blocking transcript ingestion keeps voice->agent latency low.
                     Task(priority: .utility) {
@@ -190,7 +236,7 @@ struct ContentView: View {
                     }
                 }
 
-                if let screenshotID {
+                if screenshotAIProcessingEnabled, let screenshotID {
                     if !screenshotID.isEmpty {
                         message = """
                         User voice command:
@@ -216,7 +262,8 @@ struct ContentView: View {
                 }
 
                 let coordinateSnapshot = currentCoordinateSnapshotDict()
-                if let sid = screenshotID,
+                if screenshotAIProcessingEnabled, proactiveEnabled,
+                   let sid = screenshotID,
                    !sid.isEmpty,
                    let backendURL = uploadedScreenshotBackendURL {
                     Task(priority: .utility) {
@@ -246,7 +293,8 @@ struct ContentView: View {
                     await objectManager.place(
                         html: widget.html,
                         at: pos,
-                        size: CGSize(width: widget.width, height: widget.height)
+                        size: CGSize(width: widget.width, height: widget.height),
+                        backendWidgetID: widget.id
                     )
                     renderedWidgetIDs.insert(widget.id)
                 }
@@ -301,7 +349,8 @@ struct ContentView: View {
 
         do {
             var message = userIntent
-            if let backendURL = objectManager.httpServer.backendServerURL(),
+            if screenshotAIProcessingEnabled,
+               let backendURL = objectManager.httpServer.backendServerURL(),
                let screenshotID = try await uploadCanvasScreenshot(
                 note: "Explicit pencil request: \(userIntent.prefix(180))",
                 backendURL: backendURL
@@ -334,7 +383,8 @@ struct ContentView: View {
                 await objectManager.place(
                     html: widget.html,
                     at: pos,
-                    size: CGSize(width: widget.width, height: widget.height)
+                    size: CGSize(width: widget.width, height: widget.height),
+                    backendWidgetID: widget.id
                 )
                 renderedWidgetIDs.insert(widget.id)
             }
@@ -364,6 +414,20 @@ struct ContentView: View {
         )
     }
 
+    private func setupWidgetRemovalSync() {
+        objectManager.onWidgetRemoved = { [weak objectManager] backendWidgetID in
+            guard let serverURL = objectManager?.httpServer.agentServerURL() else { return }
+            let sid = sessionID
+            Task {
+                await AgentClient.deleteSessionWidget(
+                    sessionID: sid,
+                    widgetID: backendWidgetID,
+                    serverURL: serverURL
+                )
+            }
+        }
+    }
+
     private func startWidgetSync() {
         widgetSyncTimer?.invalidate()
         widgetSyncTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
@@ -372,6 +436,7 @@ struct ContentView: View {
     }
 
     private func startProactiveMonitor() {
+        guard proactiveEnabled else { return }
         proactiveMonitorTimer?.invalidate()
         proactiveMonitorTimer = Timer.scheduledTimer(withTimeInterval: proactiveIntervalSeconds, repeats: true) { _ in
             Task { await proactiveMonitorTick() }
@@ -379,12 +444,68 @@ struct ContentView: View {
     }
 
     private func scheduleProactiveCaptureAfterStrokePause() {
+        guard proactiveEnabled else { return }
         proactiveStrokeIdleTask?.cancel()
         proactiveStrokeIdleTask = Task { @MainActor in
             let ns = UInt64(proactiveStrokePauseSeconds * 1_000_000_000)
             try? await Task.sleep(nanoseconds: ns)
             guard !Task.isCancelled else { return }
             await proactiveMonitorTick()
+        }
+    }
+
+    @MainActor
+    private func startConnectionMonitor() {
+        connectionMonitorTimer?.invalidate()
+        connectionMonitorTimer = Timer.scheduledTimer(withTimeInterval: connectionCheckIntervalSeconds, repeats: true) { _ in
+            Task { @MainActor in
+                await refreshConnectionStatus()
+            }
+        }
+        Task { @MainActor in
+            await refreshConnectionStatus()
+        }
+    }
+
+    @MainActor
+    private func refreshConnectionStatus() async {
+        guard !isConnectionCheckInFlight else { return }
+        isConnectionCheckInFlight = true
+        defer { isConnectionCheckInFlight = false }
+
+        guard let agentURL = objectManager.httpServer.agentServerURL() else {
+            macConnectionStatus = .unlinked
+            return
+        }
+
+        let agentHealthURL = agentURL.appendingPathComponent("health")
+        if let backendURL = objectManager.httpServer.backendServerURL() {
+            async let isAgentHealthy = pingHealth(at: agentHealthURL)
+            async let isBackendHealthy = pingHealth(at: backendURL.appendingPathComponent("health"))
+            let (agentHealthy, backendHealthy) = await (isAgentHealthy, isBackendHealthy)
+            if agentHealthy && backendHealthy {
+                macConnectionStatus = .connected
+            } else if agentHealthy || backendHealthy {
+                macConnectionStatus = .degraded
+            } else {
+                macConnectionStatus = .disconnected
+            }
+        } else {
+            let agentHealthy = await pingHealth(at: agentHealthURL)
+            macConnectionStatus = agentHealthy ? .connected : .disconnected
+        }
+    }
+
+    private func pingHealth(at url: URL) async -> Bool {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 1.8
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return false }
+            return (200...299).contains(http.statusCode)
+        } catch {
+            return false
         }
     }
 
@@ -577,7 +698,8 @@ struct ContentView: View {
             await objectManager.place(
                 html: widget.html,
                 at: pos,
-                size: CGSize(width: widget.width, height: widget.height)
+                size: CGSize(width: widget.width, height: widget.height),
+                backendWidgetID: widget.id
             )
             renderedWidgetIDs.insert(widget.id)
         }
@@ -1157,5 +1279,56 @@ struct ContentView: View {
             return nil
         }
         return objectManager.canvasPoint(forAxisPoint: CGPoint(x: axisX, y: axisY))
+    }
+}
+
+private enum MacConnectionStatus {
+    case unlinked
+    case connected
+    case degraded
+    case disconnected
+    case checking
+
+    var indicatorColor: Color {
+        switch self {
+        case .connected:
+            return Color(red: 0.33, green: 0.78, blue: 0.44)
+        case .degraded:
+            return Color(red: 0.95, green: 0.72, blue: 0.24)
+        case .disconnected:
+            return Color(red: 0.89, green: 0.35, blue: 0.35)
+        case .unlinked, .checking:
+            return Color.white.opacity(0.55)
+        }
+    }
+
+    var compactLabel: String {
+        switch self {
+        case .connected:
+            return "Mac"
+        case .degraded:
+            return "Mac!"
+        case .disconnected:
+            return "Mac?"
+        case .unlinked:
+            return "Link"
+        case .checking:
+            return "Mac..."
+        }
+    }
+
+    var accessibilityValue: String {
+        switch self {
+        case .connected:
+            return "connected"
+        case .degraded:
+            return "partially connected"
+        case .disconnected:
+            return "not reachable"
+        case .unlinked:
+            return "not linked"
+        case .checking:
+            return "checking"
+        }
     }
 }
