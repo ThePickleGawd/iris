@@ -247,6 +247,7 @@ struct ContentView: View {
     }
 
     private func sendPromptToAgent(_ prompt: String) {
+        guard !isProcessing else { return }
         guard let serverURL = objectManager.httpServer.agentServerURL() else {
             withAnimation { lastResponse = "No linked Mac found. Open the Iris Mac app first." }
             autoDismissResponse()
@@ -328,7 +329,16 @@ struct ContentView: View {
                         )
                     }
                 }
-                let agentResponse = try await AgentClient.sendMessage(
+                await MainActor.run {
+                    if !aiOutputInkEnabled {
+                        if let screenshotUploadWarning {
+                            lastResponse = "\(screenshotUploadWarning)\n\n"
+                        } else {
+                            lastResponse = ""
+                        }
+                    }
+                }
+                let agentResponse = try await AgentClient.sendMessageStreaming(
                     message,
                     model: document.resolvedModel,
                     chatID: sessionID,
@@ -337,7 +347,24 @@ struct ContentView: View {
                     codexCWD: document.codexCWD,
                     claudeCodeConversationID: document.claudeCodeConversationID,
                     claudeCodeCWD: document.claudeCodeCWD,
-                    serverURL: serverURL
+                    serverURL: serverURL,
+                    onDelta: { chunk in
+                        guard !chunk.isEmpty else { return }
+                        await MainActor.run {
+                            if !aiOutputInkEnabled {
+                                if let screenshotUploadWarning {
+                                    let prefix = "\(screenshotUploadWarning)\n\n"
+                                    let existing = lastResponse ?? prefix
+                                    let body = existing.hasPrefix(prefix)
+                                        ? String(existing.dropFirst(prefix.count))
+                                        : existing
+                                    withAnimation { lastResponse = prefix + body + chunk }
+                                } else {
+                                    withAnimation { lastResponse = (lastResponse ?? "") + chunk }
+                                }
+                            }
+                        }
+                    }
                 )
 
                 if aiOutputInkEnabled {
@@ -451,12 +478,24 @@ struct ContentView: View {
             }
 
             let coordinateSnapshot = currentCoordinateSnapshotDict()
-            let agentResponse = try await AgentClient.sendMessage(
+            if !aiOutputInkEnabled {
+                withAnimation { lastResponse = "" }
+            }
+            let agentResponse = try await AgentClient.sendMessageStreaming(
                 message,
                 model: document.resolvedModel,
                 chatID: document.id.uuidString,
                 coordinateSnapshot: coordinateSnapshot,
-                serverURL: serverURL
+                serverURL: serverURL,
+                onDelta: { chunk in
+                    guard !chunk.isEmpty else { return }
+                    await MainActor.run {
+                        if !aiOutputInkEnabled {
+                            let updated = (lastResponse ?? "") + chunk
+                            withAnimation { lastResponse = updated }
+                        }
+                    }
+                }
             )
 
             if aiOutputInkEnabled {
@@ -2125,6 +2164,10 @@ struct ContentView: View {
 
     @MainActor
     private func waitForPlacementTap(prompt: String) async -> CGPoint {
+        if let prior = placementTapContinuation {
+            prior.resume(returning: objectManager.viewportCenter)
+            placementTapContinuation = nil
+        }
         placementTapPrompt = prompt
         awaitingPlacementTap = true
         return await withCheckedContinuation { continuation in

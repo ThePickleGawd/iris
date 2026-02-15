@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, Response, jsonify, request, send_file, stream_with_context
 from werkzeug.utils import secure_filename
 
 def _load_root_env() -> None:
@@ -1983,6 +1983,47 @@ def _log_widget_push_debug(
     app.logger.info("widget_push_debug %s", json.dumps(payload, ensure_ascii=False))
 
 
+def _wants_stream_response(body: dict[str, Any]) -> bool:
+    stream_flag = str(request.args.get("stream", "")).strip().lower()
+    if stream_flag in {"1", "true", "yes", "on"}:
+        return True
+    if isinstance(body.get("stream"), bool) and body.get("stream"):
+        return True
+    accept = (request.headers.get("Accept") or "").lower()
+    return "text/event-stream" in accept
+
+
+def _iter_text_chunks(text: str, size: int = 80) -> list[str]:
+    if not text:
+        return []
+    chunk_size = max(1, size)
+    return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+
+
+def _sse_event(event: str, payload: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _finalize_agent_response(payload: dict[str, Any], *, stream: bool) -> Any:
+    if not stream:
+        return jsonify(payload)
+
+    @stream_with_context
+    def generate() -> Any:
+        yield _sse_event("status", {"state": "running"})
+        for chunk in _iter_text_chunks(str(payload.get("text") or "")):
+            yield _sse_event("delta", {"text": chunk})
+        yield _sse_event("final", payload)
+        yield _sse_event("done", {"ok": True})
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    return Response(generate(), mimetype="text/event-stream", headers=headers)
+
+
 # ---------------------------------------------------------------------------
 # Agent
 # ---------------------------------------------------------------------------
@@ -1991,6 +2032,7 @@ def _log_widget_push_debug(
 def v1_agent() -> Any:
     body = request.get_json(silent=True) or {}
     request_id = str(body.get("request_id") or "")
+    stream_requested = _wants_stream_response(body)
 
     session_id = (body.get("session_id") or "").strip()
     if not session_id:
@@ -2058,7 +2100,7 @@ def v1_agent() -> Any:
             if is_first_prompt:
                 _auto_name_session(session, message)
             _save_session(session)
-            return jsonify(
+            return _finalize_agent_response(
                 {
                     "kind": "message.final",
                     "request_id": request_id,
@@ -2068,7 +2110,8 @@ def v1_agent() -> Any:
                     "text": linked_result["text"],
                     "events": [],
                     "timestamp": _now(),
-                }
+                },
+                stream=stream_requested,
             )
 
         codex_mode = model.strip().lower() == "codex" or bool(
@@ -2092,7 +2135,7 @@ def v1_agent() -> Any:
             if is_first_prompt:
                 _auto_name_session(session, message)
             _save_session(session)
-            return jsonify(
+            return _finalize_agent_response(
                 {
                     "kind": "message.final",
                     "request_id": request_id,
@@ -2102,7 +2145,8 @@ def v1_agent() -> Any:
                     "text": linked_result["text"],
                     "events": [],
                     "timestamp": _now(),
-                }
+                },
+                stream=stream_requested,
             )
 
         # Build context from session messages
@@ -2295,7 +2339,7 @@ def v1_agent() -> Any:
         session["updated_at"] = ts
         _save_session(session)
 
-    return jsonify(
+    return _finalize_agent_response(
         {
             "kind": "message.final",
             "request_id": request_id,
@@ -2305,7 +2349,8 @@ def v1_agent() -> Any:
             "text": result["text"],
             "events": events,
             "timestamp": _now(),
-        }
+        },
+        stream=stream_requested,
     )
 
 

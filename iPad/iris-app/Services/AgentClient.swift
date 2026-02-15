@@ -127,10 +127,41 @@ enum AgentClient {
         var dataLines: [String] = []
         var finalResponse: AgentResponse?
         var fallbackText = ""
+        var sawDone = false
+
+        func handleEvent(_ name: String, payload: String) async throws {
+            switch name {
+            case "delta":
+                if let data = payload.data(using: .utf8),
+                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let chunk = obj["text"] as? String,
+                   !chunk.isEmpty {
+                    fallbackText += chunk
+                    if let onDelta {
+                        await onDelta(chunk)
+                    }
+                }
+            case "final":
+                if let data = payload.data(using: .utf8) {
+                    finalResponse = parseFullResponse(data)
+                }
+            case "done":
+                sawDone = true
+            case "error":
+                throw AgentClientError.serverError(statusCode: 502, body: payload)
+            default:
+                break
+            }
+        }
 
         for try await rawLine in bytes.lines {
             let line = String(rawLine)
             if line.hasPrefix("event:") {
+                if !dataLines.isEmpty {
+                    let pending = dataLines.joined(separator: "\n")
+                    dataLines.removeAll(keepingCapacity: true)
+                    try await handleEvent(eventName, payload: pending)
+                }
                 eventName = line.dropFirst("event:".count).trimmingCharacters(in: .whitespaces)
                 continue
             }
@@ -146,34 +177,22 @@ enum AgentClient {
                 }
                 let payload = dataLines.joined(separator: "\n")
                 dataLines.removeAll(keepingCapacity: true)
-
-                switch eventName {
-                case "delta":
-                    if let data = payload.data(using: .utf8),
-                       let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                       let chunk = obj["text"] as? String,
-                       !chunk.isEmpty {
-                        fallbackText += chunk
-                        if let onDelta {
-                            await onDelta(chunk)
-                        }
-                    }
-                case "final":
-                    if let data = payload.data(using: .utf8) {
-                        finalResponse = parseFullResponse(data)
-                    }
-                case "error":
-                    throw AgentClientError.serverError(statusCode: 502, body: payload)
-                default:
-                    break
-                }
-
+                try await handleEvent(eventName, payload: payload)
                 eventName = ""
             }
         }
 
+        if !dataLines.isEmpty {
+            let payload = dataLines.joined(separator: "\n")
+            try await handleEvent(eventName, payload: payload)
+            dataLines.removeAll(keepingCapacity: true)
+        }
+
         if let finalResponse {
             return finalResponse
+        }
+        if sawDone {
+            return AgentResponse(text: fallbackText, widgets: [], sessionName: nil)
         }
         return AgentResponse(text: fallbackText, widgets: [], sessionName: nil)
     }
