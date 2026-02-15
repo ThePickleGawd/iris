@@ -769,55 +769,6 @@ final class CanvasObjectManager: ObservableObject {
         return try? await webView.takeSnapshot(configuration: snapshotConfig)
     }
 
-    // MARK: - SVG Drawing
-
-    /// Parses an SVG string and animates it onto the canvas with cursor tracking.
-    /// Returns the number of strokes parsed.
-    @discardableResult
-    func drawSVG(
-        svg: String,
-        at position: CGPoint,
-        scale: CGFloat = 1.0,
-        color: UIColor = UIColor(red: 0.10, green: 0.12, blue: 0.16, alpha: 1),
-        strokeWidth: CGFloat = 3,
-        speed: Double = 1.0
-    ) async -> Int {
-        guard let canvasView else { return 0 }
-        _ = speed
-
-        let parser = SVGPathParser()
-        let result = parser.parse(svgString: svg)
-        guard !result.strokes.isEmpty else { return 0 }
-        let normalizedStrokes = normalizeStrokesToLocalOrigin(result.strokes)
-
-        var drawing = canvasView.drawing
-        let ink = PKInk(.pen, color: color)
-        for stroke in normalizedStrokes where stroke.points.count >= 2 {
-            let width = (stroke.strokeWidth ?? strokeWidth) * scale
-            let controlPoints = stroke.points.enumerated().map { idx, pt in
-                PKStrokePoint(
-                    location: CGPoint(x: position.x + pt.x * scale, y: position.y + pt.y * scale),
-                    timeOffset: TimeInterval(idx) / 60.0,
-                    size: CGSize(width: width, height: width),
-                    opacity: 1,
-                    force: 1,
-                    azimuth: 0,
-                    altitude: .pi / 2
-                )
-            }
-            let path = PKStrokePath(controlPoints: controlPoints, creationDate: Date())
-            drawing.strokes.append(PKStroke(ink: ink, path: path))
-        }
-        canvasView.drawing = drawing
-
-        // Trigger final save by notifying drawing changed
-        if let recentStroke = drawing.strokes.last {
-            updateMostRecentStrokeBounds(recentStroke.renderBounds)
-        }
-
-        return result.strokes.count
-    }
-
     @discardableResult
     func drawHandwrittenText(
         _ text: String,
@@ -2012,30 +1963,4 @@ final class CanvasObjectManager: ObservableObject {
         return PKStroke(ink: ink, path: path)
     }
 
-    private func normalizeStrokesToLocalOrigin(_ strokes: [SVGStroke]) -> [SVGStroke] {
-        var minX = CGFloat.greatestFiniteMagnitude
-        var minY = CGFloat.greatestFiniteMagnitude
-
-        for stroke in strokes {
-            for point in stroke.points {
-                minX = min(minX, point.x)
-                minY = min(minY, point.y)
-            }
-        }
-
-        guard minX.isFinite, minY.isFinite else { return strokes }
-        guard abs(minX) > 0.001 || abs(minY) > 0.001 else { return strokes }
-
-        return strokes.map { stroke in
-            let shifted = stroke.points.map { point in
-                CGPoint(x: point.x - minX, y: point.y - minY)
-            }
-            return SVGStroke(
-                points: shifted,
-                color: stroke.color,
-                strokeWidth: stroke.strokeWidth,
-                isFill: stroke.isFill
-            )
-        }
-    }
 }

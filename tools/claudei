@@ -6,9 +6,11 @@
 #   claudei --resume <session_id>        # resume existing session
 #   claudei --cwd /some/project          # specify working directory
 #   claudei install                      # symlink to /usr/local/bin/claudei
+#   claudei link                         # link Mac to iPad on the network
 #
 # Environment:
 #   IRIS_BACKEND_URL   Backend base URL (default: http://localhost:8000)
+#   IRIS_IPAD_URL      iPad base URL (default: http://dylans-ipad.local:8935)
 #   CLAUDE_CMD         Claude Code binary (default: claude)
 
 set -euo pipefail
@@ -21,6 +23,7 @@ Usage:
   claudei --resume <session_id>
   claudei [claude args...]
   claudei install
+  claudei link
 EOF
 }
 
@@ -108,6 +111,48 @@ if [[ "${1:-}" == "install" ]]; then
 
     sudo ln -s "$SCRIPT_PATH" "$INSTALL_PATH"
     echo "Installed: $INSTALL_PATH -> $SCRIPT_PATH"
+    exit 0
+fi
+
+# Handle `claudei link` subcommand — connect this Mac to the iPad
+if [[ "${1:-}" == "link" ]]; then
+    IPAD_URL="${IRIS_IPAD_URL:-http://dylans-ipad.local:8935}"
+    MAC_HOSTNAME="$(hostname -s)"
+
+    # Get local IP on the same network as the iPad
+    LOCAL_IP=$(python3 -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(('8.8.8.8', 80)); print(s.getsockname()[0]); s.close()")
+    if [[ -z "$LOCAL_IP" ]]; then
+        echo "ERROR: Could not determine local IP address."
+        exit 1
+    fi
+
+    echo "Linking to iPad at $IPAD_URL ..."
+    echo "  Mac hostname: $MAC_HOSTNAME"
+    echo "  Local IP:     $LOCAL_IP"
+    echo "  Backend port: 8000"
+
+    LINK_PAYLOAD=$(python3 -c "
+import json
+print(json.dumps({
+    'id': '$MAC_HOSTNAME',
+    'name': '$MAC_HOSTNAME',
+    'platform': 'macOS',
+    'ip': '$LOCAL_IP',
+    'port': 8000
+}))
+")
+
+    RESPONSE=$(curl -sf -X POST "$IPAD_URL/api/v1/link" \
+        -H "Content-Type: application/json" \
+        -d "$LINK_PAYLOAD" 2>&1) || {
+        echo "ERROR: Failed to link to iPad at $IPAD_URL/api/v1/link"
+        echo "  Is the iPad on the same network? Is the Iris app running?"
+        exit 1
+    }
+
+    echo ""
+    echo "Linked to iPad successfully."
+    echo "  Response: $RESPONSE"
     exit 0
 fi
 
@@ -220,6 +265,29 @@ curl -sf -X POST "$IRIS_BACKEND_URL/api/claude-code/sessions/register" \
     -H "Content-Type: application/json" \
     -d "$REGISTER_PAYLOAD" \
     >/dev/null 2>&1 || true
+
+# Auto-link to iPad (best-effort, silent failure if iPad unreachable)
+AUTO_LINK_IP=$(python3 -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(('8.8.8.8', 80)); print(s.getsockname()[0]); s.close()" 2>/dev/null) || true
+if [[ -n "${AUTO_LINK_IP:-}" ]]; then
+    IPAD_URL="${IRIS_IPAD_URL:-http://dylans-ipad.local:8935}"
+    AUTO_LINK_HOST="$(hostname -s)"
+    AUTO_LINK_PAYLOAD=$(python3 -c "
+import json
+print(json.dumps({
+    'id': '$AUTO_LINK_HOST',
+    'name': '$AUTO_LINK_HOST',
+    'platform': 'macOS',
+    'ip': '$AUTO_LINK_IP',
+    'port': 8000
+}))
+" 2>/dev/null) || true
+    if [[ -n "${AUTO_LINK_PAYLOAD:-}" ]]; then
+        curl -sf --connect-timeout 2 -X POST "$IPAD_URL/api/v1/link" \
+            -H "Content-Type: application/json" \
+            -d "$AUTO_LINK_PAYLOAD" \
+            >/dev/null 2>&1 || true
+    fi
+fi
 
 # Cleanup on exit
 cleanup() {
