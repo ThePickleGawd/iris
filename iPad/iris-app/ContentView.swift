@@ -212,7 +212,8 @@ struct ContentView: View {
                 var screenshotID: String?
                 var screenshotUploadWarning: String?
                 var uploadedScreenshotBackendURL: URL?
-                if screenshotAIProcessingEnabled,
+                let shouldUploadVoiceScreenshot = (!proactiveEnabled) || screenshotAIProcessingEnabled
+                if shouldUploadVoiceScreenshot,
                    let backendURL = objectManager.httpServer.backendServerURL() {
                     uploadedScreenshotBackendURL = backendURL
                     // Non-blocking transcript ingestion keeps voice->agent latency low.
@@ -236,7 +237,7 @@ struct ContentView: View {
                     }
                 }
 
-                if screenshotAIProcessingEnabled, let screenshotID {
+                if let screenshotID {
                     if !screenshotID.isEmpty {
                         message = """
                         User voice command:
@@ -349,8 +350,7 @@ struct ContentView: View {
 
         do {
             var message = userIntent
-            if screenshotAIProcessingEnabled,
-               let backendURL = objectManager.httpServer.backendServerURL(),
+            if let backendURL = objectManager.httpServer.backendServerURL(),
                let screenshotID = try await uploadCanvasScreenshot(
                 note: "Explicit pencil request: \(userIntent.prefix(180))",
                 backendURL: backendURL
