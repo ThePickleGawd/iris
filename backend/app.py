@@ -1941,6 +1941,48 @@ def _post_ipad_draw(
     return False
 
 
+def _log_widget_push_debug(
+    *,
+    session_id: str,
+    request_id: str,
+    model: str,
+    widget_record: dict[str, Any],
+    raw_widget: dict[str, Any],
+    event_kind: str,
+    draw_attempted: bool,
+    draw_succeeded: bool,
+) -> None:
+    """Emit a single structured debug line for each widget dispatch."""
+    html = str(widget_record.get("html") or "")
+    svg = str(widget_record.get("svg") or "")
+    payload = {
+        "type": "widget_push_debug",
+        "session_id": session_id,
+        "request_id": request_id,
+        "model": model,
+        "event_kind": event_kind,
+        "draw_attempted": draw_attempted,
+        "draw_succeeded": draw_succeeded,
+        "widget": {
+            "id": widget_record.get("id"),
+            "type": widget_record.get("type"),
+            "target": widget_record.get("target"),
+            "coordinate_space": widget_record.get("coordinate_space"),
+            "anchor": widget_record.get("anchor"),
+            "x": widget_record.get("x"),
+            "y": widget_record.get("y"),
+            "width": widget_record.get("width"),
+            "height": widget_record.get("height"),
+            "has_html": bool(html),
+            "html_len": len(html),
+            "has_svg": bool(svg),
+            "svg_len": len(svg),
+        },
+        "raw_widget_keys": sorted(raw_widget.keys()),
+    }
+    app.logger.info("widget_push_debug %s", json.dumps(payload, ensure_ascii=False))
+
+
 # ---------------------------------------------------------------------------
 # Agent
 # ---------------------------------------------------------------------------
@@ -1948,6 +1990,7 @@ def _post_ipad_draw(
 @app.post("/v1/agent")
 def v1_agent() -> Any:
     body = request.get_json(silent=True) or {}
+    request_id = str(body.get("request_id") or "")
 
     session_id = (body.get("session_id") or "").strip()
     if not session_id:
@@ -2018,7 +2061,7 @@ def v1_agent() -> Any:
             return jsonify(
                 {
                     "kind": "message.final",
-                    "request_id": body.get("request_id", ""),
+                    "request_id": request_id,
                     "session_id": session_id,
                     "session_name": session.get("name", ""),
                     "model": "claude_code",
@@ -2052,7 +2095,7 @@ def v1_agent() -> Any:
             return jsonify(
                 {
                     "kind": "message.final",
-                    "request_id": body.get("request_id", ""),
+                    "request_id": request_id,
                     "session_id": session_id,
                     "session_name": session.get("name", ""),
                     "model": "codex",
@@ -2184,7 +2227,10 @@ def v1_agent() -> Any:
             and widget_record["target"] == "ipad"
             and raw_svg
         )
+        draw_attempted = False
+        draw_succeeded = False
         if is_ipad_diagram:
+            draw_attempted = True
             source_ip = _request_source_ip()
             draw_ok = _post_ipad_draw(
                 raw_svg,
@@ -2192,6 +2238,17 @@ def v1_agent() -> Any:
                 ipad_base_urls=_candidate_ipad_urls(source_ip),
             )
             if draw_ok:
+                draw_succeeded = True
+                _log_widget_push_debug(
+                    session_id=session_id,
+                    request_id=request_id,
+                    model=model,
+                    widget_record=widget_record,
+                    raw_widget=w,
+                    event_kind="draw",
+                    draw_attempted=draw_attempted,
+                    draw_succeeded=draw_succeeded,
+                )
                 events.append({
                     "kind": "draw",
                     "draw": {
@@ -2206,6 +2263,16 @@ def v1_agent() -> Any:
                 continue
             # Fall through to widget.open if draw failed
 
+        _log_widget_push_debug(
+            session_id=session_id,
+            request_id=request_id,
+            model=model,
+            widget_record=widget_record,
+            raw_widget=w,
+            event_kind="widget.open",
+            draw_attempted=draw_attempted,
+            draw_succeeded=draw_succeeded,
+        )
         events.append({
             "kind": "widget.open",
             "widget": {
@@ -2231,7 +2298,7 @@ def v1_agent() -> Any:
     return jsonify(
         {
             "kind": "message.final",
-            "request_id": body.get("request_id", ""),
+            "request_id": request_id,
             "session_id": session_id,
             "session_name": session.get("name", "") if session else "",
             "model": model,

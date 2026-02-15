@@ -44,6 +44,14 @@ struct HandwrittenInkResult {
 
 enum HandwrittenInkRenderer {
 
+    static func measure(text: String, fontSize: CGFloat) -> CGSize {
+        let font = UIFont(name: "BradleyHandITCTT-Bold", size: fontSize)
+            ?? UIFont.italicSystemFont(ofSize: fontSize)
+        let width = (text as NSString).size(withAttributes: [.font: font]).width
+        let lineHeight = font.lineHeight * 1.2
+        return CGSize(width: width, height: lineHeight)
+    }
+
     static func render(
         text: String,
         origin: CGPoint,
@@ -672,7 +680,9 @@ final class CanvasObjectManager: ObservableObject {
         _ text: String,
         at position: CGPoint,
         maxWidth: CGFloat = 420,
-        color: UIColor = UIColor(red: 0.10, green: 0.12, blue: 0.16, alpha: 1)
+        color: UIColor = UIColor(red: 0.10, green: 0.12, blue: 0.16, alpha: 1),
+        fontSize: CGFloat = 30,
+        strokeWidth: CGFloat = 2.2
     ) async -> CGSize {
         guard let canvasView else { return .zero }
 
@@ -680,7 +690,9 @@ final class CanvasObjectManager: ObservableObject {
             text: text,
             origin: position,
             maxWidth: maxWidth,
-            color: color
+            color: color,
+            fontSize: fontSize,
+            strokeWidth: strokeWidth
         )
         guard !result.strokes.isEmpty else { return .zero }
 
@@ -807,6 +819,1071 @@ final class CanvasObjectManager: ObservableObject {
             }
         }
         return output
+    }
+
+    func drawHandwrittenLaTeX(
+        _ latex: String,
+        at position: CGPoint,
+        maxWidth: CGFloat = 420,
+        color: UIColor = UIColor(red: 0.10, green: 0.12, blue: 0.16, alpha: 1)
+    ) async -> CGSize {
+        guard let canvasView else { return .zero }
+
+        let source = sanitizeLaTeXSource(latex)
+        let root = parseLaTeXExpression(source)
+        let rendered = renderLaTeXNode(
+            root,
+            at: position,
+            maxWidth: maxWidth,
+            color: color,
+            fontSize: 34,
+            strokeWidth: 3.2
+        )
+
+        guard !rendered.strokes.isEmpty else {
+            return await drawHandwrittenText(
+                latex,
+                at: position,
+                maxWidth: maxWidth,
+                color: color,
+                fontSize: 34,
+                strokeWidth: 3.0
+            )
+        }
+
+        var drawing = canvasView.drawing
+        for stroke in rendered.strokes { drawing.strokes.append(stroke) }
+        canvasView.drawing = drawing
+
+        if let recentStroke = drawing.strokes.last {
+            updateMostRecentStrokeBounds(recentStroke.renderBounds)
+        }
+
+        return rendered.size
+    }
+
+    private indirect enum LaTeXNode {
+        case text(String)
+        case symbol(Character)
+        case sequence([LaTeXNode])
+        case fraction(numerator: LaTeXNode, denominator: LaTeXNode)
+        case sqrt(index: LaTeXNode?, radicand: LaTeXNode)
+        case script(base: LaTeXNode, sub: LaTeXNode?, sup: LaTeXNode?)
+        case operatorSymbol(symbol: String, sub: LaTeXNode?, sup: LaTeXNode?)
+    }
+
+    private struct LaTeXRenderResult {
+        let strokes: [PKStroke]
+        let size: CGSize
+        let baseline: CGFloat
+    }
+
+    private struct LaTeXMetrics {
+        let size: CGSize
+        let baseline: CGFloat
+    }
+
+    private func sanitizeLaTeXSource(_ raw: String) -> String {
+        let normalizedEscapes = raw.replacingOccurrences(
+            of: #"\\\\([A-Za-z])"#,
+            with: #"\\$1"#,
+            options: .regularExpression
+        )
+        return normalizedEscapes
+            .replacingOccurrences(of: "$$", with: "")
+            .replacingOccurrences(of: "$", with: "")
+            .replacingOccurrences(of: "\\(", with: "")
+            .replacingOccurrences(of: "\\)", with: "")
+            .replacingOccurrences(of: "\\[", with: "")
+            .replacingOccurrences(of: "\\]", with: "")
+            .replacingOccurrences(of: "\\left", with: "")
+            .replacingOccurrences(of: "\\right", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func parseLaTeXExpression(_ source: String) -> LaTeXNode {
+        guard !source.isEmpty else { return .text("") }
+        var index = source.startIndex
+        let nodes = parseLaTeXSequence(in: source, index: &index, stopAt: nil)
+        return collapseLaTeXNodes(nodes)
+    }
+
+    private func parseLaTeXSequence(
+        in source: String,
+        index: inout String.Index,
+        stopAt stopChar: Character?
+    ) -> [LaTeXNode] {
+        var nodes: [LaTeXNode] = []
+        var buffer = ""
+
+        func flushBuffer() {
+            let trimmed = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                nodes.append(.text(trimmed))
+            }
+            buffer.removeAll(keepingCapacity: true)
+        }
+
+        while index < source.endIndex {
+            let ch = source[index]
+            if let stopChar, ch == stopChar {
+                break
+            }
+
+            if ch == "\\" {
+                if latexHasPrefix(source, at: index, token: "\\frac")
+                    || latexHasPrefix(source, at: index, token: "\\dfrac") {
+                    flushBuffer()
+                    let token = latexHasPrefix(source, at: index, token: "\\dfrac") ? "\\dfrac" : "\\frac"
+                    index = source.index(index, offsetBy: token.count)
+                    skipLaTeXWhitespace(in: source, index: &index)
+                    let numerator = parseLaTeXGroupOrToken(in: source, index: &index)
+                    skipLaTeXWhitespace(in: source, index: &index)
+                    let denominator = parseLaTeXGroupOrToken(in: source, index: &index)
+                    nodes.append(.fraction(numerator: numerator, denominator: denominator))
+                    continue
+                }
+
+                if latexHasPrefix(source, at: index, token: "\\sqrt") {
+                    flushBuffer()
+                    index = source.index(index, offsetBy: "\\sqrt".count)
+                    skipLaTeXWhitespace(in: source, index: &index)
+                    var rootIndex: LaTeXNode?
+                    if index < source.endIndex, source[index] == "[" {
+                        let idxRaw = consumeBracketGroup(in: source, index: &index, open: "[", close: "]")
+                        rootIndex = parseLaTeXExpression(idxRaw)
+                        skipLaTeXWhitespace(in: source, index: &index)
+                    }
+                    let radicand = parseLaTeXGroupOrToken(in: source, index: &index)
+                    nodes.append(.sqrt(index: rootIndex, radicand: radicand))
+                    continue
+                }
+
+                if let operatorSymbol = parseLargeOperatorToken(in: source, index: &index) {
+                    flushBuffer()
+                    let (sub, sup) = parseOptionalScripts(in: source, index: &index)
+                    nodes.append(.operatorSymbol(symbol: operatorSymbol, sub: sub, sup: sup))
+                    continue
+                }
+
+                if latexHasPrefix(source, at: index, token: "\\pm") {
+                    flushBuffer()
+                    index = source.index(index, offsetBy: "\\pm".count)
+                    nodes.append(.symbol("±"))
+                    continue
+                }
+
+                if latexHasPrefix(source, at: index, token: "\\over") {
+                    flushBuffer()
+                    index = source.index(index, offsetBy: "\\over".count)
+                    skipLaTeXWhitespace(in: source, index: &index)
+                    let numerator = collapseLaTeXNodes(nodes)
+                    nodes.removeAll(keepingCapacity: true)
+                    let denominatorNodes = parseLaTeXSequence(in: source, index: &index, stopAt: stopChar)
+                    let denominator = collapseLaTeXNodes(denominatorNodes)
+                    nodes.append(.fraction(numerator: numerator, denominator: denominator))
+                    return nodes
+                }
+            }
+
+            if ch == "{" {
+                flushBuffer()
+                index = source.index(after: index)
+                let inner = parseLaTeXSequence(in: source, index: &index, stopAt: "}")
+                if index < source.endIndex, source[index] == "}" {
+                    index = source.index(after: index)
+                }
+                nodes.append(collapseLaTeXNodes(inner))
+                continue
+            }
+
+            if ch == "^" || ch == "_" {
+                flushBuffer()
+                let marker = ch
+                index = source.index(after: index)
+                let script = parseLaTeXGroupOrToken(in: source, index: &index)
+                if let last = nodes.popLast() {
+                    nodes.append(applyScript(base: last, marker: marker, script: script))
+                } else {
+                    // No explicit base: keep as literal fallback.
+                    let literal = marker == "^" ? "^" : "_"
+                    nodes.append(.text(literal))
+                }
+                continue
+            }
+
+            if ch == "+" || ch == "-" || ch == "=" || ch == "±" {
+                flushBuffer()
+                nodes.append(.symbol(ch))
+                index = source.index(after: index)
+                continue
+            }
+
+            if ch == "}" {
+                break
+            }
+
+            buffer.append(ch)
+            index = source.index(after: index)
+        }
+
+        flushBuffer()
+        return nodes
+    }
+
+    private func parseLaTeXGroupOrToken(
+        in source: String,
+        index: inout String.Index
+    ) -> LaTeXNode {
+        skipLaTeXWhitespace(in: source, index: &index)
+        guard index < source.endIndex else { return .text("") }
+
+        if source[index] == "{" {
+            index = source.index(after: index)
+            let inner = parseLaTeXSequence(in: source, index: &index, stopAt: "}")
+            if index < source.endIndex, source[index] == "}" {
+                index = source.index(after: index)
+            }
+            return collapseLaTeXNodes(inner)
+        }
+
+        if source[index] == "\\" {
+            let token = consumeCommandToken(in: source, index: &index)
+            return .text(token)
+        }
+
+        let char = source[index]
+        index = source.index(after: index)
+        return .text(String(char))
+    }
+
+    private func parseOptionalScripts(
+        in source: String,
+        index: inout String.Index
+    ) -> (sub: LaTeXNode?, sup: LaTeXNode?) {
+        var sub: LaTeXNode?
+        var sup: LaTeXNode?
+        while index < source.endIndex {
+            skipLaTeXWhitespace(in: source, index: &index)
+            guard index < source.endIndex else { break }
+            let ch = source[index]
+            if ch == "_" {
+                index = source.index(after: index)
+                sub = parseLaTeXGroupOrToken(in: source, index: &index)
+                continue
+            }
+            if ch == "^" {
+                index = source.index(after: index)
+                sup = parseLaTeXGroupOrToken(in: source, index: &index)
+                continue
+            }
+            break
+        }
+        return (sub, sup)
+    }
+
+    private func parseLargeOperatorToken(
+        in source: String,
+        index: inout String.Index
+    ) -> String? {
+        let table: [(token: String, symbol: String)] = [
+            ("\\sum", "∑"),
+            ("\\prod", "∏"),
+            ("\\coprod", "∐"),
+            ("\\int", "∫"),
+            ("\\oint", "∮"),
+            ("\\bigcap", "⋂"),
+            ("\\bigcup", "⋃")
+        ]
+        for entry in table {
+            if latexHasPrefix(source, at: index, token: entry.token) {
+                index = source.index(index, offsetBy: entry.token.count)
+                return entry.symbol
+            }
+        }
+        return nil
+    }
+
+    private func applyScript(
+        base: LaTeXNode,
+        marker: Character,
+        script: LaTeXNode
+    ) -> LaTeXNode {
+        switch base {
+        case .script(let innerBase, let sub, let sup):
+            if marker == "^" {
+                return .script(base: innerBase, sub: sub, sup: script)
+            }
+            return .script(base: innerBase, sub: script, sup: sup)
+        case .operatorSymbol(let symbol, let sub, let sup):
+            if marker == "^" {
+                return .operatorSymbol(symbol: symbol, sub: sub, sup: script)
+            }
+            return .operatorSymbol(symbol: symbol, sub: script, sup: sup)
+        default:
+            if marker == "^" {
+                return .script(base: base, sub: nil, sup: script)
+            }
+            return .script(base: base, sub: script, sup: nil)
+        }
+    }
+
+    private func consumeCommandToken(
+        in source: String,
+        index: inout String.Index
+    ) -> String {
+        guard index < source.endIndex, source[index] == "\\" else { return "" }
+        let start = index
+        index = source.index(after: index)
+        while index < source.endIndex, source[index].isLetter {
+            index = source.index(after: index)
+        }
+        if index == source.index(after: start), index < source.endIndex {
+            index = source.index(after: index)
+        }
+        return String(source[start..<index])
+    }
+
+    private func consumeBracketGroup(
+        in source: String,
+        index: inout String.Index,
+        open: Character,
+        close: Character
+    ) -> String {
+        guard index < source.endIndex, source[index] == open else { return "" }
+        index = source.index(after: index)
+        var depth = 1
+        var result = ""
+        while index < source.endIndex {
+            let ch = source[index]
+            if ch == open {
+                depth += 1
+                result.append(ch)
+            } else if ch == close {
+                depth -= 1
+                if depth == 0 {
+                    index = source.index(after: index)
+                    continue
+                }
+                result.append(ch)
+            } else {
+                result.append(ch)
+            }
+            index = source.index(after: index)
+        }
+        return result
+    }
+
+    private func collapseLaTeXNodes(_ nodes: [LaTeXNode]) -> LaTeXNode {
+        let compact = nodes.filter { node in
+            if case .text(let text) = node {
+                return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            return true
+        }
+        if compact.isEmpty { return .text("") }
+        if compact.count == 1 { return compact[0] }
+        return .sequence(compact)
+    }
+
+    private func latexHasPrefix(_ source: String, at index: String.Index, token: String) -> Bool {
+        source[index...].hasPrefix(token)
+    }
+
+    private func skipLaTeXWhitespace(
+        in source: String,
+        index: inout String.Index
+    ) {
+        while index < source.endIndex, source[index].isWhitespace {
+            index = source.index(after: index)
+        }
+    }
+
+    private func renderLaTeXNode(
+        _ node: LaTeXNode,
+        at origin: CGPoint,
+        maxWidth: CGFloat,
+        color: UIColor,
+        fontSize: CGFloat,
+        strokeWidth: CGFloat
+    ) -> LaTeXRenderResult {
+        switch node {
+        case .text(let raw):
+            let text = normalizeLaTeXText(raw)
+            guard !text.isEmpty else { return LaTeXRenderResult(strokes: [], size: .zero, baseline: 0) }
+            let rendered = HandwrittenInkRenderer.render(
+                text: text,
+                origin: origin,
+                maxWidth: maxWidth,
+                color: color,
+                fontSize: fontSize,
+                strokeWidth: strokeWidth
+            )
+            let baseline = max(1, rendered.size.height * 0.78)
+            return LaTeXRenderResult(strokes: rendered.strokes, size: rendered.size, baseline: baseline)
+
+        case .symbol(let symbol):
+            let rendered = renderMathSymbol(
+                symbol,
+                at: origin,
+                color: color,
+                fontSize: fontSize,
+                strokeWidth: strokeWidth
+            )
+            return rendered
+
+        case .sequence(let children):
+            let childMetrics = children.map { measureLaTeXMetrics($0, fontSize: fontSize) }
+            let maxAscent = childMetrics.map(\.baseline).max() ?? 0
+            let maxDescent = childMetrics.map { $0.size.height - $0.baseline }.max() ?? 0
+            var x = origin.x
+            var all: [PKStroke] = []
+            var renderedCount = 0
+
+            for (idx, child) in children.enumerated() {
+                let metrics = childMetrics[idx]
+                let remaining = max(100, maxWidth - (x - origin.x))
+                let childY = origin.y + max(0, maxAscent - metrics.baseline)
+                let childResult = renderLaTeXNode(
+                    child,
+                    at: CGPoint(x: x, y: childY),
+                    maxWidth: remaining,
+                    color: color,
+                    fontSize: fontSize,
+                    strokeWidth: strokeWidth
+                )
+                guard childResult.size.width > 0 || childResult.size.height > 0 else { continue }
+                all.append(contentsOf: childResult.strokes)
+                x += childResult.size.width + latexNodeSpacing(for: child, fontSize: fontSize)
+                renderedCount += 1
+            }
+
+            if renderedCount > 0 {
+                x -= latexNodeSpacing(for: children.last ?? .text(""), fontSize: fontSize)
+            }
+
+            return LaTeXRenderResult(
+                strokes: all,
+                size: CGSize(width: max(1, x - origin.x), height: max(1, maxAscent + maxDescent)),
+                baseline: max(1, maxAscent)
+            )
+
+        case .fraction(let numerator, let denominator):
+            let childFont = max(20, fontSize * 0.84)
+            let childStroke = max(2.8, strokeWidth * 1.0)
+            let numMeasure = measureLaTeXMetrics(numerator, fontSize: childFont)
+            let denMeasure = measureLaTeXMetrics(denominator, fontSize: childFont)
+            let rawWidth = max(numMeasure.size.width, denMeasure.size.width) + 28
+            let fracWidth = max(44, min(maxWidth, rawWidth))
+            let numX = origin.x + max(0, (fracWidth - numMeasure.size.width) * 0.5)
+            let denX = origin.x + max(0, (fracWidth - denMeasure.size.width) * 0.5)
+            let numY = origin.y
+            let barY = numY + max(numMeasure.size.height, childFont) + 7.5
+            let denY = barY + 9
+
+            let numeratorRendered = renderLaTeXNode(
+                numerator,
+                at: CGPoint(x: numX, y: numY),
+                maxWidth: fracWidth - 8,
+                color: color,
+                fontSize: childFont,
+                strokeWidth: childStroke
+            )
+            let denominatorRendered = renderLaTeXNode(
+                denominator,
+                at: CGPoint(x: denX, y: denY),
+                maxWidth: fracWidth - 8,
+                color: color,
+                fontSize: childFont,
+                strokeWidth: childStroke
+            )
+
+            var strokes = numeratorRendered.strokes
+            strokes.append(contentsOf: denominatorRendered.strokes)
+            strokes.append(
+                makeLineStroke(
+                    from: CGPoint(x: origin.x + 2, y: barY),
+                    to: CGPoint(x: origin.x + fracWidth - 2, y: barY),
+                    color: color,
+                    width: max(2.95, strokeWidth * 1.06)
+                )
+            )
+
+            let totalHeight = (denY - origin.y) + max(denominatorRendered.size.height, denMeasure.size.height)
+            return LaTeXRenderResult(
+                strokes: strokes,
+                size: CGSize(width: fracWidth, height: max(1, totalHeight)),
+                baseline: max(1, barY - origin.y + 2)
+            )
+
+        case .sqrt(let rootIndex, let radicand):
+            let childFont = max(20, fontSize * 0.92)
+            let childStroke = max(2.8, strokeWidth * 1.0)
+            let radMeasure = measureLaTeXMetrics(radicand, fontSize: childFont)
+
+            let rootPrefix = max(28, fontSize * 0.82)
+            let radX = origin.x + rootPrefix
+            let radY = origin.y + max(10, fontSize * 0.22)
+            let indexFont = max(12, fontSize * 0.45)
+
+            let radRendered = renderLaTeXNode(
+                radicand,
+                at: CGPoint(x: radX, y: radY),
+                maxWidth: max(100, maxWidth - rootPrefix),
+                color: color,
+                fontSize: childFont,
+                strokeWidth: childStroke
+            )
+
+            let overbarY = radY + max(2, childFont * 0.06)
+            let overbarStartX = origin.x + rootPrefix - 5
+            let radWidth = max(radMeasure.size.width, radRendered.size.width)
+            let overbarEndX = overbarStartX + max(16, radWidth + 14)
+
+            var strokes = radRendered.strokes
+            var indexWidth: CGFloat = 0
+            var indexHeight: CGFloat = 0
+            if let rootIndex {
+                let indexResult = renderLaTeXNode(
+                    rootIndex,
+                    at: CGPoint(x: origin.x - 2, y: origin.y - indexFont * 0.15),
+                    maxWidth: 60,
+                    color: color,
+                    fontSize: indexFont,
+                    strokeWidth: max(2.35, strokeWidth * 0.84)
+                )
+                strokes.append(contentsOf: indexResult.strokes)
+                indexWidth = indexResult.size.width
+                indexHeight = indexResult.size.height
+            }
+            let radicalPoints = [
+                CGPoint(x: origin.x + 2, y: overbarY + 15),
+                CGPoint(x: origin.x + 9, y: overbarY + 22),
+                CGPoint(x: origin.x + 17, y: overbarY + 4),
+                CGPoint(x: overbarStartX, y: overbarY)
+            ]
+            strokes.append(
+                makePolylineStroke(
+                    points: radicalPoints,
+                    color: color,
+                    width: max(3.0, strokeWidth * 1.08)
+                )
+            )
+            strokes.append(
+                makeLineStroke(
+                    from: CGPoint(x: overbarStartX, y: overbarY),
+                    to: CGPoint(x: overbarEndX, y: overbarY),
+                    color: color,
+                    width: max(3.0, strokeWidth * 1.08)
+                )
+            )
+
+            let totalWidth = max(1, max((overbarEndX - origin.x) + 2, rootPrefix + radWidth + indexWidth * 0.2))
+            let totalHeight = max(
+                radY - origin.y + max(radRendered.size.height, radMeasure.size.height),
+                fontSize + 18 + (indexHeight * 0.1)
+            )
+            return LaTeXRenderResult(
+                strokes: strokes,
+                size: CGSize(width: totalWidth, height: totalHeight),
+                baseline: max(1, (radY - origin.y) + radMeasure.baseline)
+            )
+
+        case .script(let base, let sub, let sup):
+            let baseMetrics = measureLaTeXMetrics(base, fontSize: fontSize)
+            let scriptFont = max(15, fontSize * 0.65)
+            let supMetrics = sup.map { measureLaTeXMetrics($0, fontSize: scriptFont) } ?? LaTeXMetrics(size: .zero, baseline: 0)
+            let supLift = sup == nil ? CGFloat(0) : max(6, scriptFont * 0.72)
+            let baseResult = renderLaTeXNode(
+                base,
+                at: CGPoint(x: origin.x, y: origin.y + supLift),
+                maxWidth: maxWidth,
+                color: color,
+                fontSize: fontSize,
+                strokeWidth: strokeWidth
+            )
+            let baseSize = baseResult.size
+            let scriptStroke = max(2.45, strokeWidth * 0.94)
+            var strokes = baseResult.strokes
+            var maxRight = origin.x + baseSize.width
+            var maxBottom = origin.y + supLift + baseSize.height
+
+            if let sup {
+                let supOrigin = CGPoint(
+                    x: origin.x + baseSize.width + 2,
+                    y: origin.y
+                )
+                let supResult = renderLaTeXNode(
+                    sup,
+                    at: supOrigin,
+                    maxWidth: max(80, maxWidth - baseSize.width),
+                    color: color,
+                    fontSize: scriptFont,
+                    strokeWidth: scriptStroke
+                )
+                strokes.append(contentsOf: supResult.strokes)
+                maxRight = max(maxRight, supOrigin.x + supResult.size.width)
+                maxBottom = max(maxBottom, supOrigin.y + supResult.size.height)
+            }
+
+            if let sub {
+                let subOrigin = CGPoint(
+                    x: origin.x + baseSize.width + 2,
+                    y: origin.y + supLift + max(2, baseSize.height * 0.52)
+                )
+                let subResult = renderLaTeXNode(
+                    sub,
+                    at: subOrigin,
+                    maxWidth: max(80, maxWidth - baseSize.width),
+                    color: color,
+                    fontSize: scriptFont,
+                    strokeWidth: scriptStroke
+                )
+                strokes.append(contentsOf: subResult.strokes)
+                maxRight = max(maxRight, subOrigin.x + subResult.size.width)
+                maxBottom = max(maxBottom, subOrigin.y + subResult.size.height)
+            }
+
+            return LaTeXRenderResult(
+                strokes: strokes,
+                size: CGSize(width: max(1, maxRight - origin.x), height: max(1, maxBottom - origin.y)),
+                baseline: max(1, supLift + baseMetrics.baseline + max(0, supMetrics.size.height * 0.03))
+            )
+
+        case .operatorSymbol(let symbol, let sub, let sup):
+            let opFont = max(22, fontSize * 1.25)
+            let opStroke = max(2.85, strokeWidth * 1.02)
+            let limitFont = max(14, fontSize * 0.56)
+            let limitStroke = max(2.35, strokeWidth * 0.9)
+            let supMetrics = sup.map { measureLaTeXMetrics($0, fontSize: limitFont) } ?? LaTeXMetrics(size: .zero, baseline: 0)
+            let subMetrics = sub.map { measureLaTeXMetrics($0, fontSize: limitFont) } ?? LaTeXMetrics(size: .zero, baseline: 0)
+            let topPad = sup == nil ? CGFloat(0) : (supMetrics.size.height + 2)
+            let symbolResult = HandwrittenInkRenderer.render(
+                text: symbol,
+                origin: CGPoint(x: origin.x, y: origin.y + topPad),
+                maxWidth: maxWidth,
+                color: color,
+                fontSize: opFont,
+                strokeWidth: opStroke
+            )
+            var strokes = symbolResult.strokes
+            var width = symbolResult.size.width
+            var totalHeight = topPad + symbolResult.size.height
+
+            if let sup {
+                let supX = origin.x + max(0, (symbolResult.size.width - supMetrics.size.width) * 0.5)
+                let supY = origin.y
+                let supResult = renderLaTeXNode(
+                    sup,
+                    at: CGPoint(x: supX, y: supY),
+                    maxWidth: max(70, maxWidth),
+                    color: color,
+                    fontSize: limitFont,
+                    strokeWidth: limitStroke
+                )
+                strokes.append(contentsOf: supResult.strokes)
+                width = max(width, max(symbolResult.size.width, supResult.size.width))
+                totalHeight = max(totalHeight, topPad + symbolResult.size.height)
+            }
+            if let sub {
+                let subX = origin.x + max(0, (symbolResult.size.width - subMetrics.size.width) * 0.5)
+                let subY = origin.y + topPad + symbolResult.size.height + 2
+                let subResult = renderLaTeXNode(
+                    sub,
+                    at: CGPoint(x: subX, y: subY),
+                    maxWidth: max(70, maxWidth),
+                    color: color,
+                    fontSize: limitFont,
+                    strokeWidth: limitStroke
+                )
+                strokes.append(contentsOf: subResult.strokes)
+                width = max(width, max(symbolResult.size.width, subResult.size.width))
+                totalHeight = max(totalHeight, (subY - origin.y) + subResult.size.height)
+            }
+
+            return LaTeXRenderResult(
+                strokes: strokes,
+                size: CGSize(width: max(1, width), height: max(1, totalHeight)),
+                baseline: max(1, topPad + (symbolResult.size.height * 0.72))
+            )
+        }
+    }
+
+    private func measureLaTeXNode(_ node: LaTeXNode, fontSize: CGFloat) -> CGSize {
+        measureLaTeXMetrics(node, fontSize: fontSize).size
+    }
+
+    private func measureLaTeXMetrics(_ node: LaTeXNode, fontSize: CGFloat) -> LaTeXMetrics {
+        switch node {
+        case .text(let raw):
+            let text = normalizeLaTeXText(raw)
+            guard !text.isEmpty else { return LaTeXMetrics(size: .zero, baseline: 0) }
+            let size = HandwrittenInkRenderer.measure(text: text, fontSize: fontSize)
+            return LaTeXMetrics(size: size, baseline: max(1, size.height * 0.78))
+
+        case .symbol(let symbol):
+            switch symbol {
+            case "+":
+                let height = max(20, fontSize * 0.9)
+                let width = max(18, fontSize * 0.78)
+                return LaTeXMetrics(size: CGSize(width: width, height: height), baseline: height * 0.56)
+            case "±":
+                let height = max(24, fontSize * 1.0)
+                let width = max(20, fontSize * 0.82)
+                return LaTeXMetrics(size: CGSize(width: width, height: height), baseline: height * 0.62)
+            case "-":
+                let height = max(18, fontSize * 0.68)
+                let width = max(18, fontSize * 0.75)
+                return LaTeXMetrics(size: CGSize(width: width, height: height), baseline: height * 0.56)
+            case "=":
+                let height = max(20, fontSize * 0.86)
+                let width = max(20, fontSize * 0.82)
+                return LaTeXMetrics(size: CGSize(width: width, height: height), baseline: height * 0.56)
+            default:
+                let size = HandwrittenInkRenderer.measure(text: String(symbol), fontSize: fontSize)
+                return LaTeXMetrics(size: size, baseline: max(1, size.height * 0.78))
+            }
+
+        case .sequence(let children):
+            var width: CGFloat = 0
+            var maxAscent: CGFloat = 0
+            var maxDescent: CGFloat = 0
+            for child in children {
+                let childMetrics = measureLaTeXMetrics(child, fontSize: fontSize)
+                guard childMetrics.size.width > 0 || childMetrics.size.height > 0 else { continue }
+                width += childMetrics.size.width + latexNodeSpacing(for: child, fontSize: fontSize)
+                maxAscent = max(maxAscent, childMetrics.baseline)
+                maxDescent = max(maxDescent, childMetrics.size.height - childMetrics.baseline)
+            }
+            if width > 0 {
+                width -= latexNodeSpacing(for: children.last ?? .text(""), fontSize: fontSize)
+            }
+            return LaTeXMetrics(
+                size: CGSize(width: max(0, width), height: max(0, maxAscent + maxDescent)),
+                baseline: max(1, maxAscent)
+            )
+
+        case .fraction(let numerator, let denominator):
+            let childFont = max(20, fontSize * 0.84)
+            let numMetrics = measureLaTeXMetrics(numerator, fontSize: childFont)
+            let denMetrics = measureLaTeXMetrics(denominator, fontSize: childFont)
+            let barY = max(numMetrics.size.height, childFont) + 7.5
+            return LaTeXMetrics(
+                size: CGSize(
+                    width: max(numMetrics.size.width, denMetrics.size.width) + 28,
+                    height: barY + 9 + denMetrics.size.height
+                ),
+                baseline: max(1, barY + 2)
+            )
+
+        case .sqrt(let rootIndex, let radicand):
+            let childFont = max(20, fontSize * 0.92)
+            let radMetrics = measureLaTeXMetrics(radicand, fontSize: childFont)
+            let rootPrefix = max(26, fontSize * 0.78)
+            let indexFont = max(12, fontSize * 0.45)
+            let indexMetrics = rootIndex.map { measureLaTeXMetrics($0, fontSize: indexFont) } ?? LaTeXMetrics(size: .zero, baseline: 0)
+            let radTop = max(10, fontSize * 0.22)
+            let height = max(radTop + radMetrics.size.height, fontSize + 18 + indexMetrics.size.height * 0.1)
+            return LaTeXMetrics(
+                size: CGSize(
+                    width: max(rootPrefix + radMetrics.size.width + 10, rootPrefix + radMetrics.size.width + indexMetrics.size.width * 0.2),
+                    height: height
+                ),
+                baseline: max(1, radTop + radMetrics.baseline)
+            )
+
+        case .script(let base, let sub, let sup):
+            let baseMetrics = measureLaTeXMetrics(base, fontSize: fontSize)
+            let scriptFont = max(15, fontSize * 0.65)
+            let supMetrics = sup.map { measureLaTeXMetrics($0, fontSize: scriptFont) } ?? LaTeXMetrics(size: .zero, baseline: 0)
+            let subMetrics = sub.map { measureLaTeXMetrics($0, fontSize: scriptFont) } ?? LaTeXMetrics(size: .zero, baseline: 0)
+            let supLift = sup == nil ? CGFloat(0) : max(6, scriptFont * 0.72)
+            let width = baseMetrics.size.width + max(supMetrics.size.width, subMetrics.size.width) + 6
+            let subBottom = supLift + max(2, baseMetrics.size.height * 0.52) + subMetrics.size.height
+            let height = max(supLift + baseMetrics.size.height, subBottom)
+            return LaTeXMetrics(
+                size: CGSize(width: max(1, width), height: max(1, height)),
+                baseline: max(1, supLift + baseMetrics.baseline)
+            )
+
+        case .operatorSymbol(_, let sub, let sup):
+            let opFont = max(22, fontSize * 1.25)
+            let symbolSize = HandwrittenInkRenderer.measure(text: "∑", fontSize: opFont)
+            let symbolBaseline = max(1, symbolSize.height * 0.72)
+            let limitFont = max(14, fontSize * 0.56)
+            let supMetrics = sup.map { measureLaTeXMetrics($0, fontSize: limitFont) } ?? LaTeXMetrics(size: .zero, baseline: 0)
+            let subMetrics = sub.map { measureLaTeXMetrics($0, fontSize: limitFont) } ?? LaTeXMetrics(size: .zero, baseline: 0)
+            let topPad = sup == nil ? CGFloat(0) : (supMetrics.size.height + 2)
+            let height = topPad + symbolSize.height + (sub == nil ? 0 : 2 + subMetrics.size.height)
+            let width = max(symbolSize.width, max(supMetrics.size.width, subMetrics.size.width)) + 4
+            return LaTeXMetrics(
+                size: CGSize(width: max(1, width), height: max(1, height)),
+                baseline: max(1, topPad + symbolBaseline)
+            )
+        }
+    }
+
+    private func latexNodeSpacing(for node: LaTeXNode, fontSize: CGFloat) -> CGFloat {
+        switch node {
+        case .fraction:
+            return max(12, fontSize * 0.28)
+        case .operatorSymbol:
+            return max(12, fontSize * 0.3)
+        default:
+            return max(8, fontSize * 0.2)
+        }
+    }
+
+    private func normalizeLaTeXText(_ raw: String) -> String {
+        var value = raw
+            .replacingOccurrences(of: "\\,", with: " ")
+            .replacingOccurrences(of: "\\;", with: " ")
+            .replacingOccurrences(of: "\\!", with: "")
+            .replacingOccurrences(of: "{", with: "")
+            .replacingOccurrences(of: "}", with: "")
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let symbolMap: [String: String] = [
+            "\\times": "×", "\\cdot": "·", "\\pm": "±", "\\neq": "≠",
+            "\\leq": "≤", "\\geq": "≥", "\\approx": "≈", "\\infty": "∞",
+            "\\alpha": "α", "\\beta": "β", "\\gamma": "γ", "\\delta": "δ",
+            "\\theta": "θ", "\\lambda": "λ", "\\mu": "μ", "\\pi": "π",
+            "\\sigma": "σ", "\\phi": "φ", "\\omega": "ω", "\\sum": "Σ",
+            "\\int": "∫", "\\sqrt": "√", "\\over": "/"
+        ]
+        for (k, v) in symbolMap {
+            value = value.replacingOccurrences(of: k, with: v)
+        }
+
+        let functionMap: [String: String] = [
+            "\\sin": "sin",
+            "\\cos": "cos",
+            "\\tan": "tan",
+            "\\cot": "cot",
+            "\\sec": "sec",
+            "\\csc": "csc",
+            "\\log": "log",
+            "\\ln": "ln",
+            "\\exp": "exp",
+            "\\lim": "lim",
+            "\\max": "max",
+            "\\min": "min",
+            "\\det": "det",
+            "\\gcd": "gcd",
+            "\\to": "→",
+            "\\rightarrow": "→",
+            "\\leftarrow": "←"
+        ]
+        for (k, v) in functionMap {
+            value = value.replacingOccurrences(of: k, with: v)
+        }
+
+        value = value.replacingOccurrences(of: #"\\[a-zA-Z]+"#, with: "", options: .regularExpression)
+        value = convertScriptsToUnicode(value)
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func convertScriptsToUnicode(_ input: String) -> String {
+        let superscriptMap: [Character: Character] = [
+            "0":"⁰","1":"¹","2":"²","3":"³","4":"⁴","5":"⁵","6":"⁶","7":"⁷","8":"⁸","9":"⁹",
+            "+":"⁺","-":"⁻","=":"⁼","(":"⁽",")":"⁾","n":"ⁿ","i":"ⁱ"
+        ]
+        let subscriptMap: [Character: Character] = [
+            "0":"₀","1":"₁","2":"₂","3":"₃","4":"₄","5":"₅","6":"₆","7":"₇","8":"₈","9":"₉",
+            "+":"₊","-":"₋","=":"₌","(":"₍",")":"₎"
+        ]
+
+        var output = input
+        output = output.replacingOccurrences(of: #"\^\{([^}]+)\}"#, with: "^( $1 )", options: .regularExpression)
+        output = output.replacingOccurrences(of: #"_\{([^}]+)\}"#, with: "_( $1 )", options: .regularExpression)
+
+        func applyMap(_ source: String, marker: Character, map: [Character: Character]) -> String {
+            var result = ""
+            var i = source.startIndex
+            while i < source.endIndex {
+                let ch = source[i]
+                if ch == marker {
+                    let next = source.index(after: i)
+                    if next < source.endIndex {
+                        let candidate = source[next]
+                        if let mapped = map[candidate] {
+                            result.append(mapped)
+                            i = source.index(after: next)
+                            continue
+                        }
+                    }
+                }
+                result.append(ch)
+                i = source.index(after: i)
+            }
+            return result
+        }
+
+        output = applyMap(output, marker: "^", map: superscriptMap)
+        output = applyMap(output, marker: "_", map: subscriptMap)
+        return output
+            .replacingOccurrences(of: "( ", with: "")
+            .replacingOccurrences(of: " )", with: "")
+            .replacingOccurrences(of: #"\\s+"#, with: " ", options: .regularExpression)
+    }
+
+    private func renderMathSymbol(
+        _ symbol: Character,
+        at origin: CGPoint,
+        color: UIColor,
+        fontSize: CGFloat,
+        strokeWidth: CGFloat
+    ) -> LaTeXRenderResult {
+        let size = measureLaTeXMetrics(.symbol(symbol), fontSize: fontSize).size
+        let width = max(12, size.width)
+        let height = max(12, size.height)
+        let lineW = max(3.1, strokeWidth * 1.12)
+        var strokes: [PKStroke] = []
+
+        switch symbol {
+        case "+":
+            let cx = origin.x + width * 0.5
+            let cy = origin.y + height * 0.56
+            strokes.append(
+                makeLineStroke(
+                    from: CGPoint(x: cx, y: cy - height * 0.36),
+                    to: CGPoint(x: cx, y: cy + height * 0.36),
+                    color: color,
+                    width: lineW
+                )
+            )
+            strokes.append(
+                makeLineStroke(
+                    from: CGPoint(x: origin.x + width * 0.12, y: cy),
+                    to: CGPoint(x: origin.x + width * 0.88, y: cy),
+                    color: color,
+                    width: lineW
+                )
+            )
+        case "±":
+            let cx = origin.x + width * 0.5
+            let plusY = origin.y + height * 0.42
+            let minusY = origin.y + height * 0.76
+            strokes.append(
+                makeLineStroke(
+                    from: CGPoint(x: cx, y: plusY - height * 0.22),
+                    to: CGPoint(x: cx, y: plusY + height * 0.22),
+                    color: color,
+                    width: lineW
+                )
+            )
+            strokes.append(
+                makeLineStroke(
+                    from: CGPoint(x: origin.x + width * 0.16, y: plusY),
+                    to: CGPoint(x: origin.x + width * 0.84, y: plusY),
+                    color: color,
+                    width: lineW
+                )
+            )
+            strokes.append(
+                makeLineStroke(
+                    from: CGPoint(x: origin.x + width * 0.16, y: minusY),
+                    to: CGPoint(x: origin.x + width * 0.84, y: minusY),
+                    color: color,
+                    width: lineW
+                )
+            )
+        case "-":
+            let cy = origin.y + height * 0.56
+            strokes.append(
+                makeLineStroke(
+                    from: CGPoint(x: origin.x + width * 0.1, y: cy),
+                    to: CGPoint(x: origin.x + width * 0.9, y: cy),
+                    color: color,
+                    width: lineW
+                )
+            )
+        case "=":
+            let cy = origin.y + height * 0.56
+            let gap = max(3, height * 0.2)
+            strokes.append(
+                makeLineStroke(
+                    from: CGPoint(x: origin.x + width * 0.12, y: cy - gap * 0.5),
+                    to: CGPoint(x: origin.x + width * 0.88, y: cy - gap * 0.5),
+                    color: color,
+                    width: lineW
+                )
+            )
+            strokes.append(
+                makeLineStroke(
+                    from: CGPoint(x: origin.x + width * 0.12, y: cy + gap * 0.5),
+                    to: CGPoint(x: origin.x + width * 0.88, y: cy + gap * 0.5),
+                    color: color,
+                    width: lineW
+                )
+            )
+        default:
+            let rendered = HandwrittenInkRenderer.render(
+                text: String(symbol),
+                origin: origin,
+                maxWidth: width + 8,
+                color: color,
+                fontSize: fontSize,
+                strokeWidth: max(2.5, strokeWidth)
+            )
+            let baseline = max(1, rendered.size.height * 0.78)
+            return LaTeXRenderResult(strokes: rendered.strokes, size: rendered.size, baseline: baseline)
+        }
+
+        let baseline: CGFloat = {
+            switch symbol {
+            case "±":
+                return max(1, height * 0.62)
+            default:
+                return max(1, height * 0.56)
+            }
+        }()
+        return LaTeXRenderResult(strokes: strokes, size: CGSize(width: width, height: height), baseline: baseline)
+    }
+
+    private func makeLineStroke(
+        from start: CGPoint,
+        to end: CGPoint,
+        color: UIColor,
+        width: CGFloat
+    ) -> PKStroke {
+        let ink = PKInk(.pen, color: color)
+        let p0 = PKStrokePoint(
+            location: start,
+            timeOffset: 0,
+            size: CGSize(width: width, height: width),
+            opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2
+        )
+        let p1 = PKStrokePoint(
+            location: end,
+            timeOffset: 0.08,
+            size: CGSize(width: width, height: width),
+            opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2
+        )
+        let path = PKStrokePath(controlPoints: [p0, p1], creationDate: Date())
+        return PKStroke(ink: ink, path: path)
+    }
+
+    private func makePolylineStroke(
+        points: [CGPoint],
+        color: UIColor,
+        width: CGFloat
+    ) -> PKStroke {
+        let ink = PKInk(.pen, color: color)
+        let controlPoints: [PKStrokePoint] = points.enumerated().map { idx, point in
+            PKStrokePoint(
+                location: point,
+                timeOffset: TimeInterval(idx) * 0.04,
+                size: CGSize(width: width, height: width),
+                opacity: 1,
+                force: 1,
+                azimuth: 0,
+                altitude: .pi / 2
+            )
+        }
+        let path = PKStrokePath(controlPoints: controlPoints, creationDate: Date())
+        return PKStroke(ink: ink, path: path)
     }
 
     private func normalizeStrokesToLocalOrigin(_ strokes: [SVGStroke]) -> [SVGStroke] {

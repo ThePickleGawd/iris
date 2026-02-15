@@ -839,16 +839,17 @@ struct ContentView: View {
             textBlocks.append(mainText)
         }
 
-        var widgetBlocks: [(text: String, anchor: CGPoint)] = []
+        var widgetBlocks: [(blocks: [ParsedInkBlock], anchor: CGPoint)] = []
         for widget in response.widgets {
-            let extracted = extractPlainText(fromHTML: widget.html)
+            let extracted = extractInkSource(fromHTML: widget.html)
             let text = extracted.isEmpty ? "Widget output" : extracted
             let anchor = widgetAnchors[widget.id] ?? preferredAIInkAnchor(maxWidthHint: widget.width)
-            widgetBlocks.append((text: text, anchor: anchor))
+            widgetBlocks.append((blocks: parseInkBlocks(from: text), anchor: anchor))
             renderedWidgetIDs.insert(widget.id)
         }
 
-        guard !textBlocks.isEmpty || !widgetBlocks.isEmpty else { return }
+        let parsedTextBlocks = textBlocks.flatMap { parseInkBlocks(from: $0) }
+        guard !parsedTextBlocks.isEmpty || !widgetBlocks.isEmpty else { return }
         if let startAnchor {
             let viewport = objectManager.viewportCanvasRect()
             let maxWidth = min(520, max(240, viewport.width * 0.45))
@@ -856,73 +857,565 @@ struct ContentView: View {
             anchor.x = min(max(anchor.x, viewport.minX + 16), viewport.maxX - maxWidth - 16)
             anchor.y = max(anchor.y, viewport.minY + 16)
 
-            var flowBlocks: [String] = []
-            flowBlocks.append(contentsOf: textBlocks)
-            flowBlocks.append(contentsOf: widgetBlocks.map(\.text))
-
-            for block in flowBlocks where !block.isEmpty {
-                let clipped = String(block.prefix(900))
+            let flowBlocks = parsedTextBlocks + widgetBlocks.flatMap(\.blocks)
+            for block in flowBlocks {
+                anchor.y += block.style.topSpacing
+                let width = min(maxWidth, max(220, maxWidth * block.style.widthFactor))
+                let origin = CGPoint(x: anchor.x + block.style.leadingIndent, y: anchor.y)
                 let drawn: CGSize
-                if aiOutputStreamingEnabled {
+                if case .equation = block.kind, let latex = block.latexSource {
+                    drawn = await objectManager.drawHandwrittenLaTeX(
+                        latex,
+                        at: origin,
+                        maxWidth: width
+                    )
+                } else if aiOutputStreamingEnabled {
                     drawn = await objectManager.drawHandwrittenTextStreaming(
-                        clipped,
-                        at: anchor,
-                        maxWidth: maxWidth
+                        String(block.text.prefix(900)),
+                        at: origin,
+                        maxWidth: width
                     )
                 } else {
                     drawn = await objectManager.drawHandwrittenText(
-                        clipped,
-                        at: anchor,
-                        maxWidth: maxWidth
+                        String(block.text.prefix(900)),
+                        at: origin,
+                        maxWidth: width,
+                        fontSize: block.style.fontSize,
+                        strokeWidth: block.style.strokeWidth
                     )
                 }
-                anchor.y += max(40, drawn.height + 18)
+                anchor.y += max(32, drawn.height + block.style.bottomSpacing)
             }
             return
         }
-
         if !textBlocks.isEmpty {
             var anchor = preferredAIInkAnchor(maxWidthHint: 420)
             let viewport = objectManager.viewportCanvasRect()
             let maxWidth = min(520, max(240, viewport.width * 0.45))
             anchor.x = min(max(anchor.x, viewport.minX + 16), viewport.maxX - maxWidth - 16)
             anchor.y = max(anchor.y, viewport.minY + 16)
-
-            for block in textBlocks {
-                let clipped = String(block.prefix(900))
+            for block in parsedTextBlocks {
+                anchor.y += block.style.topSpacing
+                let width = min(maxWidth, max(220, maxWidth * block.style.widthFactor))
+                let origin = CGPoint(x: anchor.x + block.style.leadingIndent, y: anchor.y)
                 let drawn: CGSize
-                if aiOutputStreamingEnabled {
+                if case .equation = block.kind, let latex = block.latexSource {
+                    drawn = await objectManager.drawHandwrittenLaTeX(
+                        latex,
+                        at: origin,
+                        maxWidth: width
+                    )
+                } else if aiOutputStreamingEnabled {
                     drawn = await objectManager.drawHandwrittenTextStreaming(
-                        clipped,
-                        at: anchor,
-                        maxWidth: maxWidth
+                        String(block.text.prefix(900)),
+                        at: origin,
+                        maxWidth: width
                     )
                 } else {
                     drawn = await objectManager.drawHandwrittenText(
-                        clipped,
-                        at: anchor,
-                        maxWidth: maxWidth
+                        String(block.text.prefix(900)),
+                        at: origin,
+                        maxWidth: width,
+                        fontSize: block.style.fontSize,
+                        strokeWidth: block.style.strokeWidth
                     )
                 }
-                anchor.y += max(48, drawn.height + 24)
+                anchor.y += max(32, drawn.height + block.style.bottomSpacing)
             }
         }
 
         for widget in widgetBlocks {
-            let clipped = String(widget.text.prefix(900))
-            if aiOutputStreamingEnabled {
-                _ = await objectManager.drawHandwrittenTextStreaming(
-                    clipped,
-                    at: widget.anchor,
-                    maxWidth: 420
-                )
-            } else {
-                _ = await objectManager.drawHandwrittenText(
-                    clipped,
-                    at: widget.anchor,
-                    maxWidth: 420
-                )
+            var y = widget.anchor.y
+            for block in widget.blocks {
+                y += block.style.topSpacing
+                let width = max(220, 420 * block.style.widthFactor)
+                let origin = CGPoint(x: widget.anchor.x + block.style.leadingIndent, y: y)
+                let size: CGSize
+                if case .equation = block.kind, let latex = block.latexSource {
+                    size = await objectManager.drawHandwrittenLaTeX(
+                        latex,
+                        at: origin,
+                        maxWidth: width
+                    )
+                } else if aiOutputStreamingEnabled {
+                    size = await objectManager.drawHandwrittenTextStreaming(
+                        String(block.text.prefix(900)),
+                        at: origin,
+                        maxWidth: width
+                    )
+                } else {
+                    size = await objectManager.drawHandwrittenText(
+                        String(block.text.prefix(900)),
+                        at: origin,
+                        maxWidth: width,
+                        fontSize: block.style.fontSize,
+                        strokeWidth: block.style.strokeWidth
+                    )
+                }
+                y += max(28, size.height + block.style.bottomSpacing)
             }
+        }
+    }
+
+    private enum ParsedSourceKind {
+        case plain
+        case markdown
+        case latex
+    }
+
+    private enum ParsedInkKind {
+        case paragraph
+        case heading(Int)
+        case bullet
+        case numbered
+        case quote
+        case code
+        case equation
+    }
+
+    private struct ParsedInkStyle {
+        let fontSize: CGFloat
+        let strokeWidth: CGFloat
+        let topSpacing: CGFloat
+        let bottomSpacing: CGFloat
+        let leadingIndent: CGFloat
+        let widthFactor: CGFloat
+    }
+
+    private struct ParsedInkBlock {
+        let text: String
+        let kind: ParsedInkKind
+        let style: ParsedInkStyle
+        let latexSource: String?
+    }
+
+    private func parseInkBlocks(from raw: String) -> [ParsedInkBlock] {
+        let source = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty else { return [] }
+
+        let sourceKind = classifySource(source)
+        switch sourceKind {
+        case .latex:
+            return [makeEquationBlock(latex: source)]
+        case .plain, .markdown:
+            return parseMarkdownLikeBlocks(source)
+        }
+    }
+
+    private func classifySource(_ text: String) -> ParsedSourceKind {
+        let markdownSignals = [
+            "# ", "## ", "### ", "- ", "* ", "1. ", "```", "> ",
+            "|", "](", "**", "__"
+        ]
+        let latexSignals = [
+            "$$", "\\(", "\\)", "\\[", "\\]", "\\frac", "\\sum", "\\int",
+            "\\sqrt", "\\alpha", "\\beta", "\\gamma", "\\begin{"
+        ]
+        let hasMarkdown = markdownSignals.contains { text.contains($0) }
+        let hasLatex = latexSignals.contains { text.contains($0) }
+        if hasLatex && !hasMarkdown { return .latex }
+        if hasMarkdown { return .markdown }
+        return .plain
+    }
+
+    private func parseMarkdownLikeBlocks(_ source: String) -> [ParsedInkBlock] {
+        let lines = source.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: .newlines)
+        var blocks: [ParsedInkBlock] = []
+        var paragraphBuffer: [String] = []
+        var inCodeFence = false
+        var codeBuffer: [String] = []
+        var inDisplayEquation = false
+        var equationBuffer: [String] = []
+        var equationEndToken: String?
+
+        func flushParagraph() {
+            guard !paragraphBuffer.isEmpty else { return }
+            let joined = paragraphBuffer.joined(separator: " ")
+            let normalized = normalizeMarkdownInline(joined)
+            if !normalized.isEmpty {
+                blocks.append(makeBlock(text: normalized, kind: .paragraph))
+            }
+            paragraphBuffer.removeAll()
+        }
+
+        func flushCode() {
+            guard !codeBuffer.isEmpty else { return }
+            let code = codeBuffer.joined(separator: "\n")
+            if !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                blocks.append(makeBlock(text: code, kind: .code))
+            }
+            codeBuffer.removeAll()
+        }
+
+        func flushEquation() {
+            let latex = equationBuffer
+                .joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !latex.isEmpty {
+                blocks.append(makeEquationBlock(latex: latex))
+            }
+            equationBuffer.removeAll()
+            inDisplayEquation = false
+            equationEndToken = nil
+        }
+
+        for rawLine in lines {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("```") {
+                if inCodeFence {
+                    flushCode()
+                } else {
+                    flushParagraph()
+                }
+                inCodeFence.toggle()
+                continue
+            }
+
+            if inCodeFence {
+                codeBuffer.append(rawLine)
+                continue
+            }
+
+            if inDisplayEquation {
+                let contentLine = rawLine
+                var shouldClose = false
+
+                if let end = equationEndToken, let range = contentLine.range(of: end) {
+                    let prefix = String(contentLine[..<range.lowerBound]).trimmingCharacters(in: .whitespaces)
+                    if !prefix.isEmpty {
+                        equationBuffer.append(prefix)
+                    }
+                    shouldClose = true
+                } else {
+                    let trimmed = contentLine.trimmingCharacters(in: .whitespaces)
+                    if !trimmed.isEmpty {
+                        equationBuffer.append(trimmed)
+                    }
+                }
+
+                if shouldClose {
+                    flushEquation()
+                }
+                continue
+            }
+
+            if line.isEmpty {
+                flushParagraph()
+                continue
+            }
+
+            if let heading = parseHeading(line) {
+                flushParagraph()
+                blocks.append(heading)
+                continue
+            }
+
+            if let bullet = parseBullet(line) {
+                flushParagraph()
+                blocks.append(bullet)
+                continue
+            }
+
+            if let numbered = parseNumbered(line) {
+                flushParagraph()
+                blocks.append(numbered)
+                continue
+            }
+
+            if line.hasPrefix(">") {
+                flushParagraph()
+                let quote = line.replacingOccurrences(of: #"^\>\s*"#, with: "", options: .regularExpression)
+                blocks.append(makeBlock(text: normalizeMarkdownInline(quote), kind: .quote))
+                continue
+            }
+
+            if let (mathBody, endToken) = startDisplayEquation(from: line) {
+                flushParagraph()
+                if let endToken {
+                    equationBuffer = mathBody.isEmpty ? [] : [mathBody]
+                    equationEndToken = endToken
+                    inDisplayEquation = true
+                } else if !mathBody.isEmpty {
+                    blocks.append(makeEquationBlock(latex: mathBody))
+                }
+                continue
+            }
+
+            if isDisplayEquation(line) {
+                flushParagraph()
+                blocks.append(makeEquationBlock(latex: extractEquationBody(from: line)))
+                continue
+            }
+
+            paragraphBuffer.append(line)
+        }
+
+        if inCodeFence {
+            flushCode()
+        }
+        if inDisplayEquation {
+            flushEquation()
+        }
+        flushParagraph()
+        return blocks
+    }
+
+    private func startDisplayEquation(from trimmedLine: String) -> (body: String, endToken: String?)? {
+        if trimmedLine == "$$" {
+            return ("", "$$")
+        }
+        if trimmedLine.hasPrefix("$$") {
+            let remainder = String(trimmedLine.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+            if let endRange = remainder.range(of: "$$") {
+                let body = String(remainder[..<endRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+                return (body, nil)
+            }
+            return (remainder, "$$")
+        }
+
+        if trimmedLine == "\\[" {
+            return ("", "\\]")
+        }
+        if trimmedLine.hasPrefix("\\[") {
+            let remainder = String(trimmedLine.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+            if let endRange = remainder.range(of: "\\]") {
+                let body = String(remainder[..<endRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+                return (body, nil)
+            }
+            return (remainder, "\\]")
+        }
+
+        if trimmedLine.hasPrefix("\\begin{") {
+            guard
+                let open = trimmedLine.firstIndex(of: "{"),
+                let close = trimmedLine[open...].firstIndex(of: "}")
+            else {
+                return nil
+            }
+            let env = String(trimmedLine[trimmedLine.index(after: open)..<close])
+            guard !env.isEmpty else { return nil }
+            let endToken = "\\end{\(env)}"
+            if let endRange = trimmedLine.range(of: endToken) {
+                let body = String(trimmedLine[..<endRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+                return (body, nil)
+            }
+            return (trimmedLine, endToken)
+        }
+
+        return nil
+    }
+
+    private func parseHeading(_ line: String) -> ParsedInkBlock? {
+        guard line.range(of: #"^(#{1,6})\s+.+$"#, options: .regularExpression) != nil else {
+            return nil
+        }
+        let hashes = line.prefix { $0 == "#" }
+        let level = min(6, max(1, hashes.count))
+        let text = line.replacingOccurrences(of: #"^#{1,6}\s+"#, with: "", options: .regularExpression)
+        return makeBlock(text: normalizeMarkdownInline(String(text)), kind: .heading(level))
+    }
+
+    private func parseBullet(_ line: String) -> ParsedInkBlock? {
+        guard line.range(of: #"^[-*+]\s+.+"#, options: .regularExpression) != nil else { return nil }
+        let body = line.replacingOccurrences(of: #"^[-*+]\s+"#, with: "", options: .regularExpression)
+        return makeBlock(text: "• \(normalizeMarkdownInline(body))", kind: .bullet)
+    }
+
+    private func parseNumbered(_ line: String) -> ParsedInkBlock? {
+        guard line.range(of: #"^\d+\.\s+.+"#, options: .regularExpression) != nil else { return nil }
+        let number = line.replacingOccurrences(of: #"^(\d+)\..*$"#, with: "$1", options: .regularExpression)
+        let body = line.replacingOccurrences(of: #"^\d+\.\s+"#, with: "", options: .regularExpression)
+        return makeBlock(text: "\(number). \(normalizeMarkdownInline(body))", kind: .numbered)
+    }
+
+    private func normalizeMarkdownInline(_ text: String) -> String {
+        var output = text
+        output = output.replacingOccurrences(of: #"\[([^\]]+)\]\([^)]+\)"#, with: "$1", options: .regularExpression)
+        output = output.replacingOccurrences(of: #"`([^`]+)`"#, with: "$1", options: .regularExpression)
+        output = output.replacingOccurrences(of: #"\*\*([^*]+)\*\*"#, with: "$1", options: .regularExpression)
+        output = output.replacingOccurrences(of: #"__([^_]+)__"#, with: "$1", options: .regularExpression)
+        output = output.replacingOccurrences(of: #"\*([^*]+)\*"#, with: "$1", options: .regularExpression)
+        output = output.replacingOccurrences(of: #"_([^_]+)_"#, with: "$1", options: .regularExpression)
+        output = output.replacingOccurrences(of: #"~~([^~]+)~~"#, with: "$1", options: .regularExpression)
+        output = replaceInlineMath(in: output)
+        return output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func replaceInlineMath(in text: String) -> String {
+        var out = text
+        let patterns = [
+            #"\$\$(.+?)\$\$"#,
+            #"\\\[(.+?)\\\]"#,
+            #"\\\((.+?)\\\)"#,
+            #"\$(.+?)\$"#
+        ]
+        for pattern in patterns {
+            out = replaceMatches(in: out, pattern: pattern) { match in
+                latexToReadable(match)
+            }
+        }
+        return out
+    }
+
+    private func latexToReadable(_ latex: String) -> String {
+        var t = latex
+            .replacingOccurrences(of: "$$", with: "")
+            .replacingOccurrences(of: "$", with: "")
+            .replacingOccurrences(of: "\\(", with: "")
+            .replacingOccurrences(of: "\\)", with: "")
+            .replacingOccurrences(of: "\\[", with: "")
+            .replacingOccurrences(of: "\\]", with: "")
+            .replacingOccurrences(of: "\\left", with: "")
+            .replacingOccurrences(of: "\\right", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        t = t.replacingOccurrences(
+            of: #"\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}"#,
+            with: "($1)/($2)",
+            options: .regularExpression
+        )
+        t = replaceMatches(in: t, pattern: #"\\sqrt\s*\{([^{}]+)\}"#) { inner in
+            "sqrt(\(inner))"
+        }
+
+        let symbolMap: [String: String] = [
+            "\\times": "×", "\\cdot": "·", "\\pm": "±", "\\neq": "≠",
+            "\\leq": "≤", "\\geq": "≥", "\\approx": "≈", "\\infty": "∞",
+            "\\alpha": "α", "\\beta": "β", "\\gamma": "γ", "\\delta": "δ",
+            "\\theta": "θ", "\\lambda": "λ", "\\mu": "μ", "\\pi": "π",
+            "\\sigma": "σ", "\\phi": "φ", "\\omega": "ω", "\\sum": "Σ",
+            "\\int": "∫"
+        ]
+        for (k, v) in symbolMap {
+            t = t.replacingOccurrences(of: k, with: v)
+        }
+
+        t = t.replacingOccurrences(of: "{", with: "(")
+            .replacingOccurrences(of: "}", with: ")")
+            .replacingOccurrences(of: "\\,", with: " ")
+            .replacingOccurrences(of: #"\\[a-zA-Z]+"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return t.isEmpty ? latex.trimmingCharacters(in: .whitespacesAndNewlines) : t
+    }
+
+    private func replaceMatches(
+        in source: String,
+        pattern: String,
+        transform: (String) -> String
+    ) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else {
+            return source
+        }
+        let ns = source as NSString
+        let matches = regex.matches(in: source, range: NSRange(location: 0, length: ns.length))
+        guard !matches.isEmpty else { return source }
+
+        var output = source
+        for match in matches.reversed() {
+            guard match.numberOfRanges >= 2 else { continue }
+            let fullRange = match.range(at: 0)
+            let innerRange = match.range(at: 1)
+            let inner = ns.substring(with: innerRange)
+            let replacement = transform(inner)
+            if let swiftRange = Range(fullRange, in: output) {
+                output.replaceSubrange(swiftRange, with: replacement)
+            }
+        }
+        return output
+    }
+
+    private func isDisplayEquation(_ line: String) -> Bool {
+        if line.hasPrefix("$$"), line.hasSuffix("$$"), line.count > 4 { return true }
+        if line.hasPrefix("\\["), line.hasSuffix("\\]"), line.count > 4 { return true }
+        if line.hasPrefix("\\begin{") { return true }
+        return false
+    }
+
+    private func extractEquationBody(from line: String) -> String {
+        var value = line
+        if value.hasPrefix("$$"), value.hasSuffix("$$"), value.count >= 4 {
+            value = String(value.dropFirst(2).dropLast(2))
+        } else if value.hasPrefix("\\["), value.hasSuffix("\\]"), value.count >= 4 {
+            value = String(value.dropFirst(2).dropLast(2))
+        }
+        return value
+    }
+
+    private func makeBlock(text: String, kind: ParsedInkKind) -> ParsedInkBlock {
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ParsedInkBlock(text: cleaned, kind: kind, style: style(for: kind), latexSource: nil)
+    }
+
+    private func makeEquationBlock(latex: String) -> ParsedInkBlock {
+        let cleaned = latex.trimmingCharacters(in: .whitespacesAndNewlines)
+        let display = latexToReadable(cleaned)
+        return ParsedInkBlock(
+            text: display.isEmpty ? cleaned : display,
+            kind: .equation,
+            style: style(for: .equation),
+            latexSource: cleaned
+        )
+    }
+
+    private func style(for kind: ParsedInkKind) -> ParsedInkStyle {
+        switch kind {
+        case .heading(let level):
+            let size = max(28, 44 - (CGFloat(level - 1) * 3.5))
+            return ParsedInkStyle(
+                fontSize: size,
+                strokeWidth: 2.4,
+                topSpacing: 12,
+                bottomSpacing: 18,
+                leadingIndent: 0,
+                widthFactor: 1.0
+            )
+        case .bullet, .numbered:
+            return ParsedInkStyle(
+                fontSize: 30,
+                strokeWidth: 2.2,
+                topSpacing: 4,
+                bottomSpacing: 10,
+                leadingIndent: 8,
+                widthFactor: 0.98
+            )
+        case .quote:
+            return ParsedInkStyle(
+                fontSize: 29,
+                strokeWidth: 2.1,
+                topSpacing: 6,
+                bottomSpacing: 12,
+                leadingIndent: 14,
+                widthFactor: 0.95
+            )
+        case .code:
+            return ParsedInkStyle(
+                fontSize: 25,
+                strokeWidth: 2.0,
+                topSpacing: 8,
+                bottomSpacing: 14,
+                leadingIndent: 12,
+                widthFactor: 0.95
+            )
+        case .equation:
+            return ParsedInkStyle(
+                fontSize: 34,
+                strokeWidth: 2.4,
+                topSpacing: 8,
+                bottomSpacing: 14,
+                leadingIndent: 4,
+                widthFactor: 0.92
+            )
+        case .paragraph:
+            return ParsedInkStyle(
+                fontSize: 30,
+                strokeWidth: 2.2,
+                topSpacing: 4,
+                bottomSpacing: 12,
+                leadingIndent: 0,
+                widthFactor: 1.0
+            )
         }
     }
 
@@ -943,7 +1436,16 @@ struct ContentView: View {
         )
     }
 
-    private func extractPlainText(fromHTML html: String) -> String {
+    private func extractInkSource(fromHTML html: String) -> String {
+        if let embeddedSource = extractEmbeddedDocumentSource(fromHTML: html) {
+            let normalized = embeddedSource
+                .replacingOccurrences(of: "\r\n", with: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !normalized.isEmpty {
+                return normalized
+            }
+        }
+
         let withBreaks = html.replacingOccurrences(
             of: "(?i)<br\\s*/?>",
             with: "\n",
@@ -968,6 +1470,55 @@ struct ContentView: View {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         return lines.joined(separator: "\n")
+    }
+
+    private func extractEmbeddedDocumentSource(fromHTML html: String) -> String? {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"(?is)<script[^>]*id\s*=\s*['"]source['"][^>]*>(.*?)</script>"#
+        ) else {
+            return nil
+        }
+        let ns = html as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        guard let match = regex.firstMatch(in: html, range: range), match.numberOfRanges >= 2 else {
+            return nil
+        }
+        let raw = ns.substring(with: match.range(at: 1))
+        let decoded = decodeHTMLEntities(raw)
+        return decoded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : decoded
+    }
+
+    private func decodeHTMLEntities(_ input: String) -> String {
+        var output = input
+        let namedMap: [String: String] = [
+            "&lt;": "<",
+            "&gt;": ">",
+            "&amp;": "&",
+            "&quot;": "\"",
+            "&#39;": "'",
+            "&apos;": "'",
+            "&nbsp;": " "
+        ]
+        for (entity, replacement) in namedMap {
+            output = output.replacingOccurrences(of: entity, with: replacement)
+        }
+
+        output = replaceMatches(in: output, pattern: #"&#x([0-9A-Fa-f]+);"#) { hex in
+            guard let scalarValue = UInt32(hex, radix: 16),
+                  let scalar = UnicodeScalar(scalarValue) else {
+                return "&#x\(hex);"
+            }
+            return String(scalar)
+        }
+
+        output = replaceMatches(in: output, pattern: #"&#([0-9]+);"#) { decimal in
+            guard let scalarValue = UInt32(decimal),
+                  let scalar = UnicodeScalar(scalarValue) else {
+                return "&#\(decimal);"
+            }
+            return String(scalar)
+        }
+        return output
     }
 
     private func responseToast(_ text: String) -> some View {

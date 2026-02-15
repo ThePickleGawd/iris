@@ -348,7 +348,7 @@ class AgentHTTPServer {
             let viewport = mgr.viewportCenter
             let size = CGSize(width: w, height: h)
             let axis = mgr.axisPoint(forCanvasPoint: canvasPos)
-            let text = self?.extractPlainText(fromHTML: html) ?? ""
+            let text = self?.extractInkSource(fromHTML: html) ?? ""
             let wantsHandwritten = renderMode != "widget"
 
             if wantsHandwritten, !text.isEmpty {
@@ -385,7 +385,16 @@ class AgentHTTPServer {
         }
     }
 
-    private func extractPlainText(fromHTML html: String) -> String {
+    private func extractInkSource(fromHTML html: String) -> String {
+        if let embeddedSource = extractEmbeddedDocumentSource(fromHTML: html) {
+            let normalized = embeddedSource
+                .replacingOccurrences(of: "\r\n", with: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !normalized.isEmpty {
+                return normalized
+            }
+        }
+
         let withBreaks = html.replacingOccurrences(
             of: "(?i)<br\\s*/?>",
             with: "\n",
@@ -410,6 +419,82 @@ class AgentHTTPServer {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: "\n")
+    }
+
+    private func extractEmbeddedDocumentSource(fromHTML html: String) -> String? {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"(?is)<script[^>]*id\s*=\s*['"]source['"][^>]*>(.*?)</script>"#
+        ) else {
+            return nil
+        }
+        let ns = html as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        guard let match = regex.firstMatch(in: html, range: range), match.numberOfRanges >= 2 else {
+            return nil
+        }
+        let raw = ns.substring(with: match.range(at: 1))
+        let decoded = decodeHTMLEntities(raw)
+        return decoded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : decoded
+    }
+
+    private func decodeHTMLEntities(_ input: String) -> String {
+        var output = input
+        let namedMap: [String: String] = [
+            "&lt;": "<",
+            "&gt;": ">",
+            "&amp;": "&",
+            "&quot;": "\"",
+            "&#39;": "'",
+            "&apos;": "'",
+            "&nbsp;": " "
+        ]
+        for (entity, replacement) in namedMap {
+            output = output.replacingOccurrences(of: entity, with: replacement)
+        }
+        output = replaceRegexEntity(
+            output,
+            pattern: #"&#x([0-9A-Fa-f]+);"#
+        ) { hex in
+            guard let scalarValue = UInt32(hex, radix: 16),
+                  let scalar = UnicodeScalar(scalarValue) else {
+                return "&#x\(hex);"
+            }
+            return String(scalar)
+        }
+        output = replaceRegexEntity(
+            output,
+            pattern: #"&#([0-9]+);"#
+        ) { decimal in
+            guard let scalarValue = UInt32(decimal),
+                  let scalar = UnicodeScalar(scalarValue) else {
+                return "&#\(decimal);"
+            }
+            return String(scalar)
+        }
+        return output
+    }
+
+    private func replaceRegexEntity(
+        _ source: String,
+        pattern: String,
+        transform: (String) -> String
+    ) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return source }
+        let ns = source as NSString
+        let matches = regex.matches(in: source, range: NSRange(location: 0, length: ns.length))
+        guard !matches.isEmpty else { return source }
+        var output = source
+        for match in matches.reversed() {
+            guard match.numberOfRanges >= 2 else { continue }
+            let fullRange = match.range(at: 0)
+            let innerRange = match.range(at: 1)
+            let inner = ns.substring(with: innerRange)
+            let replacement = transform(inner)
+            if let swiftRange = Range(fullRange, in: output) {
+                output.replaceSubrange(swiftRange, with: replacement)
+            }
+        }
+        return output
     }
 
     private func handleListObjects(_ conn: NWConnection) {

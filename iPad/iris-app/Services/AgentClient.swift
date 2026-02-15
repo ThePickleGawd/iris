@@ -175,7 +175,7 @@ enum AgentClient {
         if let finalResponse {
             return finalResponse
         }
-        return AgentResponse(text: fallbackText, widgets: [])
+        return AgentResponse(text: fallbackText, widgets: [], sessionName: nil)
     }
 
     /// Register a session with the agents server so it appears on the Mac.

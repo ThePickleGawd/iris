@@ -205,6 +205,9 @@ Every widget goes to exactly one device. Think about what the user is doing and 
 - Do not require additional interaction to reveal the core answer.
 - If the user asks a direct question (for example, "What is your name?"), answer it directly.
 - Do not create widgets that only suggest follow-up questions instead of answering.
+- Response text style is strict: output answer-only content with no framing or preambles.
+- Never write meta lead-ins like "Here is your widget", "Here is the answer", "I created", or similar contextualization.
+- If you return text, it should be only the final content the user needs (for math, emit only the formula/steps).
 \
 """
 
@@ -568,11 +571,11 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str) -> dict:
             prompt_feedback = data.get("promptFeedback") if isinstance(data.get("promptFeedback"), dict) else {}
             block_reason = str(prompt_feedback.get("blockReason") or "").strip()
             block_message = str(prompt_feedback.get("blockReasonMessage") or "").strip()
-            detail = "Gemini returned no candidates."
+            detail = ""
             if block_reason:
-                detail = f"{detail} blockReason={block_reason}"
+                detail = f"Model output blocked: {block_reason}"
             if block_message:
-                detail = f"{detail} {block_message}"
+                detail = f"{detail} {block_message}".strip()
             return {"text": detail, "widgets": widgets, "tool_calls": tool_calls}
         no_candidate_count = 0
 
