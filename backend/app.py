@@ -1941,6 +1941,7 @@ def _sse_event(event: str, payload: dict[str, Any]) -> str:
 
 
 def _finalize_agent_response(payload: dict[str, Any], *, stream: bool) -> Any:
+    """Finalize a pre-built response payload (for non-streamed agent runs like claude_code/codex)."""
     if not stream:
         return jsonify(payload)
 
@@ -1951,6 +1952,57 @@ def _finalize_agent_response(payload: dict[str, Any], *, stream: bool) -> Any:
             yield _sse_event("delta", {"text": chunk})
         yield _sse_event("final", payload)
         yield _sse_event("done", {"ok": True})
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    return Response(generate(), mimetype="text/event-stream", headers=headers)
+
+
+def _stream_agent_response(
+    *,
+    agent_kwargs: dict[str, Any],
+    build_final: Any,
+) -> Response:
+    """Run agent in a thread, streaming live events via SSE as they happen."""
+    event_queue: queue.Queue = queue.Queue()
+
+    def _on_event(evt: dict[str, Any]) -> None:
+        event_queue.put_nowait(evt)
+
+    def _run_agent() -> None:
+        try:
+            result = agent_module.run(**agent_kwargs, on_event=_on_event)
+            event_queue.put_nowait({"kind": "_done", "result": result})
+        except Exception as exc:
+            event_queue.put_nowait({"kind": "error", "message": str(exc)})
+
+    thread = threading.Thread(target=_run_agent, daemon=True)
+    thread.start()
+
+    @stream_with_context
+    def generate() -> Any:
+        yield _sse_event("status", {"state": "running"})
+        timeout = agent_module.BROWSER_TOOL_TIMEOUT_SECONDS + 30
+        while True:
+            try:
+                evt = event_queue.get(timeout=timeout)
+            except queue.Empty:
+                yield _sse_event("error", {"message": "Agent timed out"})
+                break
+
+            if evt["kind"] == "_done":
+                final_payload = build_final(evt["result"])
+                yield _sse_event("final", final_payload)
+                yield _sse_event("done", {"ok": True})
+                break
+            elif evt["kind"] == "error":
+                yield _sse_event("error", {"message": evt["message"]})
+                break
+            else:
+                yield _sse_event(evt["kind"], evt)
 
     headers = {
         "Cache-Control": "no-cache",
@@ -2233,8 +2285,180 @@ def v1_agent() -> Any:
     spatial_note = _spatial_context_text(request_metadata)
     if spatial_note:
         enriched_message = f"{message}\n\n{spatial_note}"
+
+    def _build_final_payload(result: dict[str, Any]) -> dict[str, Any]:
+        """Post-process agent result: persist session, route widgets, build final payload."""
+        ts = _now()
+        if not ephemeral and session is not None:
+            assistant_msg: dict[str, Any] = {
+                "id": str(uuid.uuid4()),
+                "role": "assistant",
+                "content": result["text"],
+                "created_at": ts,
+                "device_id": None,
+                "source": "agent.v1",
+            }
+            if result.get("tool_calls"):
+                assistant_msg["tool_calls"] = result["tool_calls"]
+            session["messages"].append(assistant_msg)
+            _publish_messages(session_id, [assistant_msg])
+
+        events: list[dict] = []
+        for tc in result.get("tool_calls", []):
+            tool_name = str(tc.get("name") or "unknown")
+            events.append({
+                "kind": "tool.call",
+                "name": tool_name,
+                "input": {k: v for k, v in tc.items() if k != "name"},
+            })
+            if "result" in tc or "ok" in tc:
+                tool_result_event: dict[str, Any] = {
+                    "kind": "tool.result",
+                    "name": tool_name,
+                }
+                result_payload = tc.get("result")
+                if "result" in tc:
+                    tool_result_event["result"] = result_payload
+                ok_value: Any = tc.get("ok")
+                if ok_value is None and isinstance(result_payload, dict) and "ok" in result_payload:
+                    ok_value = result_payload.get("ok")
+                if ok_value is not None:
+                    tool_result_event["ok"] = bool(ok_value)
+                events.append(tool_result_event)
+        for w in result.get("widgets", []):
+            widget_record = {
+                "id": w.get("widget_id", str(uuid.uuid4())),
+                "type": w.get("type", "html"),
+                "html": w.get("html", ""),
+                "target": w.get("target", "mac"),
+                "width": w.get("width", 320),
+                "height": w.get("height", 220),
+                "x": w.get("x", 0),
+                "y": w.get("y", 0),
+                "coordinate_space": w.get("coordinate_space", "viewport_offset"),
+                "anchor": w.get("anchor", "top_left"),
+                "created_at": ts,
+            }
+            raw_svg = w.get("svg")
+            if raw_svg:
+                widget_record["svg"] = raw_svg
+
+            app.logger.info(
+                "widget_push session_id=%s model=%s target=%s id=%s coordinate_space=%s anchor=%s widget_xy=(%s,%s) widget_size=(%s,%s) %s",
+                session_id,
+                model,
+                widget_record["target"],
+                widget_record["id"],
+                widget_record["coordinate_space"],
+                widget_record["anchor"],
+                widget_record["x"],
+                widget_record["y"],
+                widget_record["width"],
+                widget_record["height"],
+                _fov_summary_from_metadata(request_metadata),
+            )
+            if not ephemeral and session is not None:
+                session.setdefault("widgets", []).append(widget_record)
+
+            is_ipad_diagram = (
+                widget_record["type"] == "diagram"
+                and widget_record["target"] == "ipad"
+                and raw_svg
+            )
+            place_attempted = False
+            place_succeeded = False
+            if is_ipad_diagram:
+                place_attempted = True
+                place_ok = _post_ipad_place(
+                    raw_svg,
+                    widget_record,
+                    ipad_base_urls=_candidate_ipad_urls(source_ip),
+                )
+                place_succeeded = place_ok
+                _log_widget_push_debug(
+                    session_id=session_id,
+                    request_id=request_id,
+                    model=model,
+                    widget_record=widget_record,
+                    raw_widget=w,
+                    event_kind="place" if place_ok else "place_failed",
+                    place_attempted=place_attempted,
+                    place_succeeded=place_succeeded,
+                )
+                if place_ok:
+                    events.append({
+                        "kind": "place",
+                        "place": {
+                            "id": widget_record["id"],
+                            "target": widget_record["target"],
+                            "svg": raw_svg,
+                            "x": widget_record["x"],
+                            "y": widget_record["y"],
+                            "coordinate_space": widget_record["coordinate_space"],
+                        },
+                    })
+                continue
+
+            _log_widget_push_debug(
+                session_id=session_id,
+                request_id=request_id,
+                model=model,
+                widget_record=widget_record,
+                raw_widget=w,
+                event_kind="widget.open",
+                place_attempted=place_attempted,
+                place_succeeded=place_succeeded,
+            )
+            events.append({
+                "kind": "widget.open",
+                "widget": {
+                    "kind": "html",
+                    "id": widget_record["id"],
+                    "target": widget_record["target"],
+                    "payload": {"html": widget_record["html"]},
+                    "width": widget_record["width"],
+                    "height": widget_record["height"],
+                    "x": widget_record["x"],
+                    "y": widget_record["y"],
+                    "coordinate_space": widget_record["coordinate_space"],
+                    "anchor": widget_record["anchor"],
+                },
+            })
+
+        if not ephemeral and session is not None:
+            if is_first_prompt:
+                _auto_name_session(session, message)
+            session["updated_at"] = ts
+            _save_session(session)
+
+        return {
+            "kind": "message.final",
+            "request_id": request_id,
+            "session_id": session_id,
+            "session_name": session.get("name", "") if session else "",
+            "model": model,
+            "text": result["text"],
+            "events": events,
+            "timestamp": ts,
+        }
+
+    agent_kwargs = dict(
+        messages=context,
+        user_message=enriched_message,
+        model=model,
+        screenshots=screenshots,
+    )
+
+    # Streaming mode: run agent in background thread, emit SSE events live.
+    if stream_requested:
+        return _stream_agent_response(
+            agent_kwargs=agent_kwargs,
+            build_final=_build_final_payload,
+        )
+
+    # Non-streaming mode: block until agent finishes, return JSON.
     try:
-        result = agent_module.run(context, enriched_message, model=model, screenshots=screenshots)
+        result = agent_module.run(**agent_kwargs)
     except Exception as exc:
         app.logger.error(
             "v1_agent failed session_id=%s model=%s ephemeral=%s error=%s\n%s",
@@ -2254,167 +2478,7 @@ def v1_agent() -> Any:
             }
         ), 502
 
-    # Persist assistant response only for non-ephemeral requests.
-    ts = _now()
-    if not ephemeral and session is not None:
-        assistant_msg: dict[str, Any] = {
-            "id": str(uuid.uuid4()),
-            "role": "assistant",
-            "content": result["text"],
-            "created_at": ts,
-            "device_id": None,
-            "source": "agent.v1",
-        }
-        if result.get("tool_calls"):
-            assistant_msg["tool_calls"] = result["tool_calls"]
-        session["messages"].append(assistant_msg)
-        _publish_messages(session_id, [assistant_msg])
-
-    # Emit tool.call/tool.result events + store widgets in session
-    events: list[dict] = []
-    for tc in result.get("tool_calls", []):
-        tool_name = str(tc.get("name") or "unknown")
-        events.append({
-            "kind": "tool.call",
-            "name": tool_name,
-            "input": {k: v for k, v in tc.items() if k != "name"},
-        })
-        if "result" in tc or "ok" in tc:
-            tool_result_event: dict[str, Any] = {
-                "kind": "tool.result",
-                "name": tool_name,
-            }
-            result_payload = tc.get("result")
-            if "result" in tc:
-                tool_result_event["result"] = result_payload
-            ok_value: Any = tc.get("ok")
-            if ok_value is None and isinstance(result_payload, dict) and "ok" in result_payload:
-                ok_value = result_payload.get("ok")
-            if ok_value is not None:
-                tool_result_event["ok"] = bool(ok_value)
-            events.append(tool_result_event)
-    for w in result.get("widgets", []):
-        widget_record = {
-            "id": w.get("widget_id", str(uuid.uuid4())),
-            "type": w.get("type", "html"),
-            "html": w.get("html", ""),
-            "target": w.get("target", "mac"),
-            "width": w.get("width", 320),
-            "height": w.get("height", 220),
-            "x": w.get("x", 0),
-            "y": w.get("y", 0),
-            "coordinate_space": w.get("coordinate_space", "viewport_offset"),
-            "anchor": w.get("anchor", "top_left"),
-            "created_at": ts,
-        }
-        raw_svg = w.get("svg")
-        if raw_svg:
-            widget_record["svg"] = raw_svg
-
-        app.logger.info(
-            "widget_push session_id=%s model=%s target=%s id=%s coordinate_space=%s anchor=%s widget_xy=(%s,%s) widget_size=(%s,%s) %s",
-            session_id,
-            model,
-            widget_record["target"],
-            widget_record["id"],
-            widget_record["coordinate_space"],
-            widget_record["anchor"],
-            widget_record["x"],
-            widget_record["y"],
-            widget_record["width"],
-            widget_record["height"],
-            _fov_summary_from_metadata(request_metadata),
-        )
-        if not ephemeral and session is not None:
-            session.setdefault("widgets", []).append(widget_record)
-
-        # Route iPad diagrams to the place endpoint (rasterized SVG image).
-        # Never fall through to widget.open — iPad diagrams are always rasterized.
-        is_ipad_diagram = (
-            widget_record["type"] == "diagram"
-            and widget_record["target"] == "ipad"
-            and raw_svg
-        )
-        place_attempted = False
-        place_succeeded = False
-        if is_ipad_diagram:
-            place_attempted = True
-            source_ip = _request_source_ip()
-            place_ok = _post_ipad_place(
-                raw_svg,
-                widget_record,
-                ipad_base_urls=_candidate_ipad_urls(source_ip),
-            )
-            place_succeeded = place_ok
-            _log_widget_push_debug(
-                session_id=session_id,
-                request_id=request_id,
-                model=model,
-                widget_record=widget_record,
-                raw_widget=w,
-                event_kind="place" if place_ok else "place_failed",
-                place_attempted=place_attempted,
-                place_succeeded=place_succeeded,
-            )
-            if place_ok:
-                events.append({
-                    "kind": "place",
-                    "place": {
-                        "id": widget_record["id"],
-                        "target": widget_record["target"],
-                        "svg": raw_svg,
-                        "x": widget_record["x"],
-                        "y": widget_record["y"],
-                        "coordinate_space": widget_record["coordinate_space"],
-                    },
-                })
-            continue
-
-        _log_widget_push_debug(
-            session_id=session_id,
-            request_id=request_id,
-            model=model,
-            widget_record=widget_record,
-            raw_widget=w,
-            event_kind="widget.open",
-            place_attempted=place_attempted,
-            place_succeeded=place_succeeded,
-        )
-        events.append({
-            "kind": "widget.open",
-            "widget": {
-                "kind": "html",
-                "id": widget_record["id"],
-                "target": widget_record["target"],
-                "payload": {"html": widget_record["html"]},
-                "width": widget_record["width"],
-                "height": widget_record["height"],
-                "x": widget_record["x"],
-                "y": widget_record["y"],
-                "coordinate_space": widget_record["coordinate_space"],
-                "anchor": widget_record["anchor"],
-            },
-        })
-
-    if not ephemeral and session is not None:
-        if is_first_prompt:
-            _auto_name_session(session, message)
-        session["updated_at"] = ts
-        _save_session(session)
-
-    return _finalize_agent_response(
-        {
-            "kind": "message.final",
-            "request_id": request_id,
-            "session_id": session_id,
-            "session_name": session.get("name", "") if session else "",
-            "model": model,
-            "text": result["text"],
-            "events": events,
-            "timestamp": _now(),
-        },
-        stream=stream_requested,
-    )
+    return jsonify(_build_final_payload(result))
 
 
 # ---------------------------------------------------------------------------

@@ -217,10 +217,12 @@ final class NoteCanvasView: PKCanvasView {
         setup()
     }
 
+    private var hasPromotedInkHost = false
+
     private func setup() {
         imageOverlay.isUserInteractionEnabled = false
         imageOverlay.backgroundColor = .clear
-        imageOverlay.layer.zPosition = 0
+        imageOverlay.layer.zPosition = 5
         imageOverlay.layer.anchorPoint = .zero
         imageOverlay.layer.position = .zero
 
@@ -230,37 +232,33 @@ final class NoteCanvasView: PKCanvasView {
         widgetOverlay.layer.anchorPoint = .zero
         widgetOverlay.layer.position = .zero
 
-        insertSubview(imageOverlay, at: 0)
+        // Add both overlays once. Stacking is determined entirely by
+        // layer.zPosition — never re-insert subviews, because PencilKit
+        // reorders its internal ink host during hover/pointer events and
+        // fighting that with insertSubview/sendSubviewToBack causes flicker.
+        //
+        // Stack: PK background (0) < images (5) < ink host (10) < widgets (20)
+        addSubview(imageOverlay)
         addSubview(widgetOverlay)
-        ensureOverlayStacking()
     }
 
-    private func inkHostSubview() -> UIView? {
-        subviews.first { view in
-            guard view !== imageOverlay, view !== widgetOverlay else { return false }
+    /// Promote PencilKit's internal ink host to zPosition 10 so strokes
+    /// render above placed images but below widgets. Called until the ink
+    /// host first becomes available (PK creates it lazily).
+    private func promoteInkHostIfNeeded() {
+        guard !hasPromotedInkHost else { return }
+        for view in subviews where view !== imageOverlay && view !== widgetOverlay {
             let className = String(describing: type(of: view))
-            return className.contains("PK")
-        }
-    }
-
-    private func ensureOverlayStacking() {
-        if let inkHost = inkHostSubview() {
-            insertSubview(imageOverlay, belowSubview: inkHost)
-        } else if imageOverlay.superview !== self {
-            insertSubview(imageOverlay, at: 0)
-        } else {
-            sendSubviewToBack(imageOverlay)
-        }
-
-        if widgetOverlay.superview !== self {
-            addSubview(widgetOverlay)
-        } else {
-            bringSubviewToFront(widgetOverlay)
+            if className.contains("PK") {
+                view.layer.zPosition = 10
+                hasPromotedInkHost = true
+                return
+            }
         }
     }
 
     func refreshOverlayStacking() {
-        ensureOverlayStacking()
+        promoteInkHostIfNeeded()
     }
 
     func configureForInfiniteCanvas() {
@@ -360,7 +358,7 @@ final class NoteCanvasView: PKCanvasView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        ensureOverlayStacking()
+        promoteInkHostIfNeeded()
         let overlayFrame = CGRect(origin: .zero, size: bounds.size)
         imageOverlay.frame = overlayFrame
         widgetOverlay.frame = overlayFrame

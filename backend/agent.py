@@ -15,9 +15,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from openai import OpenAI
+
+EventCallback = Callable[[dict[str, Any]], None] | None
 
 DEFAULT_MODEL = "gpt-5.2-mini"
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-5"
@@ -532,6 +534,7 @@ def run(
     *,
     model: str | None = None,
     screenshots: dict[str, bytes] | None = None,
+    on_event: EventCallback = None,
 ) -> dict:
     """Run agent routed by model/provider, with compatibility fallback."""
     chosen_model = (model or "").strip() or DEFAULT_MODEL
@@ -539,17 +542,17 @@ def run(
 
     if provider == "gemini":
         resolved = _resolve_gemini_model(chosen_model)
-        return _run_gemini(messages, user_message, model=resolved, screenshots=screenshots)
+        return _run_gemini(messages, user_message, model=resolved, screenshots=screenshots, on_event=on_event)
 
     if provider == "anthropic":
-        return _run_anthropic(messages, user_message, model=_resolve_anthropic_model(chosen_model), screenshots=screenshots)
+        return _run_anthropic(messages, user_message, model=_resolve_anthropic_model(chosen_model), screenshots=screenshots, on_event=on_event)
 
     if provider == "openai":
         try:
-            return _run_openai(messages, user_message, model=chosen_model, screenshots=screenshots)
+            return _run_openai(messages, user_message, model=chosen_model, screenshots=screenshots, on_event=on_event)
         except Exception as openai_exc:
             try:
-                return _run_anthropic(messages, user_message, model=None, screenshots=screenshots)
+                return _run_anthropic(messages, user_message, model=None, screenshots=screenshots, on_event=on_event)
             except Exception as anthropic_exc:
                 raise RuntimeError(
                     f"OpenAI failed: {openai_exc}; Anthropic fallback failed: {anthropic_exc}"
@@ -558,12 +561,12 @@ def run(
     # Unknown alias fallback for compatibility.
     anthropic_error: Exception | None = None
     try:
-        return _run_anthropic(messages, user_message, model=None, screenshots=screenshots)
+        return _run_anthropic(messages, user_message, model=None, screenshots=screenshots, on_event=on_event)
     except Exception as exc:
         anthropic_error = exc
 
     try:
-        return _run_openai(messages, user_message, model=chosen_model, screenshots=screenshots)
+        return _run_openai(messages, user_message, model=chosen_model, screenshots=screenshots, on_event=on_event)
     except Exception as openai_exc:
         if anthropic_error is not None:
             raise RuntimeError(
@@ -626,7 +629,7 @@ def _build_user_parts_gemini(
     return parts
 
 
-def _run_openai(messages: list[dict], user_message: str, *, model: str, screenshots: dict[str, bytes] | None = None) -> dict:
+def _run_openai(messages: list[dict], user_message: str, *, model: str, screenshots: dict[str, bytes] | None = None, on_event: EventCallback = None) -> dict:
     try:
         from openai import OpenAI
     except Exception as exc:
@@ -651,11 +654,18 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str, screensh
         choice = resp.choices[0]
 
         if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
+            # Emit reasoning text if the LLM said something before tools
+            reasoning = (choice.message.content or "").strip()
+            if reasoning and on_event:
+                on_event({"kind": "reasoning", "text": reasoning})
+
             msgs.append(choice.message.model_dump())
             for tc in choice.message.tool_calls:
                 args = json.loads(tc.function.arguments)
                 tool_call = _tool_call_info(tc.function.name, args)
                 tool_calls.append(tool_call)
+                if on_event:
+                    on_event({"kind": "tool.call", "name": tc.function.name, "input": tool_call})
                 if tc.function.name == "push_widget":
                     widget = _normalize_widget_args(args)
                     widgets.append(widget)
@@ -666,6 +676,8 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str, screensh
                         "width": widget["width"],
                         "height": widget["height"],
                     })
+                    if on_event:
+                        on_event({"kind": "tool.result", "name": tc.function.name, "ok": True, "summary": f"Widget '{widget['widget_id']}' → {widget['target']}"})
                     msgs.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
@@ -681,6 +693,8 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str, screensh
                 if tc.function.name == "read_screenshot":
                     analysis = _handle_read_screenshot(args)
                     _attach_tool_call_result(tool_call, analysis)
+                    if on_event:
+                        on_event({"kind": "tool.result", "name": tc.function.name, "ok": True, "summary": "Screenshot analyzed"})
                     msgs.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
@@ -691,6 +705,8 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str, screensh
                 if tc.function.name == "read_widget":
                     result = _handle_read_widget(args)
                     _attach_tool_call_result(tool_call, result)
+                    if on_event:
+                        on_event({"kind": "tool.result", "name": tc.function.name, "ok": True, "summary": "Widget loaded"})
                     msgs.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
@@ -705,6 +721,8 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str, screensh
                         user_message=user_message,
                     )
                     _attach_tool_call_result(tool_call, result)
+                    if on_event:
+                        on_event({"kind": "tool.result", "name": tc.function.name, "ok": True, "summary": "Browser task completed"})
                     msgs.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
@@ -716,6 +734,8 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str, screensh
                     "ok": False,
                     "error": f"Unsupported tool '{tc.function.name}'.",
                 })
+                if on_event:
+                    on_event({"kind": "tool.result", "name": tc.function.name, "ok": False, "summary": f"Unsupported tool"})
                 msgs.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -727,7 +747,7 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str, screensh
     return {"text": "Tool loop exhausted. Please try again.", "widgets": widgets, "tool_calls": tool_calls}
 
 
-def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None = None, screenshots: dict[str, bytes] | None = None) -> dict:
+def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None = None, screenshots: dict[str, bytes] | None = None, on_event: EventCallback = None) -> dict:
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not set")
@@ -756,6 +776,17 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
         stop_reason = data.get("stop_reason")
 
         if stop_reason == "tool_use":
+            # Emit reasoning from text blocks before tool_use blocks
+            if on_event:
+                reasoning_parts = [
+                    block.get("text", "")
+                    for block in content_blocks
+                    if isinstance(block, dict) and block.get("type") == "text"
+                ]
+                reasoning = "".join(reasoning_parts).strip()
+                if reasoning:
+                    on_event({"kind": "reasoning", "text": reasoning})
+
             anth_messages.append({"role": "assistant", "content": content_blocks})
             tool_results = []
             for block in content_blocks:
@@ -765,6 +796,8 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
                 tool_name = block.get("name")
                 tool_call = _tool_call_info(tool_name, args)
                 tool_calls.append(tool_call)
+                if on_event:
+                    on_event({"kind": "tool.call", "name": tool_name, "input": tool_call})
                 if tool_name == "push_widget":
                     widget = _normalize_widget_args(args)
                     widgets.append(widget)
@@ -775,6 +808,8 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
                         "width": widget["width"],
                         "height": widget["height"],
                     })
+                    if on_event:
+                        on_event({"kind": "tool.result", "name": tool_name, "ok": True, "summary": f"Widget '{widget['widget_id']}' → {widget['target']}"})
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.get("id"),
@@ -790,6 +825,8 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
                 if tool_name == "read_screenshot":
                     analysis = _handle_read_screenshot(args)
                     _attach_tool_call_result(tool_call, analysis)
+                    if on_event:
+                        on_event({"kind": "tool.result", "name": tool_name, "ok": True, "summary": "Screenshot analyzed"})
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.get("id"),
@@ -800,6 +837,8 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
                 if tool_name == "read_widget":
                     result = _handle_read_widget(args)
                     _attach_tool_call_result(tool_call, result)
+                    if on_event:
+                        on_event({"kind": "tool.result", "name": tool_name, "ok": True, "summary": "Widget loaded"})
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.get("id"),
@@ -814,6 +853,8 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
                         user_message=user_message,
                     )
                     _attach_tool_call_result(tool_call, result)
+                    if on_event:
+                        on_event({"kind": "tool.result", "name": tool_name, "ok": True, "summary": "Browser task completed"})
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.get("id"),
@@ -825,6 +866,8 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
                     "ok": False,
                     "error": f"Unsupported tool '{tool_name}'.",
                 })
+                if on_event:
+                    on_event({"kind": "tool.result", "name": tool_name, "ok": False, "summary": "Unsupported tool"})
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.get("id"),
@@ -843,7 +886,7 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
     return {"text": "Tool loop exhausted. Please try again.", "widgets": widgets, "tool_calls": tool_calls}
 
 
-def _run_gemini(messages: list[dict], user_message: str, *, model: str, screenshots: dict[str, bytes] | None = None) -> dict:
+def _run_gemini(messages: list[dict], user_message: str, *, model: str, screenshots: dict[str, bytes] | None = None, on_event: EventCallback = None) -> dict:
     api_key = (
         os.environ.get("GEMINI_API_KEY", "").strip()
         or os.environ.get("GOOGLE_API_KEY", "").strip()
@@ -894,6 +937,16 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str, screensh
                 function_calls.append(call)
 
         if function_calls:
+            # Emit reasoning from text parts before function calls
+            if on_event:
+                reasoning_text = "".join(
+                    part.get("text", "")
+                    for part in parts
+                    if isinstance(part, dict) and isinstance(part.get("text"), str)
+                ).strip()
+                if reasoning_text:
+                    on_event({"kind": "reasoning", "text": reasoning_text})
+
             contents.append({"role": "model", "parts": [{"functionCall": fc} for fc in function_calls]})
             tool_response_parts: list[dict[str, Any]] = []
             for call in function_calls:
@@ -903,6 +956,8 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str, screensh
                     args = {}
                 tool_call = _tool_call_info(name, args)
                 tool_calls.append(tool_call)
+                if on_event:
+                    on_event({"kind": "tool.call", "name": name, "input": tool_call})
 
                 if name == "push_widget":
                     widget = _normalize_widget_args(args)
@@ -914,6 +969,8 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str, screensh
                         "width": widget["width"],
                         "height": widget["height"],
                     })
+                    if on_event:
+                        on_event({"kind": "tool.result", "name": name, "ok": True, "summary": f"Widget '{widget['widget_id']}' → {widget['target']}"})
                     tool_response_parts.append({
                         "functionResponse": {
                             "name": name,
@@ -932,6 +989,8 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str, screensh
                 if name == "read_screenshot":
                     analysis = _handle_read_screenshot(args)
                     _attach_tool_call_result(tool_call, analysis)
+                    if on_event:
+                        on_event({"kind": "tool.result", "name": name, "ok": True, "summary": "Screenshot analyzed"})
                     tool_response_parts.append({
                         "functionResponse": {
                             "name": name,
@@ -943,6 +1002,8 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str, screensh
                 if name == "read_widget":
                     result = _handle_read_widget(args)
                     _attach_tool_call_result(tool_call, result)
+                    if on_event:
+                        on_event({"kind": "tool.result", "name": name, "ok": True, "summary": "Widget loaded"})
                     tool_response_parts.append({
                         "functionResponse": {
                             "name": name,
@@ -967,6 +1028,8 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str, screensh
                     except json.JSONDecodeError:
                         response = {"ok": True, "result": result}
                     _attach_tool_call_result(tool_call, response)
+                    if on_event:
+                        on_event({"kind": "tool.result", "name": name, "ok": True, "summary": "Browser task completed"})
                     tool_response_parts.append({
                         "functionResponse": {
                             "name": name,
@@ -977,6 +1040,8 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str, screensh
 
                 unsupported = {"ok": False, "error": f"Unsupported tool '{name}'"}
                 _attach_tool_call_result(tool_call, unsupported)
+                if on_event:
+                    on_event({"kind": "tool.result", "name": name, "ok": False, "summary": "Unsupported tool"})
                 tool_response_parts.append({
                     "functionResponse": {
                         "name": name or "unknown",

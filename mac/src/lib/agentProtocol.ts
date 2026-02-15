@@ -50,9 +50,10 @@ export interface AgentRequestEnvelope {
 
 export type AgentStreamEvent =
   | { kind: "status"; state: string; detail?: string }
+  | { kind: "reasoning"; text: string }
   | { kind: "message.final"; text: string }
   | { kind: "tool.call"; name: string; input?: unknown }
-  | { kind: "tool.result"; name: string; output?: unknown }
+  | { kind: "tool.result"; name: string; ok?: boolean; summary?: string; output?: unknown }
   | { kind: "widget.open"; widget: WidgetSpec }
   | { kind: "error"; message: string }
 
@@ -128,6 +129,13 @@ export function normalizeIncomingEvent(raw: unknown): AgentStreamEvent | null {
     }
   }
 
+  if (kind === "reasoning") {
+    return {
+      kind: "reasoning",
+      text: String(obj.text ?? "")
+    }
+  }
+
   if (kind === "message.final") {
     const text = String(obj.text ?? "")
     return { kind: "message.final", text }
@@ -145,6 +153,8 @@ export function normalizeIncomingEvent(raw: unknown): AgentStreamEvent | null {
     return {
       kind: "tool.result",
       name: String(obj.name || "unknown"),
+      ok: typeof obj.ok === "boolean" ? obj.ok : undefined,
+      summary: typeof obj.summary === "string" ? obj.summary : undefined,
       output: obj.output
     }
   }

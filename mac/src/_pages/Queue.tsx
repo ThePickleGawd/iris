@@ -25,11 +25,17 @@ interface ToolCallInfo {
   height?: number
 }
 
+type AgentStep =
+  | { kind: "reasoning"; text: string }
+  | { kind: "tool.call"; name: string; input?: Record<string, unknown> }
+  | { kind: "tool.result"; name: string; ok?: boolean; summary?: string }
+
 interface ChatMessage {
   role: "user" | "assistant"
   text: string
   _id?: string
   toolCalls?: ToolCallInfo[]
+  steps?: AgentStep[]
 }
 
 interface SessionInfo {
@@ -548,6 +554,18 @@ const Queue: React.FC = () => {
           throw new Error("Backend URL is required")
         }
 
+        const appendStep = (step: AgentStep) => {
+          setChatMessages((msgs) => {
+            if (msgs.length === 0) return msgs
+            const updated = [...msgs]
+            const idx = updated.length - 1
+            const last = updated[idx]
+            const steps = last.steps || []
+            updated[idx] = { ...last, steps: [...steps, step] }
+            return updated
+          })
+        }
+
         await requestAgentResponse({
           settings,
           requestId,
@@ -561,6 +579,10 @@ const Queue: React.FC = () => {
               }
             },
             onStatus: () => {},
+            onReasoning: (text) => {
+              if (activeStreamRequestRef.current !== requestId) return
+              appendStep({ kind: "reasoning", text })
+            },
             onToolCall: (name, input) => {
               if (activeStreamRequestRef.current !== requestId) return
               const tc = input as ToolCallInfo | undefined
@@ -573,8 +595,12 @@ const Queue: React.FC = () => {
                 updated[idx] = { ...prev, toolCalls: [...existing, { name, ...tc }] }
                 return updated
               })
+              appendStep({ kind: "tool.call", name, input: tc as Record<string, unknown> | undefined })
             },
-            onToolResult: () => {},
+            onToolResult: (_name, data) => {
+              if (activeStreamRequestRef.current !== requestId) return
+              appendStep({ kind: "tool.result", name: _name, ok: data?.ok, summary: data?.summary })
+            },
             onWidgetOpen: (widget) => {
               if (activeStreamRequestRef.current !== requestId) return
               void openWidget(widget)
@@ -991,7 +1017,29 @@ const Queue: React.FC = () => {
                 chatMessages.map((msg, idx) => (
                   <div key={idx} className={`iris-msg ${msg.role}`}>
                     <div className="iris-msg-bubble">
-                      {msg.role === "assistant" && msg.toolCalls?.length ? (
+                      {msg.role === "assistant" && msg.steps?.length ? (
+                        <div className="iris-steps">
+                          {msg.steps.map((step, i) => (
+                            <div key={i} className={`iris-step iris-step-${step.kind.replace(".", "-")}`}>
+                              {step.kind === "reasoning" && (
+                                <p className="iris-reasoning">{step.text}</p>
+                              )}
+                              {step.kind === "tool.call" && (
+                                <span className="iris-tool-chip">
+                                  <span className="iris-tool-chip-icon">{"\u2192"}</span>
+                                  <span className="iris-tool-chip-name">{step.name}</span>
+                                </span>
+                              )}
+                              {step.kind === "tool.result" && (
+                                <span className="iris-tool-chip iris-tool-result">
+                                  <span className="iris-tool-chip-icon">{step.ok !== false ? "\u2713" : "\u2717"}</span>
+                                  <span className="iris-tool-chip-summary">{step.summary || step.name}</span>
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ) : msg.role === "assistant" && msg.toolCalls?.length ? (
                         <div className="iris-tool-calls">
                           {msg.toolCalls.map((tc, i) => (
                             <span key={i} className="iris-tool-chip">
@@ -1010,7 +1058,7 @@ const Queue: React.FC = () => {
                           >
                             {msg.text}
                           </ReactMarkdown>
-                        ) : msg.toolCalls?.length ? null : (
+                        ) : (msg.toolCalls?.length || msg.steps?.length) ? null : (
                           <div className="iris-thinking">
                             <span />
                             <span />
