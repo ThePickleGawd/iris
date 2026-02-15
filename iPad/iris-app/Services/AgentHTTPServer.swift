@@ -26,6 +26,10 @@ class AgentHTTPServer {
     /// Returns the URL of the first linked device's agent server (port 8000), if available
     func agentServerURL() -> URL? {
         guard let device = linkedDevices.values.first, let ip = device.ip, !ip.isEmpty else {
+            if let persisted = UserDefaults.standard.string(forKey: "iris_agent_server_url"),
+               let url = URL(string: persisted) {
+                return url
+            }
             return nil
         }
         return URL(string: "http://\(ip):8000")
@@ -33,12 +37,20 @@ class AgentHTTPServer {
 
     /// Returns the URL of the first linked device's backend server (port 8000), if available.
     func backendServerURL() -> URL? {
-        guard let device = linkedDevices.values.first, let ip = device.ip, !ip.isEmpty else {
-            return nil
-        }
         let backendPort = UserDefaults.standard.integer(forKey: "iris_backend_port")
         let port = backendPort > 0 ? backendPort : 8000
-        return URL(string: "http://\(ip):\(port)")
+
+        if let device = linkedDevices.values.first, let ip = device.ip, !ip.isEmpty {
+            return URL(string: "http://\(ip):\(port)")
+        }
+
+        if let persisted = UserDefaults.standard.string(forKey: "iris_agent_server_url"),
+           let persistedURL = URL(string: persisted),
+           let host = persistedURL.host {
+            return URL(string: "http://\(host):\(port)")
+        }
+
+        return nil
     }
 
     let port: UInt16
