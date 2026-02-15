@@ -309,7 +309,7 @@ async function initializeApp() {
     appState.createTray()
     // Register global shortcuts using ShortcutsHelper
     appState.shortcutsHelper.registerGlobalShortcuts()
-    appState.startScreenMonitor()
+    // Screen monitor disabled — screenshots are taken on-demand at query time
     appState.deviceDiscovery.start()
   })
 

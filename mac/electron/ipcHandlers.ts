@@ -80,6 +80,23 @@ export function initializeIpcHandlers(appState: AppState): void {
     return extraLatest || queueLatest
   }
 
+  /** Take a screenshot on-demand and notify the renderer. */
+  const takeQueryScreenshot = async (): Promise<string | null> => {
+    try {
+      const screenshotPath = await appState.takeScreenshot()
+      const preview = await appState.getImagePreview(screenshotPath)
+      const mainWindow = appState.getMainWindow()
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("screenshot-taken", { path: screenshotPath, preview })
+      }
+      console.log(`[ipcHandlers] On-demand screenshot taken: ${screenshotPath}`)
+      return screenshotPath
+    } catch (error) {
+      console.warn("[ipcHandlers] On-demand screenshot failed:", error)
+      return null
+    }
+  }
+
   const notifyAgentReply = (text: string) => {
     if (!notificationsEnabled) return
     try {
@@ -380,6 +397,9 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   ipcMain.handle("claude-chat", async (event, message: string) => {
     try {
+      // Take a screenshot at query time
+      await takeQueryScreenshot()
+
       if (SCREENSHOT_AI_PROCESSING_ENABLED) {
         const latestScreenshotPath = getLatestScreenshotPathFromQueues()
         if (latestScreenshotPath) {
@@ -401,6 +421,9 @@ export function initializeIpcHandlers(appState: AppState): void {
   // Legacy IPC name retained for compatibility, but handled as non-streaming HTTP.
   ipcMain.handle("claude-chat-stream", async (event, requestId: string, message: string) => {
     try {
+      // Take a screenshot at query time
+      await takeQueryScreenshot()
+
       if (SCREENSHOT_AI_PROCESSING_ENABLED) {
         const latestScreenshotPath = getLatestScreenshotPathFromQueues()
         if (latestScreenshotPath) {
@@ -634,6 +657,9 @@ export function initializeIpcHandlers(appState: AppState): void {
         cwd?: string
       }
     ) => {
+      // Take a screenshot at query time
+      await takeQueryScreenshot()
+
       const conversationId = String(params?.conversationId || "").trim()
       const prompt = String(params?.prompt || "").trim()
       const cwd = String(params?.cwd || "").trim()
@@ -716,6 +742,9 @@ export function initializeIpcHandlers(appState: AppState): void {
         cwd?: string
       }
     ) => {
+      // Take a screenshot at query time
+      await takeQueryScreenshot()
+
       const conversationId = String(params?.conversationId || "").trim()
       const prompt = String(params?.prompt || "").trim()
       const cwd = String(params?.cwd || "").trim()
@@ -927,6 +956,10 @@ export function initializeIpcHandlers(appState: AppState): void {
         if (res.statusCode !== 200) {
           req.destroy()
           sseRequest = null
+          // Retry after delay — session may not exist on server yet
+          if (currentSession?.id === sessionId) {
+            setTimeout(startSSE, 5000)
+          }
           return
         }
 

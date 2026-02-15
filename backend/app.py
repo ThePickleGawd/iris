@@ -2068,9 +2068,23 @@ def v1_agent() -> Any:
                 return jsonify({"error": "Failed to inject into live session"}), 502
             claude_commander.mark_busy()
 
+            # Store user message so it appears on all devices via SSE/polling
+            user_ts = _now()
+            user_msg = {
+                "id": str(uuid.uuid4()),
+                "role": "user",
+                "content": message,
+                "created_at": user_ts,
+                "device_id": device.get("id"),
+                "source": "agent.v1",
+            }
+            session.setdefault("messages", []).append(user_msg)
+            session["updated_at"] = user_ts
+
             if is_first_prompt:
                 _auto_name_session(session, message)
             _save_session(session)
+            _publish_messages(session_id, [user_msg])
             return _finalize_agent_response(
                 {
                     "kind": "message.final",

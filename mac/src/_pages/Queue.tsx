@@ -610,6 +610,9 @@ const Queue: React.FC = () => {
         // keep local state
       }
 
+      // Refresh session list so sort order reflects the new message
+      refreshSessions()
+
       chatInputRef.current?.focus()
     }
   }
@@ -660,6 +663,9 @@ const Queue: React.FC = () => {
       }))
 
       if (incoming.length === 0) return
+
+      // Refresh session list so sort order reflects the new message
+      refreshSessions()
 
       setChatMessages((prev) => {
         const updated = [...prev]
