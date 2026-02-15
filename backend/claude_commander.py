@@ -1,254 +1,213 @@
-"""Iris ↔ claude-commander socket injection module.
+"""Lightweight Claude Commander bridge used by backend/app.py.
 
-Communicates with a running claude-commander instance via Unix socket to inject
-text and image references into a live Claude Code session.
-
-Protocol: newline-delimited JSON over Unix domain socket.
-  Send:   {"action": "send", "text": "...", "submit": true}
-  Status: {"action": "status"}
+This module tracks a live local UNIX socket session and can inject text/image
+messages into a running commander-compatible process.
 """
 from __future__ import annotations
 
 import base64
 import json
-import logging
 import os
 import socket
+import tempfile
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
-log = logging.getLogger("iris.claude_commander")
-
 DEFAULT_SOCKET_PATH = "/tmp/iris-claude.sock"
-META_FILE = "/tmp/iris-claude-meta.json"
-IMAGES_DIR = Path("/tmp/iris/images")
+_SESSION_STATE_PATH = Path("/tmp/iris-claude-session.json")
 
-# ---------------------------------------------------------------------------
-# Low-level socket helpers
-# ---------------------------------------------------------------------------
+_live_session: dict[str, Any] | None = None
+_is_idle = True
 
-def _send_command(command: dict[str, Any], socket_path: str = DEFAULT_SOCKET_PATH, timeout: float = 5.0) -> dict[str, Any] | None:
-    """Send a JSON command to the claude-commander socket and return the response."""
-    if not os.path.exists(socket_path):
-        log.warning("Socket not found: %s", socket_path)
+
+def _persist_state() -> None:
+    if not _live_session:
+        _SESSION_STATE_PATH.unlink(missing_ok=True)
+        return
+    payload = {
+        "socket_path": _live_session.get("socket_path") or DEFAULT_SOCKET_PATH,
+        "cwd": _live_session.get("cwd"),
+        "pid": _live_session.get("pid"),
+        "updated_at": int(time.time()),
+    }
+    _SESSION_STATE_PATH.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _load_state() -> dict[str, Any] | None:
+    global _live_session
+    if _live_session:
+        return _live_session
+    try:
+        raw = json.loads(_SESSION_STATE_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
+    if not isinstance(raw, dict):
+        return None
+    socket_path = str(raw.get("socket_path") or "").strip() or DEFAULT_SOCKET_PATH
+    session = {
+        "socket_path": socket_path,
+        "cwd": str(raw.get("cwd") or "").strip() or None,
+        "pid": raw.get("pid"),
+    }
+    _live_session = session
+    return session
+
+
+def _send_payload(socket_path: str, payload: dict[str, Any]) -> bool:
+    path = Path(socket_path)
+    if not path.exists():
+        return False
+
+    encoded_json = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+    fallback_text = (
+        str(payload.get("prompt") or payload.get("text") or "").strip() + "\n"
+    ).encode("utf-8")
 
     try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        sock.connect(socket_path)
-
-        payload = json.dumps(command) + "\n"
-        sock.sendall(payload.encode("utf-8"))
-
-        # Read response (may not always get one for "send" actions)
-        chunks: list[bytes] = []
-        try:
-            while True:
-                data = sock.recv(4096)
-                if not data:
-                    break
-                chunks.append(data)
-                # Check if we got a complete JSON line
-                combined = b"".join(chunks)
-                if b"\n" in combined:
-                    break
-        except socket.timeout:
-            pass
-
-        sock.close()
-
-        if chunks:
-            raw = b"".join(chunks).decode("utf-8").strip()
-            if raw:
-                try:
-                    return json.loads(raw)
-                except json.JSONDecodeError:
-                    log.debug("Non-JSON response: %s", raw[:200])
-                    return {"raw": raw}
-        return {"ok": True}
-
-    except (OSError, ConnectionRefusedError) as exc:
-        log.warning("Socket communication failed (%s): %s", socket_path, exc)
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-def is_connected(socket_path: str = DEFAULT_SOCKET_PATH) -> bool:
-    """Check if a claude-commander socket exists and responds."""
-    if not os.path.exists(socket_path):
-        return False
-    result = _send_command({"action": "status"}, socket_path, timeout=2.0)
-    return result is not None
-
-
-def get_status(socket_path: str = DEFAULT_SOCKET_PATH) -> dict[str, Any]:
-    """Get status from the claude-commander instance."""
-    if not os.path.exists(socket_path):
-        return {"connected": False, "error": "socket not found"}
-
-    result = _send_command({"action": "status"}, socket_path, timeout=2.0)
-    if result is None:
-        return {"connected": False, "error": "no response"}
-
-    result["connected"] = True
-    return result
-
-
-def get_meta() -> dict[str, Any] | None:
-    """Read the session meta file written by tools/claudei."""
-    try:
-        return json.loads(Path(META_FILE).read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return None
-
-
-def inject_text(text: str, socket_path: str = DEFAULT_SOCKET_PATH, submit: bool = True) -> bool:
-    """Inject a text message into the live Claude Code session.
-
-    Args:
-        text: The message to inject (appears as user input).
-        socket_path: Path to the claude-commander Unix socket.
-        submit: If True, the message is submitted immediately (Enter pressed).
-
-    Returns:
-        True if the message was sent successfully.
-    """
-    if not text.strip():
-        log.warning("inject_text called with empty text")
-        return False
-
-    result = _send_command(
-        {"action": "send", "text": text, "submit": submit},
-        socket_path,
-    )
-    if result is None:
-        log.error("inject_text failed: socket not responding")
-        return False
-
-    log.info("inject_text OK: %d chars, submit=%s", len(text), submit)
-    return True
-
-
-def inject_image(
-    image_path: str | None = None,
-    image_base64: str | None = None,
-    prompt: str = "",
-    socket_path: str = DEFAULT_SOCKET_PATH,
-) -> bool:
-    """Inject an image reference into the live Claude Code session.
-
-    The image is saved to /tmp/iris/images/ and a text message is injected
-    telling Claude Code to use its Read tool to view the image.
-
-    Args:
-        image_path: Path to an existing image file.
-        image_base64: Base64-encoded image data (saved to a new file).
-        prompt: Additional prompt/instructions to include with the image.
-        socket_path: Path to the claude-commander Unix socket.
-
-    Returns:
-        True if the injection succeeded.
-    """
-    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-
-    if image_base64:
-        # Decode and save to a new file
-        ts = int(time.time() * 1000)
-        dest = IMAGES_DIR / f"{ts}_{uuid.uuid4().hex[:8]}.png"
-        try:
-            dest.write_bytes(base64.b64decode(image_base64))
-        except Exception as exc:
-            log.error("Failed to decode base64 image: %s", exc)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(2.0)
+            client.connect(str(path))
+            client.sendall(encoded_json)
+            return True
+    except OSError:
+        # Fallback for plain-text socket protocols.
+        if not fallback_text.strip():
             return False
-        image_path = str(dest)
-    elif image_path:
-        if not Path(image_path).exists():
-            log.error("Image file not found: %s", image_path)
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(2.0)
+                client.connect(str(path))
+                client.sendall(fallback_text)
+                return True
+        except OSError:
             return False
-    else:
-        log.error("inject_image requires either image_path or image_base64")
-        return False
-
-    # Build the injection text
-    parts = [f"[Iris: Image from iPad at {image_path} — use Read tool to view it]"]
-    if prompt.strip():
-        parts.append(prompt.strip())
-    else:
-        parts.append("Please describe what you see in this image and use it as context.")
-
-    message = "\n".join(parts)
-    return inject_text(message, socket_path)
-
-
-# ---------------------------------------------------------------------------
-# Live session state tracking
-# ---------------------------------------------------------------------------
-
-_live_session: dict[str, Any] = {}
 
 
 def register_session(socket_path: str, cwd: str | None = None, pid: int | None = None) -> None:
-    """Register a live claude-commander session (called by tools/claudei)."""
-    _live_session.update({
+    global _live_session
+    socket_path = str(socket_path or "").strip() or DEFAULT_SOCKET_PATH
+    _live_session = {
         "socket_path": socket_path,
-        "cwd": cwd,
+        "cwd": str(cwd).strip() if isinstance(cwd, str) and cwd.strip() else None,
         "pid": pid,
-        "registered_at": time.time(),
-    })
-    log.info("Live session registered: socket=%s cwd=%s pid=%s", socket_path, cwd, pid)
+    }
+    _persist_state()
 
 
 def unregister_session(socket_path: str | None = None) -> None:
-    """Unregister the live session."""
-    _live_session.clear()
-    log.info("Live session unregistered")
+    global _live_session
+    if socket_path:
+        current = get_live_session()
+        if current and str(current.get("socket_path") or "") != str(socket_path):
+            return
+    _live_session = None
+    _persist_state()
 
 
 def get_live_session() -> dict[str, Any] | None:
-    """Return the currently registered live session info, or None."""
-    if not _live_session:
-        # Fall back to checking the meta file
-        meta = get_meta()
-        if meta and is_connected(meta.get("socket_path", DEFAULT_SOCKET_PATH)):
-            return meta
+    session = _load_state()
+    if not session:
         return None
-
-    # Verify it's still alive
-    sp = _live_session.get("socket_path", DEFAULT_SOCKET_PATH)
-    if not is_connected(sp):
-        log.info("Live session no longer responding, clearing registration")
-        _live_session.clear()
+    socket_path = str(session.get("socket_path") or DEFAULT_SOCKET_PATH)
+    if not is_connected(socket_path):
         return None
-
-    return dict(_live_session)
-
-
-# ---------------------------------------------------------------------------
-# Idle tracking (set by Stop hook, consumed by injection)
-# ---------------------------------------------------------------------------
-
-_idle_flag = False
+    return {
+        "socket_path": socket_path,
+        "cwd": session.get("cwd"),
+        "pid": session.get("pid"),
+    }
 
 
-def mark_idle() -> None:
-    """Mark Claude Code as idle (called by the Stop hook)."""
-    global _idle_flag
-    _idle_flag = True
-    log.debug("Claude Code marked idle")
+def is_connected(socket_path: str | None = None) -> bool:
+    path = Path(str(socket_path or DEFAULT_SOCKET_PATH))
+    if not path.exists():
+        return False
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(1.5)
+            client.connect(str(path))
+            return True
+    except OSError:
+        return False
+
+
+def inject_text(text: str, socket_path: str | None = None) -> bool:
+    message = str(text or "").strip()
+    if not message:
+        return False
+    return _send_payload(
+        str(socket_path or DEFAULT_SOCKET_PATH),
+        {"type": "text", "text": message, "prompt": message},
+    )
+
+
+def inject_image(
+    *,
+    image_path: str | None = None,
+    image_base64: str | None = None,
+    prompt: str | None = None,
+    socket_path: str | None = None,
+) -> bool:
+    chosen_path: str | None = None
+
+    if image_path:
+        p = Path(image_path).expanduser().resolve()
+        if p.is_file():
+            chosen_path = str(p)
+
+    if not chosen_path and image_base64:
+        try:
+            raw = base64.b64decode(image_base64)
+        except (ValueError, TypeError):
+            raw = b""
+        if raw:
+            tmp = tempfile.NamedTemporaryFile(prefix="iris-image-", suffix=".png", delete=False)
+            with tmp:
+                tmp.write(raw)
+            chosen_path = tmp.name
+
+    if not chosen_path:
+        return False
+
+    text_prompt = str(prompt or "").strip()
+    payload = {
+        "type": "image",
+        "image_path": chosen_path,
+        "prompt": text_prompt,
+        "text": text_prompt,
+    }
+    ok = _send_payload(str(socket_path or DEFAULT_SOCKET_PATH), payload)
+    if ok:
+        return True
+
+    fallback = f"[Iris: Image at {chosen_path}]"
+    if text_prompt:
+        fallback = f"{fallback}\n{text_prompt}"
+    return inject_text(fallback, socket_path=socket_path)
 
 
 def mark_busy() -> None:
-    """Mark Claude Code as busy (called after injection)."""
-    global _idle_flag
-    _idle_flag = False
+    global _is_idle
+    _is_idle = False
+
+
+def mark_idle() -> None:
+    global _is_idle
+    _is_idle = True
 
 
 def is_idle() -> bool:
-    """Check if Claude Code is idle and ready for injection."""
-    return _idle_flag
+    return _is_idle
+
+
+def get_status(socket_path: str | None = None) -> dict[str, Any]:
+    session = _load_state() or {}
+    resolved_path = str(socket_path or session.get("socket_path") or DEFAULT_SOCKET_PATH)
+    connected = is_connected(resolved_path)
+    return {
+        "socket_path": resolved_path,
+        "connected": connected,
+        "idle": _is_idle,
+        "session_registered": bool(session),
+    }

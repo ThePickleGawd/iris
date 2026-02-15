@@ -10,6 +10,7 @@ import shutil
 import struct
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -22,6 +23,37 @@ DEFAULT_MODEL = "gpt-5.2-mini"
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-5"
 DEFAULT_GEMINI_MODEL = "gemini-3-flash"
 MAX_TOOL_ROUNDS = 6
+BROWSER_SERVICE_URL = os.environ.get("BROWSER_SERVICE_URL", "http://127.0.0.1:8010").rstrip("/")
+try:
+    BROWSER_TOOL_TIMEOUT_SECONDS = max(
+        30, int(os.environ.get("BROWSER_TOOL_TIMEOUT_SECONDS", "150"))
+    )
+except ValueError:
+    BROWSER_TOOL_TIMEOUT_SECONDS = 150
+try:
+    ANTHROPIC_MAX_TOKENS = max(
+        256, min(4096, int(os.environ.get("ANTHROPIC_MAX_TOKENS", "3072")))
+    )
+except ValueError:
+    ANTHROPIC_MAX_TOKENS = 3072
+try:
+    ANTHROPIC_HTTP_TIMEOUT_SECONDS = max(
+        30, int(os.environ.get("ANTHROPIC_HTTP_TIMEOUT_SECONDS", "120"))
+    )
+except ValueError:
+    ANTHROPIC_HTTP_TIMEOUT_SECONDS = 120
+try:
+    ANTHROPIC_HTTP_RETRIES = max(
+        0, min(5, int(os.environ.get("ANTHROPIC_HTTP_RETRIES", "2")))
+    )
+except ValueError:
+    ANTHROPIC_HTTP_RETRIES = 2
+try:
+    ANTHROPIC_HTTP_BACKOFF_SECONDS = max(
+        0.0, float(os.environ.get("ANTHROPIC_HTTP_BACKOFF_SECONDS", "1.0"))
+    )
+except ValueError:
+    ANTHROPIC_HTTP_BACKOFF_SECONDS = 1.0
 
 _WIDGETS_DIR = Path(__file__).resolve().parent.parent / "widgets"
 
@@ -65,6 +97,7 @@ _SYSTEM_PROMPT_TEMPLATE = """\
 You are Iris, a visual assistant that lives across a user's devices (iPad and Mac).
 
 You can push widgets to devices using the push_widget tool.
+You can run web actions using the run_browser_task tool when browsing is the most direct way to complete the user's request.
 
 ## Widget Types
 
@@ -222,6 +255,16 @@ def _tool_call_info(name: str, args: dict) -> dict:
         for k in ("width", "height"):
             if args.get(k) is not None:
                 info[k] = int(args[k])
+    if name == "run_browser_task":
+        for k in ("start_url",):
+            if args.get(k):
+                info[k] = str(args[k])
+        for k in ("max_steps",):
+            if args.get(k) is not None:
+                try:
+                    info[k] = int(args[k])
+                except (TypeError, ValueError):
+                    pass
     return info
 
 
@@ -290,6 +333,43 @@ TOOLS = [
                     },
                 },
                 "required": ["widget_id", "target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_browser_task",
+            "description": (
+                "Execute browser automation using the standalone browser service. "
+                "Use this when the user asks for web actions like navigating sites, filling forms, "
+                "searching content, or completing browser workflows."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "instruction": {
+                        "type": "string",
+                        "description": "The exact browser task to execute.",
+                    },
+                    "context_text": {
+                        "type": "string",
+                        "description": "Optional extra context or constraints for the browser task.",
+                    },
+                    "start_url": {
+                        "type": "string",
+                        "description": "Optional URL to open first.",
+                    },
+                    "max_steps": {
+                        "type": "number",
+                        "description": "Optional max browser action steps. Default 30, max 200.",
+                    },
+                    "include_attached_screenshots": {
+                        "type": "boolean",
+                        "description": "Include current attached screenshots as image context. Default true.",
+                    },
+                },
+                "required": ["instruction"],
             },
         },
     },
@@ -471,6 +551,7 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str, screensh
 
         if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
             msgs.append(choice.message.model_dump())
+            forced_final_text: str | None = None
             for tc in choice.message.tool_calls:
                 args = json.loads(tc.function.arguments)
                 tool_calls.append(_tool_call_info(tc.function.name, args))
@@ -507,11 +588,24 @@ def _run_openai(messages: list[dict], user_message: str, *, model: str, screensh
                     })
                     continue
 
+                if tc.function.name == "run_browser_task":
+                    result = _handle_run_browser_task(args, screenshots=screenshots)
+                    msgs.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": result,
+                    })
+                    if forced_final_text is None:
+                        forced_final_text = _browser_tool_final_text(result)
+                    continue
+
                 msgs.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
                     "content": f"Unsupported tool '{tc.function.name}'.",
                 })
+            if forced_final_text:
+                return {"text": forced_final_text, "widgets": widgets, "tool_calls": tool_calls}
         else:
             return {"text": choice.message.content or "", "widgets": widgets, "tool_calls": tool_calls}
 
@@ -536,7 +630,7 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
     for _ in range(MAX_TOOL_ROUNDS):
         body = {
             "model": model,
-            "max_tokens": 4096,
+            "max_tokens": ANTHROPIC_MAX_TOKENS,
             "system": _build_system_prompt(),
             "messages": anth_messages,
             "tools": _anthropic_tools(),
@@ -549,6 +643,7 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
         if stop_reason == "tool_use":
             anth_messages.append({"role": "assistant", "content": content_blocks})
             tool_results = []
+            forced_final_text: str | None = None
             for block in content_blocks:
                 if block.get("type") != "tool_use":
                     continue
@@ -588,12 +683,25 @@ def _run_anthropic(messages: list[dict], user_message: str, *, model: str | None
                     })
                     continue
 
+                if tool_name == "run_browser_task":
+                    result = _handle_run_browser_task(args, screenshots=screenshots)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.get("id"),
+                        "content": result,
+                    })
+                    if forced_final_text is None:
+                        forced_final_text = _browser_tool_final_text(result)
+                    continue
+
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.get("id"),
                     "content": f"Unsupported tool '{tool_name}'.",
                 })
             anth_messages.append({"role": "user", "content": tool_results})
+            if forced_final_text:
+                return {"text": forced_final_text, "widgets": widgets, "tool_calls": tool_calls}
             continue
 
         text = "".join(
@@ -659,6 +767,7 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str, screensh
         if function_calls:
             contents.append({"role": "model", "parts": [{"functionCall": fc} for fc in function_calls]})
             tool_response_parts: list[dict[str, Any]] = []
+            forced_final_text: str | None = None
             for call in function_calls:
                 name = str(call.get("name") or "").strip()
                 args = call.get("args")
@@ -704,6 +813,27 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str, screensh
                     })
                     continue
 
+                if name == "run_browser_task":
+                    result = _handle_run_browser_task(args, screenshots=screenshots)
+                    response: dict[str, Any]
+                    try:
+                        parsed = json.loads(result)
+                        if isinstance(parsed, dict):
+                            response = parsed
+                        else:
+                            response = {"ok": True, "result": result}
+                    except json.JSONDecodeError:
+                        response = {"ok": True, "result": result}
+                    tool_response_parts.append({
+                        "functionResponse": {
+                            "name": name,
+                            "response": response,
+                        }
+                    })
+                    if forced_final_text is None:
+                        forced_final_text = _browser_tool_final_text(result)
+                    continue
+
                 tool_response_parts.append({
                     "functionResponse": {
                         "name": name or "unknown",
@@ -712,6 +842,8 @@ def _run_gemini(messages: list[dict], user_message: str, *, model: str, screensh
                 })
 
             contents.append({"role": "user", "parts": tool_response_parts})
+            if forced_final_text:
+                return {"text": forced_final_text, "widgets": widgets, "tool_calls": tool_calls}
             continue
 
         text = "".join(
@@ -767,22 +899,52 @@ def _gemini_function_declarations() -> list[dict[str, Any]]:
 
 
 def _anthropic_post(path: str, body: dict[str, Any], api_key: str) -> dict[str, Any]:
-    req = urllib.request.Request(
-        f"https://api.anthropic.com{path}",
-        data=json.dumps(body).encode("utf-8"),
-        method="POST",
-        headers={
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
+    attempts = ANTHROPIC_HTTP_RETRIES + 1
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        req = urllib.request.Request(
+            f"https://api.anthropic.com{path}",
+            data=json.dumps(body).encode("utf-8"),
+            method="POST",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=ANTHROPIC_HTTP_TIMEOUT_SECONDS) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")
+            retryable = exc.code in {408, 429, 500, 502, 503, 504, 529} or _is_transient_anthropic_detail(detail)
+            if retryable and attempt < attempts - 1:
+                time.sleep(ANTHROPIC_HTTP_BACKOFF_SECONDS * (2 ** attempt))
+                continue
+            last_error = RuntimeError(f"Anthropic HTTP {exc.code}: {detail[:300]}")
+            break
+        except urllib.error.URLError as exc:
+            reason = str(getattr(exc, "reason", exc))
+            if attempt < attempts - 1:
+                time.sleep(ANTHROPIC_HTTP_BACKOFF_SECONDS * (2 ** attempt))
+                continue
+            last_error = RuntimeError(f"Anthropic request failed: {reason[:300]}")
+            break
+    assert last_error is not None
+    raise last_error
+
+
+def _is_transient_anthropic_detail(detail: str) -> bool:
+    lowered = (detail or "").lower()
+    markers = (
+        "timed out",
+        "timeout",
+        "interrupted",
+        "overloaded",
+        "try again",
+        "long requests",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"Anthropic HTTP {exc.code}: {detail[:300]}") from exc
+    return any(marker in lowered for marker in markers)
 
 
 def _gemini_post(model: str, body: dict[str, Any], api_key: str) -> dict[str, Any]:
@@ -1418,6 +1580,168 @@ def _handle_read_widget(args: dict[str, Any]) -> str:
         "tags": meta.get("tags", []),
         "html": html_source,
     }, ensure_ascii=False)
+
+
+def _handle_run_browser_task(
+    args: dict[str, Any],
+    *,
+    screenshots: dict[str, bytes] | None = None,
+) -> str:
+    instruction = str(args.get("instruction") or "").strip()
+    start_url = str(args.get("start_url") or "").strip()
+    if not instruction and start_url:
+        instruction = f"Open {start_url} in a new tab and stop."
+    if not instruction:
+        return json.dumps({"ok": False, "error": "Missing 'instruction' parameter."})
+
+    payload: dict[str, Any] = {"instruction": instruction}
+
+    context_text = str(args.get("context_text") or "").strip()
+    if context_text:
+        payload["context_text"] = context_text
+
+    if not start_url:
+        start_url = _infer_url_from_text(instruction) or _infer_url_from_text(context_text)
+
+    if start_url:
+        payload["start_url"] = start_url
+
+    try:
+        max_steps = int(args.get("max_steps", 12))
+    except (TypeError, ValueError):
+        max_steps = 12
+    payload["max_steps"] = max(1, min(max_steps, 200))
+
+    include_screenshots = args.get("include_attached_screenshots")
+    # Default to no screenshots for browser tasks. It avoids unnecessary latency
+    # and vision failures for simple navigation commands.
+    use_screenshots = bool(include_screenshots) if include_screenshots is not None else False
+    if use_screenshots and screenshots:
+        images: list[dict[str, Any]] = []
+        for name in sorted(screenshots.keys()):
+            media_type = _guess_image_media_type(screenshots[name])
+            images.append(
+                {
+                    "name": name,
+                    "media_type": media_type,
+                    "data_base64": base64.b64encode(screenshots[name]).decode("ascii"),
+                }
+            )
+        if images:
+            payload["images"] = images
+
+    url = f"{BROWSER_SERVICE_URL}/api/browser/run"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=BROWSER_TOOL_TIMEOUT_SECONDS) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    return json.dumps(parsed, ensure_ascii=False)
+            except json.JSONDecodeError:
+                pass
+            return json.dumps({"ok": False, "error": "Invalid JSON from browser service", "raw": raw[:1000]})
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        detail = body[:1500] if body else f"HTTP {exc.code}"
+        return json.dumps(
+            {
+                "ok": False,
+                "error": f"Browser service request failed with HTTP {exc.code}",
+                "details": detail,
+            },
+            ensure_ascii=False,
+        )
+    except urllib.error.URLError as exc:
+        return json.dumps(
+            {
+                "ok": False,
+                "error": f"Browser service unavailable at {BROWSER_SERVICE_URL}",
+                "details": str(exc.reason),
+            },
+            ensure_ascii=False,
+        )
+    except Exception as exc:
+        return json.dumps(
+            {"ok": False, "error": "Browser service request failed", "details": str(exc)},
+            ensure_ascii=False,
+        )
+
+
+def _browser_tool_final_text(result_json: str) -> str:
+    """Create a deterministic final assistant message from browser tool output."""
+    try:
+        parsed = json.loads(result_json)
+    except json.JSONDecodeError:
+        parsed = {"ok": False, "error": "Browser service returned invalid JSON"}
+
+    if not isinstance(parsed, dict):
+        return "Browser automation finished, but response format was unexpected."
+
+    if not parsed.get("ok"):
+        error = str(parsed.get("error") or "Browser automation failed.").strip()
+        details = str(parsed.get("details") or "").strip()
+        if details:
+            return f"{error}\n\nDetails: {details}"
+        return error
+
+    result = parsed.get("result")
+    if isinstance(result, dict):
+        errors = result.get("errors")
+        if isinstance(errors, list) and errors:
+            first_error = str(errors[0]).strip()
+            if first_error:
+                return f"Browser task did not complete cleanly: {first_error}"
+
+        final_result = str(result.get("final_result") or "").strip()
+        confirmed_url = str(result.get("confirmed_url") or "").strip()
+        page_title = str(result.get("page_title") or "").strip()
+
+        if final_result:
+            text = final_result
+        elif confirmed_url:
+            text = f"Completed browser task. Current page: {confirmed_url}"
+        else:
+            text = "Completed browser task on your Mac browser."
+
+        if page_title:
+            text = f"{text}\nPage title: {page_title}"
+        return text
+
+    return "Completed browser task on your Mac browser."
+
+
+def _infer_url_from_text(text: str) -> str | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    http_match = re.search(r"https?://\\S+", raw, flags=re.IGNORECASE)
+    if http_match:
+        return http_match.group(0).rstrip(".,)")
+    bare_match = re.search(r"\\b([a-zA-Z0-9-]+\\.[a-zA-Z]{2,})(/\\S*)?\\b", raw)
+    if bare_match:
+        return f"https://{bare_match.group(0).rstrip('.,)')}"
+    return None
+
+
+def _guess_image_media_type(raw: bytes) -> str:
+    """Infer image media type from magic bytes."""
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"GIF87a") or raw.startswith(b"GIF89a"):
+        return "image/gif"
+    if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/png"
 
 
 def describe_screenshot_with_gemini(

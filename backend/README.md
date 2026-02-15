@@ -21,6 +21,7 @@ Environment is loaded from the repository root `.env` (if present).
 Optional env:
 
 - `CORS_ALLOW_ORIGIN` (default `*`), e.g. `http://localhost:5173` for a specific frontend origin.
+- `BROWSER_SERVICE_URL` (default `http://127.0.0.1:8010`) for Iris agent browser tool execution.
 
 ## Endpoints
 

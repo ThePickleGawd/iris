@@ -34,16 +34,6 @@ Iris is **all-to-all** — every device in your Apple ecosystem can see, talk to
   brew install d2
   ```
 
-- **claude-commander** — PTY wrapper that lets Iris inject messages into a live Claude Code session via Unix socket:
-  ```bash
-  # macOS Apple Silicon (prebuilt)
-  curl -L https://github.com/sstraus/claude-commander/releases/latest/download/claudec-macos-arm64 -o /usr/local/bin/claudec
-  chmod +x /usr/local/bin/claudec
-
-  # Or build from source (requires Rust)
-  cargo install --git https://github.com/sstraus/claude-commander
-  ```
-
 - **TinyTeX** — lightweight LaTeX distribution needed by Manim for math rendering:
   ```
   curl -sL "https://tinytex.yihui.org/install-bin-unix.sh" | sh
@@ -54,3 +44,16 @@ Iris is **all-to-all** — every device in your Apple ecosystem can see, talk to
   ```
   cd backend && uv sync
   ```
+
+## Browser Automation Service
+
+`browser/` contains a standalone browser-use integration that can execute browser actions from text + image context using Claude.
+
+Quick start:
+
+```
+cd browser
+./run.sh
+```
+
+See `browser/README.md` for API payload format and Playwright setup.
