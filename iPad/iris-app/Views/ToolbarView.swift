@@ -1,4 +1,5 @@
 import SwiftUI
+import Darwin
 
 // MARK: - Provider Logos (inline paths)
 
@@ -35,8 +36,8 @@ private struct OpenAILogo: Shape {
         // Outer hexagon
         for i in 0..<6 {
             let angle = Angle.degrees(Double(i) * 60 - 90)
-            let x = cx + CGFloat(cos(angle.radians)) * s * 0.48
-            let y = cy + CGFloat(sin(angle.radians)) * s * 0.48
+            let x = cx + CGFloat(Darwin.cos(angle.radians)) * s * 0.48
+            let y = cy + CGFloat(Darwin.sin(angle.radians)) * s * 0.48
             if i == 0 { p.move(to: CGPoint(x: x, y: y)) }
             else { p.addLine(to: CGPoint(x: x, y: y)) }
         }
@@ -46,8 +47,8 @@ private struct OpenAILogo: Shape {
             let angle = Angle.degrees(Double(i) * 60 - 90)
             p.move(to: CGPoint(x: cx, y: cy))
             p.addLine(to: CGPoint(
-                x: cx + CGFloat(cos(angle.radians)) * s * 0.32,
-                y: cy + CGFloat(sin(angle.radians)) * s * 0.32
+                x: cx + CGFloat(Darwin.cos(angle.radians)) * s * 0.32,
+                y: cy + CGFloat(Darwin.sin(angle.radians)) * s * 0.32
             ))
         }
         return p

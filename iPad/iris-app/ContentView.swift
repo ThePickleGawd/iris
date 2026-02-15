@@ -1,6 +1,12 @@
 import SwiftUI
 import UIKit
 
+actor InkRenderQueue {
+    func enqueue(_ operation: @escaping () async -> Void) async {
+        await operation()
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject var canvasState: CanvasState
 
@@ -13,7 +19,7 @@ struct ContentView: View {
     @StateObject private var audioService = AudioCaptureService()
     @StateObject private var transcriber = SpeechTranscriber()
 
-    @State private var isProcessing = false
+    @State private var activeRequestCount = 0
     @State private var lastResponse: String?
     @State private var widgetSyncTimer: Timer?
     @State private var proactiveMonitorTimer: Timer?
@@ -35,6 +41,7 @@ struct ContentView: View {
     @State private var awaitingPlacementTap = false
     @State private var placementTapPrompt = "Tap where the response should start."
     @State private var placementTapContinuation: CheckedContinuation<CGPoint, Never>?
+    private let inkRenderQueue = InkRenderQueue()
 
     private let proactiveEnabled = false
     private let proactiveIntervalSeconds: TimeInterval = 5
@@ -114,7 +121,7 @@ struct ContentView: View {
                 placementTapOverlay
             }
 
-            if isProcessing {
+            if activeRequestCount > 0 {
                 processingIndicator
             }
 
@@ -154,7 +161,8 @@ struct ContentView: View {
             proactiveStrokeIdleTask?.cancel()
             connectionMonitorTimer?.invalidate()
             if let continuation = placementTapContinuation {
-                continuation.resume(returning: objectManager.viewportCenter)
+                let axis = objectManager.axisPoint(forCanvasPoint: objectManager.viewportCenter)
+                continuation.resume(returning: axis)
                 placementTapContinuation = nil
                 awaitingPlacementTap = false
             }
@@ -224,18 +232,22 @@ struct ContentView: View {
     }
 
     private func sendPromptToAgent(_ prompt: String) {
-        guard !isProcessing else { return }
         guard let serverURL = objectManager.httpServer.agentServerURL() else {
             withAnimation { lastResponse = "No linked Mac found. Open the Iris Mac app first." }
             autoDismissResponse()
             return
         }
-
-        isProcessing = true
+        let requestToken = UUID().uuidString
 
         Task {
+            await MainActor.run { activeRequestCount += 1 }
+            defer {
+                Task { @MainActor in
+                    activeRequestCount = max(0, activeRequestCount - 1)
+                }
+            }
             do {
-                let placementAnchor = await waitForPlacementTap(
+                let placementAnchorAxis = await waitForPlacementTap(
                     prompt: "Tap where the answer should start."
                 )
                 var message = prompt
@@ -319,6 +331,7 @@ struct ContentView: View {
                     message,
                     model: document.resolvedModel,
                     chatID: sessionID,
+                    ephemeral: true,
                     coordinateSnapshot: coordinateSnapshot,
                     codexConversationID: document.codexConversationID,
                     codexCWD: document.codexCWD,
@@ -348,20 +361,21 @@ struct ContentView: View {
                     let widgetInkAnchors = Dictionary(
                         uniqueKeysWithValues: agentResponse.widgets.enumerated().map { idx, widget in
                             let origin = (idx == 0)
-                                ? preferredWidgetOrigin(for: widget, anchorCanvas: placementAnchor)
+                                ? preferredWidgetOrigin(for: widget, anchorAxis: placementAnchorAxis)
                                 : widgetOrigin(for: widget)
                             return (widget.id, origin)
                         }
                     )
-                    await renderAgentOutputAsHandwriting(
-                        response: agentResponse,
-                        prefix: screenshotUploadWarning,
-                        startAnchor: placementAnchor,
-                        widgetAnchors: widgetInkAnchors
-                    )
+                    await inkRenderQueue.enqueue { [self] in
+                        await renderAgentOutputAsHandwriting(
+                            response: agentResponse,
+                            prefix: screenshotUploadWarning,
+                            startAnchor: placementAnchorAxis,
+                            widgetAnchors: widgetInkAnchors
+                        )
+                    }
                     await MainActor.run {
                         lastResponse = screenshotUploadWarning
-                        isProcessing = false
                         if screenshotUploadWarning != nil {
                             autoDismissResponse()
                         }
@@ -370,7 +384,7 @@ struct ContentView: View {
                     // Place widgets on the canvas and track them
                     for (idx, widget) in agentResponse.widgets.enumerated() {
                         let pos = (idx == 0)
-                            ? preferredWidgetOrigin(for: widget, anchorCanvas: placementAnchor)
+                            ? preferredWidgetOrigin(for: widget, anchorAxis: placementAnchorAxis)
                             : widgetOrigin(for: widget)
                         await objectManager.place(
                             html: widget.html,
@@ -388,14 +402,12 @@ struct ContentView: View {
                         } else {
                             withAnimation { lastResponse = text }
                         }
-                        isProcessing = false
                         autoDismissResponse()
                     }
                 }
             } catch {
                 await MainActor.run {
-                    withAnimation { lastResponse = "Error: \(error.localizedDescription)" }
-                    isProcessing = false
+                    withAnimation { lastResponse = "[\(requestToken.prefix(6))] Error: \(error.localizedDescription)" }
                     autoDismissResponse()
                 }
             }
@@ -404,7 +416,6 @@ struct ContentView: View {
 
     @MainActor
     private func handlePencilDoubleTapExplicitAnswer() async {
-        guard !isProcessing else { return }
         await runExplicitScreenAnswer(
             userIntent: "Analyze the current iPad screen and answer the most concrete visible question or task directly."
         )
@@ -412,7 +423,6 @@ struct ContentView: View {
 
     @MainActor
     private func handleSuggestionAccepted(_ suggestion: CanvasSuggestion) async {
-        guard !isProcessing else { return }
         _ = objectManager.rejectSuggestion(id: suggestion.id)
         expandedSuggestionIDs.remove(suggestion.id)
         let intent = "\(suggestion.title). \(suggestion.summary)".trimmingCharacters(in: .whitespacesAndNewlines)
@@ -427,11 +437,11 @@ struct ContentView: View {
             return
         }
 
-        isProcessing = true
-        defer { isProcessing = false }
+        activeRequestCount += 1
+        defer { activeRequestCount = max(0, activeRequestCount - 1) }
 
         do {
-            let placementAnchor = await waitForPlacementTap(
+            let placementAnchorAxis = await waitForPlacementTap(
                 prompt: "Tap where the explicit answer should start."
             )
             var message = userIntent
@@ -462,6 +472,7 @@ struct ContentView: View {
                 message,
                 model: document.resolvedModel,
                 chatID: document.id.uuidString,
+                ephemeral: true,
                 coordinateSnapshot: coordinateSnapshot,
                 serverURL: serverURL,
                 onDelta: { chunk in
@@ -479,21 +490,23 @@ struct ContentView: View {
                 let widgetInkAnchors = Dictionary(
                     uniqueKeysWithValues: agentResponse.widgets.enumerated().map { idx, widget in
                         let origin = (idx == 0)
-                            ? preferredWidgetOrigin(for: widget, anchorCanvas: placementAnchor)
+                            ? preferredWidgetOrigin(for: widget, anchorAxis: placementAnchorAxis)
                             : widgetOrigin(for: widget)
                         return (widget.id, origin)
                     }
                 )
-                await renderAgentOutputAsHandwriting(
-                    response: agentResponse,
-                    startAnchor: placementAnchor,
-                    widgetAnchors: widgetInkAnchors
-                )
+                await inkRenderQueue.enqueue { [self] in
+                    await renderAgentOutputAsHandwriting(
+                        response: agentResponse,
+                        startAnchor: placementAnchorAxis,
+                        widgetAnchors: widgetInkAnchors
+                    )
+                }
                 withAnimation { lastResponse = nil }
             } else {
                 for (idx, widget) in agentResponse.widgets.enumerated() {
                     let pos = (idx == 0)
-                        ? preferredWidgetOrigin(for: widget, anchorCanvas: placementAnchor)
+                        ? preferredWidgetOrigin(for: widget, anchorAxis: placementAnchorAxis)
                         : widgetOrigin(for: widget)
                     await objectManager.place(
                         html: widget.html,
@@ -629,7 +642,7 @@ struct ContentView: View {
     private func proactiveMonitorTick() async {
         guard !proactiveRunInFlight else { return }
         guard !canvasState.isRecording else { return }
-        guard !isProcessing else { return }
+        guard activeRequestCount == 0 else { return }
         if let lastStrokeAt = canvasState.lastStrokeActivityAt {
             let elapsed = Date().timeIntervalSince(lastStrokeAt)
             if elapsed < proactiveStrokePauseSeconds {
@@ -869,9 +882,7 @@ struct ContentView: View {
         if let startAnchor {
             let viewport = objectManager.viewportCanvasRect()
             let maxWidth = min(520, max(240, viewport.width * 0.45))
-            var anchor = startAnchor
-            anchor.x = min(max(anchor.x, viewport.minX + 16), viewport.maxX - maxWidth - 16)
-            anchor.y = max(anchor.y, viewport.minY + 16)
+            var anchor = objectManager.canvasPoint(forAxisPoint: startAnchor)
 
             let flowBlocks = parsedTextBlocks + widgetBlocks.flatMap(\.blocks)
             for block in flowBlocks {
@@ -2156,7 +2167,8 @@ struct ContentView: View {
     @MainActor
     private func waitForPlacementTap(prompt: String) async -> CGPoint {
         if let prior = placementTapContinuation {
-            prior.resume(returning: objectManager.viewportCenter)
+            let axis = objectManager.axisPoint(forCanvasPoint: objectManager.viewportCenter)
+            prior.resume(returning: axis)
             placementTapContinuation = nil
         }
         placementTapPrompt = prompt
@@ -2171,11 +2183,12 @@ struct ContentView: View {
         guard awaitingPlacementTap else { return }
         awaitingPlacementTap = false
         let canvasPoint = objectManager.canvasPoint(forScreenPoint: location)
-        placementTapContinuation?.resume(returning: canvasPoint)
+        let axisPoint = objectManager.axisPoint(forCanvasPoint: canvasPoint)
+        placementTapContinuation?.resume(returning: axisPoint)
         placementTapContinuation = nil
     }
 
-    private func preferredWidgetOrigin(for widget: AgentWidget, anchorCanvas: CGPoint) -> CGPoint {
+    private func preferredWidgetOrigin(for widget: AgentWidget, anchorAxis: CGPoint) -> CGPoint {
         let w = max(100, widget.width)
         let h = max(100, widget.height)
         let anchorOffset: CGPoint = {
@@ -2184,6 +2197,7 @@ struct ContentView: View {
             }
             return .zero
         }()
+        let anchorCanvas = objectManager.canvasPoint(forAxisPoint: anchorAxis)
         return CGPoint(x: anchorCanvas.x - anchorOffset.x, y: anchorCanvas.y - anchorOffset.y)
     }
 
@@ -2198,6 +2212,7 @@ struct ContentView: View {
         }
         return objectManager.canvasPoint(forAxisPoint: CGPoint(x: axisX, y: axisY))
     }
+
 }
 
 private enum MacConnectionStatus {

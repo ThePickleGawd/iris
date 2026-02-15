@@ -332,7 +332,6 @@ enum AgentClient {
                 metadata["claude_code_cwd"] = value
             }
         }
-
         let payload: [String: Any] = [
             "protocol_version": "1.0",
             "kind": "agent.request",
