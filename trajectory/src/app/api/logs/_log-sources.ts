@@ -423,11 +423,12 @@ async function toSessionTrajectoryJSONL(rawSession: string): Promise<string | nu
 
       let base64 = await loadScreenshotBase64(screenshot, screenshotBase64ById);
       if (!base64) {
+        const primaryScreenshotId = screenshot.id;
         const fallback = [...screenshots]
           .reverse()
           .find(
             (row) =>
-              row.id !== screenshot.id &&
+              row.id !== primaryScreenshotId &&
               !consumedScreenshotIds.has(row.id) &&
               (messageTsMs <= 0 || row.createdAtMs <= messageTsMs + 10_000)
           );
