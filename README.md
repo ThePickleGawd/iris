@@ -7,6 +7,7 @@ An AI assistant that sees, hears, and draws across your Apple devices.
     <img src="https://img.youtube.com/vi/HxawNsre4xo/maxresdefault.jpg" alt="Project Demo (YouTube)" />
   </picture>
 </a>
+
 > Click the image to watch the full demo on YouTube.
 
 ## The Problem
