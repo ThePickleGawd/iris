@@ -1,12 +1,30 @@
 import SwiftUI
 
-private let generalModelChoices: [(id: String, name: String)] = [
-    ("gpt-5.2-mini", "GPT-5.2 Mini"),
-    ("gpt-5.2", "GPT-5.2"),
-    ("gemini-3-flash", "Gemini 3 Flash"),
-    ("claude-opus-4-5", "Claude Opus 4.5"),
-    ("claude-sonnet-4-5", "Claude Sonnet 4.5"),
+private struct ModelChoice: Identifiable {
+    let id: String
+    let name: String
+    let icon: String
+    let accentColor: Color
+}
+
+private let generalModelChoices: [ModelChoice] = [
+    ModelChoice(id: "gpt-5.2-mini", name: "GPT-5.2 Mini", icon: "bolt.fill", accentColor: Color(red: 0.39, green: 0.72, blue: 0.54)),
+    ModelChoice(id: "gpt-5.2", name: "GPT-5.2", icon: "bolt.circle.fill", accentColor: Color(red: 0.39, green: 0.72, blue: 0.54)),
+    ModelChoice(id: "gemini-3-flash", name: "Gemini 3 Flash", icon: "sparkle", accentColor: Color(red: 0.43, green: 0.68, blue: 0.95)),
+    ModelChoice(id: "claude-opus-4-5", name: "Claude Opus 4.5", icon: "brain.head.profile.fill", accentColor: Color(red: 0.87, green: 0.58, blue: 0.38)),
+    ModelChoice(id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", icon: "brain.fill", accentColor: Color(red: 0.87, green: 0.58, blue: 0.38)),
 ]
+
+private func modelMeta(for id: String) -> (icon: String, color: Color) {
+    let lowered = id.lowercased()
+    if let match = generalModelChoices.first(where: { $0.id.lowercased() == lowered }) {
+        return (match.icon, match.accentColor)
+    }
+    if lowered.hasPrefix("gpt") { return ("bolt.fill", Color(red: 0.39, green: 0.72, blue: 0.54)) }
+    if lowered.hasPrefix("gemini") { return ("sparkle", Color(red: 0.43, green: 0.68, blue: 0.95)) }
+    if lowered.hasPrefix("claude") { return ("brain.fill", Color(red: 0.87, green: 0.58, blue: 0.38)) }
+    return ("circle.grid.2x2.fill", Color.white.opacity(0.6))
+}
 
 struct ToolbarView: View {
     @EnvironmentObject var canvasState: CanvasState
@@ -113,6 +131,7 @@ struct ToolbarView: View {
             if let doc = document, doc.isGeneralChat {
                 ModelSelectorButton(
                     modelName: doc.modelDisplayName,
+                    modelID: doc.model,
                     showPicker: $showModelPicker
                 )
                 .popover(isPresented: $showModelPicker, arrowEdge: .top) {
@@ -205,18 +224,23 @@ struct ToolbarColorCircle: View {
 
 struct ModelSelectorButton: View {
     let modelName: String
+    let modelID: String
     @Binding var showPicker: Bool
 
     var body: some View {
+        let meta = modelMeta(for: modelID)
         Button { showPicker.toggle() } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 7) {
+                Image(systemName: meta.icon)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(meta.color)
                 Text(modelName)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(.white.opacity(0.85))
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundColor(.white.opacity(0.5))
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundColor(.white.opacity(0.4))
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
@@ -239,35 +263,46 @@ struct ModelPickerPopover: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ForEach(generalModelChoices, id: \.id) { choice in
+            ForEach(generalModelChoices) { choice in
                 let isSelected = choice.id.lowercased() == currentModelID.lowercased()
                 Button {
                     onSelect(choice.id)
                 } label: {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 10) {
+                        ZStack {
+                            Circle()
+                                .fill(choice.accentColor.opacity(isSelected ? 0.22 : 0.12))
+                                .frame(width: 28, height: 28)
+                            Image(systemName: choice.icon)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(choice.accentColor)
+                        }
+
                         Text(choice.name)
                             .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
                             .foregroundColor(isSelected ? .white : .white.opacity(0.8))
+
                         Spacer()
+
                         if isSelected {
                             Image(systemName: "checkmark")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(.accentColor)
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(choice.accentColor)
                         }
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
                     .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(isSelected ? Color.white.opacity(0.08) : Color.clear)
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(isSelected ? Color.white.opacity(0.07) : Color.clear)
                     )
                 }
                 .buttonStyle(.plain)
             }
         }
         .padding(8)
-        .frame(width: 220)
-        .background(Color(red: 0.1, green: 0.1, blue: 0.12))
+        .frame(width: 240)
+        .background(Color(red: 0.09, green: 0.09, blue: 0.11))
         .presentationCompactAdaptation(.popover)
     }
 }

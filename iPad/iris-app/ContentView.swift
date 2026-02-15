@@ -147,7 +147,11 @@ struct ContentView: View {
         }
         .onChange(of: canvasState.lastPencilDoubleTapAt) { _, tappedAt in
             guard tappedAt != nil else { return }
-            Task { await handlePencilDoubleTapExplicitAnswer() }
+            if canvasState.currentTool == .eraser {
+                canvasState.currentTool = .pen
+            } else {
+                canvasState.currentTool = .eraser
+            }
         }
         .onDisappear {
             canvasState.isRecording = false
