@@ -21,8 +21,6 @@
 		986114D967F1F157EAA23A40 /* CanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21D7011A03C852C41F3FFB14 /* CanvasView.swift */; };
 		A1B2C3D4E5F6A7B8C9D0E1F2 /* AgentClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2E1D0C9B8A7F6E5D4C3B2A1 /* AgentClient.swift */; };
 		A56656EDEC905594D32DDC48 /* AudioCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92AF51999DEF219ECD85152E /* AudioCaptureService.swift */; };
-		AA1B2C3D4E5F6A7B8C9D0E01 /* SVGPathParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1B2C3D4E5F6A7B8C9D0E02 /* SVGPathParser.swift */; };
-		AA1B2C3D4E5F6A7B8C9D0E03 /* SVGStrokeAnimator.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1B2C3D4E5F6A7B8C9D0E04 /* SVGStrokeAnimator.swift */; };
 		B3C4D5E6F7A8B9C0D1E2F3A4 /* SpeechTranscriber.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4F3E2D1C0B9A8F7E6D5C4B3 /* SpeechTranscriber.swift */; };
 		CAB92F8795B396CCC8843716 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D736B18FC1B35992674D11 /* ContentView.swift */; };
 		D98381BE4ED8E12EEA81194A /* Document.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58D2E5AC26FC9A307BE3DCE1 /* Document.swift */; };
@@ -45,8 +43,6 @@
 		92AF51999DEF219ECD85152E /* AudioCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureService.swift; sourceTree = "<group>"; };
 		96D736B18FC1B35992674D11 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A4F3E2D1C0B9A8F7E6D5C4B3 /* SpeechTranscriber.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechTranscriber.swift; sourceTree = "<group>"; };
-		AA1B2C3D4E5F6A7B8C9D0E02 /* SVGPathParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SVGPathParser.swift; sourceTree = "<group>"; };
-		AA1B2C3D4E5F6A7B8C9D0E04 /* SVGStrokeAnimator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SVGStrokeAnimator.swift; sourceTree = "<group>"; };
 		BFCC9ADAF74286DBEC5E706A /* AgentCursorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentCursorView.swift; sourceTree = "<group>"; };
 		D9FEAD6A33D7DDB32C018D67 /* UIColor+Compare.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UIColor+Compare.swift"; sourceTree = "<group>"; };
 		E09763122009619753BA1136 /* CanvasObjectManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasObjectManager.swift; sourceTree = "<group>"; };
@@ -140,8 +136,6 @@
 				92AF51999DEF219ECD85152E /* AudioCaptureService.swift */,
 				E09763122009619753BA1136 /* CanvasObjectManager.swift */,
 				A4F3E2D1C0B9A8F7E6D5C4B3 /* SpeechTranscriber.swift */,
-				AA1B2C3D4E5F6A7B8C9D0E02 /* SVGPathParser.swift */,
-				AA1B2C3D4E5F6A7B8C9D0E04 /* SVGStrokeAnimator.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -239,8 +233,6 @@
 				739597A0936612FBA354DB5E /* IrisApp.swift in Sources */,
 				6420C1C3CC855A0F9960CF45 /* SiriGlowView.swift in Sources */,
 				B3C4D5E6F7A8B9C0D1E2F3A4 /* SpeechTranscriber.swift in Sources */,
-				AA1B2C3D4E5F6A7B8C9D0E01 /* SVGPathParser.swift in Sources */,
-				AA1B2C3D4E5F6A7B8C9D0E03 /* SVGStrokeAnimator.swift in Sources */,
 				3AAEF8B9B2F499BD02C92897 /* ToolbarView.swift in Sources */,
 				8E30310AD5F2757AEDE01DCB /* UIColor+Compare.swift in Sources */,
 			);
@@ -396,14 +388,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 9Q69669L82;
+				DEVELOPMENT_TEAM = P8W47WSLD9;
 				INFOPLIST_FILE = "iris-app/Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "$(IRIS_BUNDLE_ID)";
-				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = com.ishan.iris;
+				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = com.dylan.iris;
 				SDKROOT = iphoneos;
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				TARGETED_DEVICE_FAMILY = 2;

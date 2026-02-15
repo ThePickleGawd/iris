@@ -34,6 +34,16 @@ const toolMeta: Record<
   read_transcript: { icon: Mic, label: "Transcript", color: "text-pink-400" },
 };
 
+function pretty(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 function ScreenshotCard({ call }: { call: ToolCall }) {
   const device = (call.input.device as string) || "unknown";
   const base64 = call.screenshot_base64;
@@ -182,6 +192,79 @@ function GenericCard({ call }: { call: ToolCall }) {
   );
 }
 
+function ExactArgsCard({ call }: { call: ToolCall }) {
+  const [showNormalizedInput, setShowNormalizedInput] = useState(false);
+  const [showExactArgs, setShowExactArgs] = useState(true);
+  const [showRawPayload, setShowRawPayload] = useState(false);
+
+  const raw = call.raw;
+  const rawArgs =
+    raw && Object.prototype.hasOwnProperty.call(raw, "arguments")
+      ? raw.arguments
+      : undefined;
+  const rawInput =
+    raw && Object.prototype.hasOwnProperty.call(raw, "input")
+      ? raw.input
+      : undefined;
+  const exactArgs = rawArgs ?? rawInput ?? call.input;
+  const exactArgsText = pretty(exactArgs);
+
+  return (
+    <div className="space-y-2 border-t border-zinc-800 pt-3">
+      <button
+        onClick={() => setShowExactArgs((v) => !v)}
+        className="flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-400"
+      >
+        {showExactArgs ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        Exact Args
+      </button>
+      {showExactArgs && (
+        <pre className="terminal-output text-zinc-300 text-xs rounded-lg bg-zinc-900 p-3 border border-zinc-800 whitespace-pre-wrap">
+          {exactArgsText || "(empty)"}
+        </pre>
+      )}
+
+      <button
+        onClick={() => setShowNormalizedInput((v) => !v)}
+        className="flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-400"
+      >
+        {showNormalizedInput ? (
+          <ChevronDown className="h-3 w-3" />
+        ) : (
+          <ChevronRight className="h-3 w-3" />
+        )}
+        Normalized Input
+      </button>
+      {showNormalizedInput && (
+        <pre className="terminal-output text-zinc-400 text-xs rounded-lg bg-zinc-900 p-3 border border-zinc-800 whitespace-pre-wrap">
+          {pretty(call.input) || "(empty)"}
+        </pre>
+      )}
+
+      {raw && (
+        <>
+          <button
+            onClick={() => setShowRawPayload((v) => !v)}
+            className="flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-400"
+          >
+            {showRawPayload ? (
+              <ChevronDown className="h-3 w-3" />
+            ) : (
+              <ChevronRight className="h-3 w-3" />
+            )}
+            Raw Payload
+          </button>
+          {showRawPayload && (
+            <pre className="terminal-output text-zinc-500 text-xs rounded-lg bg-zinc-950 p-3 border border-zinc-800 whitespace-pre-wrap">
+              {pretty(raw)}
+            </pre>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function ToolCallSection({ call, index }: { call: ToolCall; index: number }) {
   const [collapsed, setCollapsed] = useState(false);
   const meta = toolMeta[call.name] || {
@@ -233,7 +316,12 @@ function ToolCallSection({ call, index }: { call: ToolCall; index: number }) {
           )}
         </div>
       </button>
-      {!collapsed && <div className="p-3 space-y-3">{renderContent()}</div>}
+      {!collapsed && (
+        <div className="p-3 space-y-3">
+          {renderContent()}
+          <ExactArgsCard call={call} />
+        </div>
+      )}
     </div>
   );
 }
@@ -245,6 +333,8 @@ export function ToolPanel({ trajectory, selectedStep }: Props) {
     const label =
       step?.type === "user_message"
         ? "User message — no tool calls"
+        : step?.type === "session_message"
+          ? `${step.role || "Session"} message — no tool calls`
         : step?.type === "final_response"
           ? "Final response — no tool calls"
           : "Select an agent step to view tool calls";

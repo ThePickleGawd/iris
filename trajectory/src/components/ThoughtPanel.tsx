@@ -11,6 +11,8 @@ import {
   Terminal,
   Search,
   Mic,
+  ScrollText,
+  Code2,
 } from "lucide-react";
 
 interface Props {
@@ -95,6 +97,39 @@ function StepBubble({
               );
             })}
           </div>
+        )}
+      </div>
+    );
+  }
+
+  if (step.type === "session_message") {
+    const label = step.role ? step.role.toUpperCase() : "MESSAGE";
+    return (
+      <div
+        className={cn(
+          "rounded-lg border p-4 transition-all",
+          isActive
+            ? "border-amber-500/40 bg-amber-500/10"
+            : "border-zinc-800/50 bg-zinc-900/30 opacity-60"
+        )}
+      >
+        <div className="flex items-center gap-2 mb-2">
+          <ScrollText className="h-3.5 w-3.5 text-amber-400" />
+          <span className="text-xs font-medium text-amber-400">{label}</span>
+        </div>
+        <p className="text-sm text-zinc-200 whitespace-pre-wrap leading-relaxed">
+          {step.content || "(empty)"}
+        </p>
+        {step.raw_message && (
+          <details className="mt-3 border-t border-zinc-800 pt-3">
+            <summary className="cursor-pointer text-xs text-zinc-500 hover:text-zinc-400 flex items-center gap-1.5">
+              <Code2 className="h-3 w-3" />
+              Raw message
+            </summary>
+            <pre className="terminal-output mt-2 text-xs text-zinc-400 whitespace-pre-wrap rounded-md border border-zinc-800 bg-zinc-900/70 p-2">
+              {JSON.stringify(step.raw_message, null, 2)}
+            </pre>
+          </details>
         )}
       </div>
     );

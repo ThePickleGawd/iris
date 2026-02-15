@@ -164,6 +164,15 @@ class DocumentStore: ObservableObject {
 
     init() {
         loadDocuments()
+        // One-time migration: remove old headless Claude Code sessions
+        if !UserDefaults.standard.bool(forKey: "claude_code_live_migration_done") {
+            let hadClaudeCode = documents.contains { $0.model.lowercased() == "claude_code" }
+            if hadClaudeCode {
+                documents.removeAll { $0.model.lowercased() == "claude_code" }
+                saveDocuments()
+            }
+            UserDefaults.standard.set(true, forKey: "claude_code_live_migration_done")
+        }
         if documents.isEmpty {
             documents.append(Document(name: "Untitled"))
         }
@@ -224,6 +233,9 @@ class DocumentStore: ObservableObject {
             var seenIDs = Set<UUID>()
             let remoteDocs: [Document] = items.compactMap { item in
                 guard let idStr = item["id"] as? String else { return nil }
+                // Skip claude_code sessions — they are live-only and should not sync.
+                let itemModel = (item["model"] as? String ?? "").lowercased()
+                if itemModel == "claude_code" { return nil }
                 let docID = UUID(uuidString: idStr) ?? UUID(uuidString: stableUUID(from: idStr)) ?? UUID()
                 guard seenIDs.insert(docID).inserted else { return nil }
 
@@ -260,7 +272,8 @@ class DocumentStore: ObservableObject {
                 let existingByID = Dictionary(uniqueKeysWithValues: oldDocuments.map { ($0.id, $0) })
                 let remoteIDs = Set(remoteDocs.map(\.id))
 
-                let merged: [Document] = remoteDocs.map { remote in
+                // Merge remote docs with existing local data
+                var merged: [Document] = remoteDocs.map { remote in
                     guard let existing = existingByID[remote.id] else { return remote }
                     return Document(
                         id: remote.id,
@@ -276,9 +289,17 @@ class DocumentStore: ObservableObject {
                     )
                 }
 
+                // Preserve local-only claude_code documents (created via live session flow)
+                let localOnly = oldDocuments.filter {
+                    !remoteIDs.contains($0.id) && $0.model.lowercased() == "claude_code"
+                }
+                merged.append(contentsOf: localOnly)
+
                 guard merged != oldDocuments else { return }
 
-                let removed = oldDocuments.filter { !remoteIDs.contains($0.id) }
+                // Clean up drawing files for removed non-claude_code docs
+                let mergedIDs = Set(merged.map(\.id))
+                let removed = oldDocuments.filter { !mergedIDs.contains($0.id) }
                 for doc in removed {
                     doc.deleteDrawingFile()
                 }

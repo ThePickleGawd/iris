@@ -1,0 +1,247 @@
+#!/usr/bin/env bash
+# tools/claudei — Launch a claude-commander session for Iris.
+#
+# Usage:
+#   claudei                              # new session in current directory
+#   claudei --resume <session_id>        # resume existing session
+#   claudei --cwd /some/project          # specify working directory
+#   claudei install                      # symlink to /usr/local/bin/claudei
+#
+# Environment:
+#   IRIS_BACKEND_URL   Backend base URL (default: http://localhost:8000)
+#   CLAUDE_CMD         Claude Code binary (default: claude)
+#   CLAUDEC_BIN        claude-commander binary (default: claudec)
+
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage:
+  claudei
+  claudei --cwd /some/project
+  claudei --resume <session_id>
+  claudei [claudec args...]
+  claudei install
+EOF
+}
+
+IRIS_BACKEND_URL="${IRIS_BACKEND_URL:-http://localhost:8000}"
+export CLAUDE_CMD="${CLAUDE_CMD:-claude}"
+CLAUDEC_BIN="${CLAUDEC_BIN:-claudec}"
+SOCKET_PATH="/tmp/iris-claude.sock"
+META_FILE="/tmp/iris-claude-meta.json"
+IMAGES_DIR="/tmp/iris/images"
+CLEANED_UP=0
+
+json_payload() {
+    python3 - "$@" <<'PY'
+import json
+import sys
+
+if len(sys.argv) == 4:
+    socket_path, cwd, pid = sys.argv[1], sys.argv[2], int(sys.argv[3])
+    print(json.dumps({"socket_path": socket_path, "cwd": cwd, "pid": pid}))
+elif len(sys.argv) == 2:
+    socket_path = sys.argv[1]
+    print(json.dumps({"socket_path": socket_path}))
+else:
+    raise SystemExit("invalid args")
+PY
+}
+
+write_meta() {
+    python3 - "$META_FILE" "$SOCKET_PATH" "$$" "$CWD" "$RESUME_ID" <<'PY'
+import json
+import sys
+from datetime import datetime, timezone
+
+meta_file, socket_path, pid, cwd, resume_id = sys.argv[1:]
+payload = {
+    "socket_path": socket_path,
+    "pid": int(pid),
+    "cwd": cwd,
+    "resume_id": resume_id if resume_id else None,
+    "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+}
+with open(meta_file, "w", encoding="utf-8") as f:
+    json.dump(payload, f, indent=4)
+    f.write("\n")
+PY
+}
+
+socket_is_live() {
+    python3 - "$SOCKET_PATH" <<'PY'
+import socket
+import sys
+
+path = sys.argv[1]
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.settimeout(0.25)
+try:
+    sock.connect(path)
+    print("live")
+except OSError:
+    sys.exit(1)
+finally:
+    sock.close()
+PY
+}
+
+# Handle `claudei install` subcommand
+if [[ "${1:-}" == "install" ]]; then
+    INSTALL_PATH="/usr/local/bin/claudei"
+    # Resolve through symlinks to find the real script location.
+    REAL_SCRIPT="${BASH_SOURCE[0]}"
+    while [[ -L "$REAL_SCRIPT" ]]; do
+        LINK_DIR="$(cd -P "$(dirname "$REAL_SCRIPT")" && pwd)"
+        LINK_TARGET="$(readlink "$REAL_SCRIPT")"
+        if [[ "$LINK_TARGET" == /* ]]; then
+            REAL_SCRIPT="$LINK_TARGET"
+        else
+            REAL_SCRIPT="$LINK_DIR/$LINK_TARGET"
+        fi
+    done
+    SCRIPT_PATH="$(cd -P "$(dirname "$REAL_SCRIPT")" && pwd)/$(basename "$REAL_SCRIPT")"
+
+    if [[ -L "$INSTALL_PATH" || -e "$INSTALL_PATH" ]]; then
+        echo "Removing existing $INSTALL_PATH"
+        sudo rm -f "$INSTALL_PATH"
+    fi
+
+    sudo ln -s "$SCRIPT_PATH" "$INSTALL_PATH"
+    echo "Installed: $INSTALL_PATH -> $SCRIPT_PATH"
+    exit 0
+fi
+
+# Parse arguments
+CWD="$(pwd)"
+RESUME_ID=""
+EXTRA_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --resume)
+            if [[ $# -lt 2 ]]; then
+                echo "ERROR: --resume requires a session id."
+                usage
+                exit 2
+            fi
+            RESUME_ID="$2"
+            shift 2
+            ;;
+        --cwd)
+            if [[ $# -lt 2 ]]; then
+                echo "ERROR: --cwd requires a path."
+                usage
+                exit 2
+            fi
+            CWD="$2"
+            shift 2
+            ;;
+        --)
+            shift
+            while [[ $# -gt 0 ]]; do
+                EXTRA_ARGS+=("$1")
+                shift
+            done
+            ;;
+        *)
+            EXTRA_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [[ ! -d "$CWD" ]]; then
+    echo "ERROR: working directory does not exist: $CWD"
+    exit 2
+fi
+
+# Ensure images directory exists for the image pipeline
+mkdir -p "$IMAGES_DIR"
+
+# Check for claudec binary
+if ! command -v "$CLAUDEC_BIN" &>/dev/null; then
+    echo "ERROR: claude-commander ($CLAUDEC_BIN) not found."
+    echo ""
+    echo "Install it:"
+    echo "  ARCH=\$(uname -m)"
+    echo "  [[ \"\$ARCH\" == \"arm64\" ]] && ASSET=claudec-macos-arm64 || ASSET=claudec-macos-x86_64"
+    echo "  curl -L https://github.com/sstraus/claude-commander/releases/latest/download/\$ASSET -o /usr/local/bin/claudec"
+    echo "  chmod +x /usr/local/bin/claudec"
+    echo ""
+    echo "Or build from source:"
+    echo "  cargo install --git https://github.com/sstraus/claude-commander"
+    exit 1
+fi
+
+# Clean up stale socket only if it's not live.
+if [[ -S "$SOCKET_PATH" ]]; then
+    if socket_is_live >/dev/null 2>&1; then
+        echo "ERROR: an active claudei/claudec session is already using $SOCKET_PATH"
+        echo "Stop the existing session before starting a new one."
+        exit 1
+    fi
+    echo "Removing stale socket at $SOCKET_PATH"
+    rm -f "$SOCKET_PATH"
+fi
+
+# Set the fixed socket path (avoids claude-commander's session ID detection + Unicode bug)
+export CLAUDE_SOCKET="$SOCKET_PATH"
+
+# Build claudec args
+CLAUDEC_ARGS=(-d "$CWD")
+if [[ -n "$RESUME_ID" ]]; then
+    CLAUDEC_ARGS+=(--resume "$RESUME_ID")
+fi
+if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+    CLAUDEC_ARGS+=("${EXTRA_ARGS[@]}")
+fi
+
+# Write meta file before launching so the backend can discover the socket
+write_meta
+
+echo "Iris Claude Code session"
+echo "  Socket:  $SOCKET_PATH"
+echo "  CWD:     $CWD"
+echo "  Meta:    $META_FILE"
+[[ -n "$RESUME_ID" ]] && echo "  Resume:  $RESUME_ID"
+echo ""
+
+# Notify backend that a live session is starting
+REGISTER_PAYLOAD="$(json_payload "$SOCKET_PATH" "$CWD" "$$")"
+curl -sf -X POST "$IRIS_BACKEND_URL/api/claude-code/sessions/register" \
+    -H "Content-Type: application/json" \
+    -d "$REGISTER_PAYLOAD" \
+    >/dev/null 2>&1 || true
+
+# Cleanup on exit
+cleanup() {
+    if [[ "$CLEANED_UP" -eq 1 ]]; then
+        return
+    fi
+    CLEANED_UP=1
+
+    echo ""
+    echo "Cleaning up Iris session..."
+    rm -f "$SOCKET_PATH" "$META_FILE"
+
+    # Notify backend the session ended
+    UNREGISTER_PAYLOAD="$(json_payload "$SOCKET_PATH")"
+    curl -sf -X POST "$IRIS_BACKEND_URL/api/claude-code/sessions/unregister" \
+        -H "Content-Type: application/json" \
+        -d "$UNREGISTER_PAYLOAD" \
+        >/dev/null 2>&1 || true
+}
+trap cleanup EXIT INT TERM
+
+# Launch claude-commander
+set +e
+"$CLAUDEC_BIN" "${CLAUDEC_ARGS[@]}"
+CLAUDEC_EXIT_CODE=$?
+set -e
+exit "$CLAUDEC_EXIT_CODE"

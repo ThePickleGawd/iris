@@ -65,10 +65,6 @@ CODEX_HISTORY_PATH = Path(
     os.environ.get("CODEX_HISTORY_PATH", str(Path.home() / ".codex" / "history.jsonl"))
 )
 CODEX_CLI_BIN = os.environ.get("CODEX_CLI_BIN", "codex")
-CLAUDE_CODE_SESSIONS_ROOT = Path(
-    os.environ.get("CLAUDE_CODE_SESSIONS_ROOT", str(Path.home() / ".claude" / "projects"))
-)
-CLAUDE_CODE_CLI_BIN = os.environ.get("CLAUDE_CODE_CLI_BIN", "claude")
 IRIS_IPAD_URL = os.environ.get("IRIS_IPAD_URL", "http://dylans-ipad.local:8935")
 CODEX_MESSAGE_DEDUP_WINDOW_SECONDS = 20
 
@@ -78,7 +74,6 @@ except ValueError:
     SCREENSHOT_RETENTION_LIMIT = 50
 
 _codex_rollout_cache: dict[str, Path] = {}
-_claude_code_rollout_cache: dict[str, Path] = {}
 
 for d in [SESSIONS_DIR, SCREENSHOTS_DIR, SCREENSHOTS_META_DIR, PROACTIVE_DESCRIPTIONS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
@@ -292,12 +287,6 @@ def _is_codex_session(session: dict) -> bool:
     model = str(session.get("model") or "").strip().lower()
     metadata = session.get("metadata") if isinstance(session.get("metadata"), dict) else {}
     return model == "codex" or bool(str(metadata.get("codex_conversation_id") or "").strip())
-
-
-def _is_claude_code_session(session: dict) -> bool:
-    model = str(session.get("model") or "").strip().lower()
-    metadata = session.get("metadata") if isinstance(session.get("metadata"), dict) else {}
-    return model == "claude_code" or bool(str(metadata.get("claude_code_conversation_id") or "").strip())
 
 
 def _extract_codex_message_text(content: Any) -> str:
@@ -769,225 +758,6 @@ def _run_codex_resume(conversation_id: str, prompt: str, cwd: str | None = None)
     return text
 
 
-def _resolve_claude_code_rollout_path(conversation_id: str) -> Path | None:
-    cached = _claude_code_rollout_cache.get(conversation_id)
-    if cached and cached.exists():
-        return cached
-    if not CLAUDE_CODE_SESSIONS_ROOT.exists():
-        return None
-
-    def _mtime(path: Path) -> float:
-        try:
-            return path.stat().st_mtime
-        except OSError:
-            return 0
-
-    candidates = sorted(
-        CLAUDE_CODE_SESSIONS_ROOT.rglob(f"{conversation_id}.jsonl"),
-        key=_mtime,
-        reverse=True,
-    )
-    if not candidates:
-        return None
-    best = candidates[0]
-    _claude_code_rollout_cache[conversation_id] = best
-    return best
-
-
-def _extract_claude_code_message_text(payload: dict) -> str:
-    message = payload.get("message")
-    if not isinstance(message, dict):
-        return ""
-    content = message.get("content")
-    if isinstance(content, str):
-        return content.strip()
-    if not isinstance(content, list):
-        return ""
-    chunks: list[str] = []
-    for item in content:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("type") or "") != "text":
-            continue
-        text = item.get("text")
-        if isinstance(text, str) and text.strip():
-            chunks.append(text.strip())
-    return "\n\n".join(chunks).strip()
-
-
-def _claude_code_event_external_id(
-    conversation_id: str, timestamp: str, role: str, text: str
-) -> str:
-    digest = hashlib.sha1(
-        f"{conversation_id}|{timestamp}|{role}|{text}".encode("utf-8")
-    ).hexdigest()
-    return f"claude_code:{conversation_id}:{digest}"
-
-
-def _load_claude_code_rollout_messages(conversation_id: str) -> list[dict]:
-    path = _resolve_claude_code_rollout_path(conversation_id)
-    if path is None:
-        return []
-    items: list[dict] = []
-    try:
-        with path.open("r", encoding="utf-8") as fh:
-            for raw in fh:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    row = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(row, dict):
-                    continue
-                row_type = str(row.get("type") or "").strip()
-                if row_type not in ("user", "assistant"):
-                    continue
-                role = "assistant" if row_type == "assistant" else "user"
-                text = _extract_claude_code_message_text(row)
-                if not text:
-                    continue
-                created_at = _normalize_iso_timestamp(row.get("timestamp"))
-                external_id = _claude_code_event_external_id(
-                    conversation_id, created_at, role, text
-                )
-                items.append(
-                    {
-                        "role": role,
-                        "content": text,
-                        "created_at": created_at,
-                        "external_id": external_id,
-                        "source": "claude_code",
-                    }
-                )
-    except OSError:
-        return []
-    return items
-
-
-def _sync_claude_code_messages_for_session(session: dict) -> int:
-    metadata = session.get("metadata") if isinstance(session.get("metadata"), dict) else {}
-    conversation_id = str(metadata.get("claude_code_conversation_id") or "").strip()
-    if not conversation_id:
-        return 0
-    rollout_messages = _load_claude_code_rollout_messages(conversation_id)
-    if not rollout_messages:
-        return 0
-
-    messages = session.setdefault("messages", [])
-    existing_external_ids = {
-        str(m.get("external_id") or "").strip()
-        for m in messages
-        if isinstance(m, dict) and str(m.get("external_id") or "").strip()
-    }
-    inserted = 0
-    for rollout_msg in rollout_messages:
-        external_id = rollout_msg["external_id"]
-        if external_id in existing_external_ids:
-            continue
-        if _has_equivalent_message(
-            messages,
-            rollout_msg["role"],
-            rollout_msg["content"],
-            rollout_msg["created_at"],
-        ):
-            existing_external_ids.add(external_id)
-            continue
-        messages.append(
-            {
-                "id": str(uuid.uuid4()),
-                "role": rollout_msg["role"],
-                "content": rollout_msg["content"],
-                "created_at": rollout_msg["created_at"],
-                "device_id": "claude_code",
-                "source": rollout_msg["source"],
-                "external_id": external_id,
-            }
-        )
-        existing_external_ids.add(external_id)
-        inserted += 1
-
-    if inserted:
-        messages.sort(key=lambda m: str(m.get("created_at") or ""))
-        session["updated_at"] = str(messages[-1].get("created_at") or _now())
-    return inserted
-
-
-def _extract_claude_code_error(raw: str) -> str | None:
-    fallback = ""
-    for line in raw.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("{") and stripped.endswith("}"):
-            try:
-                parsed = json.loads(stripped)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(parsed, dict) and str(parsed.get("type") or "") == "result":
-                result_text = parsed.get("result")
-                if isinstance(result_text, str) and result_text.strip():
-                    fallback = result_text.strip()
-            continue
-        fallback = stripped
-    return fallback or None
-
-
-def _run_claude_code_resume(conversation_id: str, prompt: str, cwd: str | None = None) -> str:
-    args = [
-        CLAUDE_CODE_CLI_BIN,
-        "-p",
-        "-r",
-        conversation_id,
-        prompt,
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--system-prompt",
-        _iris_system_prompt(),
-        "--dangerously-skip-permissions",
-        "--permission-mode",
-        "bypassPermissions",
-    ]
-    if cwd:
-        args.extend(["--add-dir", cwd])
-    try:
-        result = subprocess.run(
-            args,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    except OSError as exc:
-        raise RuntimeError(f"Failed to launch Claude Code CLI: {exc}") from exc
-
-    assistant_texts: list[str] = []
-    for line in result.stdout.splitlines():
-        stripped = line.strip()
-        if not stripped or not stripped.startswith("{"):
-            continue
-        try:
-            row = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        if str(row.get("type") or "") != "assistant":
-            continue
-        text = _extract_claude_code_message_text(row)
-        if text:
-            assistant_texts.append(text)
-
-    if assistant_texts:
-        return assistant_texts[-1]
-
-    detail = _extract_claude_code_error(result.stdout) or _extract_claude_code_error(result.stderr)
-    if detail:
-        return detail
-    if result.returncode != 0:
-        raise RuntimeError(f"Claude Code exited with status {result.returncode}")
-    raise RuntimeError("Claude Code returned no assistant text")
-
-
 def _linked_provider_keys(provider: str) -> tuple[str, str]:
     if provider == "codex":
         return ("codex_conversation_id", "codex_cwd")
@@ -1070,77 +840,6 @@ def _run_codex_new_session(prompt: str, cwd: str | None = None) -> tuple[str, st
     return (conversation_id, assistant_text)
 
 
-def _run_claude_code_new_session(prompt: str, cwd: str | None = None) -> tuple[str, str]:
-    requested_session_id = str(uuid.uuid4())
-    args = [
-        CLAUDE_CODE_CLI_BIN,
-        "-p",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--system-prompt",
-        _iris_system_prompt(),
-        "--dangerously-skip-permissions",
-        "--permission-mode",
-        "bypassPermissions",
-        "--session-id",
-        requested_session_id,
-        prompt,
-    ]
-    if cwd:
-        args.extend(["--add-dir", cwd])
-
-    try:
-        result = subprocess.run(
-            args,
-            check=False,
-            capture_output=True,
-            text=True,
-            cwd=(cwd or None),
-        )
-    except OSError as exc:
-        raise RuntimeError(f"Failed to launch Claude Code CLI: {exc}") from exc
-
-    conversation_id = requested_session_id
-    assistant_text = ""
-    explicit_error: str | None = None
-    for raw in result.stdout.splitlines():
-        stripped = raw.strip()
-        if not stripped or not stripped.startswith("{"):
-            continue
-        try:
-            row = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        row_type = str(row.get("type") or "").strip()
-        if row_type == "system":
-            maybe_session_id = str(row.get("session_id") or "").strip()
-            if maybe_session_id:
-                conversation_id = maybe_session_id
-            continue
-        if row_type == "assistant":
-            text = _extract_claude_code_message_text(row)
-            if text:
-                assistant_text = text
-            continue
-        if row_type == "result" and bool(row.get("is_error")):
-            result_text = str(row.get("result") or "").strip()
-            explicit_error = result_text or explicit_error
-
-    if result.returncode != 0:
-        detail = (
-            explicit_error
-            or _extract_claude_code_error(result.stdout)
-            or _extract_claude_code_error(result.stderr)
-        )
-        raise RuntimeError(detail or f"Claude Code exited with status {result.returncode}")
-    if explicit_error:
-        raise RuntimeError(explicit_error)
-    if not conversation_id:
-        raise RuntimeError("Claude Code did not return a new session id")
-    return (conversation_id, assistant_text)
-
-
 def _start_linked_provider_session(
     provider: str,
     *,
@@ -1153,8 +852,6 @@ def _start_linked_provider_session(
 
     if provider == "codex":
         conversation_id, _assistant_text = _run_codex_new_session(bootstrap_prompt, clean_cwd)
-    elif provider == "claude_code":
-        conversation_id, _assistant_text = _run_claude_code_new_session(bootstrap_prompt, clean_cwd)
     else:
         raise ValueError(f"Unsupported provider: {provider}")
 
@@ -1181,16 +878,12 @@ def _start_linked_provider_session(
 def _run_linked_provider(provider: str, conversation_id: str, prompt: str, cwd: str | None) -> str:
     if provider == "codex":
         return _run_codex_resume(conversation_id, prompt, cwd)
-    if provider == "claude_code":
-        return _run_claude_code_resume(conversation_id, prompt, cwd)
     raise ValueError(f"Unsupported provider: {provider}")
 
 
 def _sync_linked_provider_messages(session: dict, provider: str) -> int:
     if provider == "codex":
         return _sync_codex_messages_for_session(session)
-    if provider == "claude_code":
-        return _sync_claude_code_messages_for_session(session)
     return 0
 
 
@@ -1511,8 +1204,6 @@ def list_messages(session_id: str) -> Any:
     inserted = 0
     if _is_codex_session(session):
         inserted = _sync_codex_messages_for_session(session)
-    elif _is_claude_code_session(session):
-        inserted = _sync_claude_code_messages_for_session(session)
     if inserted:
         _save_session(session)
 
@@ -1542,8 +1233,12 @@ def list_codex_sessions() -> Any:
 def start_linked_session() -> Any:
     body = request.get_json(silent=True) or {}
     provider = str(body.get("provider") or "").strip().lower()
-    if provider not in {"codex", "claude_code"}:
-        return jsonify({"error": "provider must be 'codex' or 'claude_code'"}), 400
+
+    if provider == "claude_code":
+        return jsonify({"error": "Use claudei on the Mac to start Claude Code sessions"}), 400
+
+    if provider != "codex":
+        return jsonify({"error": "provider must be 'codex'"}), 400
 
     name = str(body.get("name") or "").strip() or None
     cwd = str(body.get("cwd") or "").strip() or None
@@ -1646,81 +1341,47 @@ def claude_code_respond() -> Any:
     if not prompt:
         return jsonify({"error": "prompt is required"}), 400
 
-    # Route to live injection if a claude-commander session exists
     live = claude_commander.get_live_session()
-    if live:
-        socket_path = live.get("socket_path", claude_commander.DEFAULT_SOCKET_PATH)
-        ok = claude_commander.inject_text(prompt, socket_path)
-        if ok:
-            claude_commander.mark_busy()
-            return jsonify({
-                "ok": True,
-                "session_id": session_id,
-                "model": "claude_code",
-                "mode": "live",
-                "text": "(injected into live session)",
-                "timestamp": _now(),
-            })
-        # Fall through to headless if injection failed
+    if not live:
+        return jsonify({"error": "No live session. Run `claudei` in your project on the Mac."}), 503
 
-    session = _load_session(session_id)
-    if not session:
-        session = _make_session(session_id, session_id, "claude_code")
-    session["model"] = "claude_code"
-
-    try:
-        result = _execute_linked_provider(
-            session,
-            provider="claude_code",
-            prompt=prompt,
-            device_id=body.get("device_id"),
-            conversation_id=str(body.get("conversation_id") or "").strip() or None,
-            cwd=str(body.get("cwd") or "").strip() or None,
-            source_suffix="api",
-        )
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 502
-
-    _save_session(session)
-    return jsonify(
-        {
-            "ok": True,
-            "session_id": session_id,
-            "conversation_id": result["conversation_id"],
-            "model": "claude_code",
-            "mode": "headless",
-            "text": result["text"],
-            "synced_messages": result["synced_messages"],
-            "timestamp": _now(),
-        }
-    )
+    socket_path = live.get("socket_path", claude_commander.DEFAULT_SOCKET_PATH)
+    ok = claude_commander.inject_text(prompt, socket_path)
+    if not ok:
+        return jsonify({"error": "Failed to inject into live session"}), 502
+    claude_commander.mark_busy()
+    return jsonify({
+        "ok": True,
+        "session_id": session_id,
+        "model": "claude_code",
+        "mode": "live",
+        "status": "sent",
+        "text": "(sent to live Claude Code session)",
+        "timestamp": _now(),
+    })
 
 
 @app.post("/api/claude-code/sessions/start")
 @app.post("/claude-code/sessions/start")
 def start_claude_code_session() -> Any:
-    body = request.get_json(silent=True) or {}
-    mode = str(body.get("mode") or "").strip().lower()
-
-    # If mode=live, just register the socket for live injection (no headless session)
-    if mode == "live":
-        socket_path = str(body.get("socket_path") or "").strip() or claude_commander.DEFAULT_SOCKET_PATH
-        cwd = str(body.get("cwd") or "").strip() or None
-        if not claude_commander.is_connected(socket_path):
-            return jsonify({"error": "No live claude-commander session at " + socket_path}), 502
-        claude_commander.register_session(socket_path, cwd=cwd)
+    """Check for a live claude-commander session. Returns session info or 503."""
+    live = claude_commander.get_live_session()
+    if not live:
         return jsonify({
-            "ok": True,
-            "mode": "live",
-            "socket_path": socket_path,
-            "cwd": cwd,
-            "timestamp": _now(),
-        }), 201
+            "error": "No live session. Run `claudei` in your project on the Mac.",
+            "live": False,
+        }), 503
 
-    # Default: headless mode (existing behavior)
-    return _start_linked_session_for_provider("claude_code")
+    socket_path = live.get("socket_path", claude_commander.DEFAULT_SOCKET_PATH)
+    return jsonify({
+        "ok": True,
+        "live": True,
+        "mode": "live",
+        "socket_path": socket_path,
+        "cwd": live.get("cwd"),
+        "pid": live.get("pid"),
+        "timestamp": _now(),
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -1738,14 +1399,9 @@ def claude_code_inject() -> Any:
     if not text and not image_base64 and not image_path:
         return jsonify({"error": "text, image_base64, or image_path is required"}), 400
 
-    # Determine socket path
     live = claude_commander.get_live_session()
     if not live:
-        # Fall back to headless mode if a session_id is provided
-        session_id = str(body.get("session_id") or "").strip()
-        if session_id and text:
-            return _fallback_headless_respond(session_id, text, body)
-        return jsonify({"error": "No live claude-commander session. Start one with tools/iris-session."}), 503
+        return jsonify({"error": "No live session. Run `claudei` in your project on the Mac."}), 503
 
     socket_path = live.get("socket_path", claude_commander.DEFAULT_SOCKET_PATH)
 
@@ -1760,14 +1416,14 @@ def claude_code_inject() -> Any:
         if not ok:
             return jsonify({"error": "Failed to inject image into live session"}), 502
         claude_commander.mark_busy()
-        return jsonify({"status": "sent", "type": "image", "timestamp": _now()})
+        return jsonify({"status": "sent", "mode": "live", "type": "image", "timestamp": _now()})
 
     # Handle text injection
     ok = claude_commander.inject_text(text, socket_path)
     if not ok:
         return jsonify({"error": "Failed to inject text into live session"}), 502
     claude_commander.mark_busy()
-    return jsonify({"status": "sent", "type": "text", "timestamp": _now()})
+    return jsonify({"status": "sent", "mode": "live", "type": "text", "timestamp": _now()})
 
 
 @app.post("/api/claude-code/idle")
@@ -1799,7 +1455,7 @@ def claude_code_live_status() -> Any:
 
 @app.post("/api/claude-code/sessions/register")
 def register_claude_code_session() -> Any:
-    """Register a live claude-commander session (called by tools/iris-session)."""
+    """Register a live claude-commander session (called by tools/claudei)."""
     body = request.get_json(silent=True) or {}
     socket_path = str(body.get("socket_path") or "").strip()
     if not socket_path:
@@ -1817,39 +1473,6 @@ def unregister_claude_code_session() -> Any:
     socket_path = str(body.get("socket_path") or "").strip() or None
     claude_commander.unregister_session(socket_path)
     return jsonify({"ok": True})
-
-
-def _fallback_headless_respond(session_id: str, prompt: str, body: dict) -> Any:
-    """Fall back to headless claude -p --resume when no live session exists."""
-    session = _load_session(session_id)
-    if not session:
-        session = _make_session(session_id, session_id, "claude_code")
-    session["model"] = "claude_code"
-
-    try:
-        result = _execute_linked_provider(
-            session,
-            provider="claude_code",
-            prompt=prompt,
-            device_id=body.get("device_id"),
-            conversation_id=str(body.get("conversation_id") or "").strip() or None,
-            cwd=str(body.get("cwd") or "").strip() or None,
-            source_suffix="inject_fallback",
-        )
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 502
-
-    _save_session(session)
-    return jsonify({
-        "status": "sent",
-        "type": "headless_fallback",
-        "text": result["text"],
-        "session_id": session_id,
-        "conversation_id": result["conversation_id"],
-        "timestamp": _now(),
-    })
 
 
 # ---------------------------------------------------------------------------
@@ -2291,42 +1914,46 @@ def v1_agent() -> Any:
         session = _load_session(session_id)
         if not session:
             session = _make_session(session_id, session_id, model)
-        session.setdefault("metadata", {})
+        if not isinstance(session.get("metadata"), dict):
+            session["metadata"] = {}
+        metadata = session["metadata"]
         is_first_prompt = not session.get("messages") and _session_needs_auto_name(session)
 
         # Merge provider-link metadata from request into persisted session metadata.
         conversation_id = request_metadata.get("claude_code_conversation_id")
         if isinstance(conversation_id, str) and conversation_id.strip():
-            session["metadata"]["claude_code_conversation_id"] = conversation_id.strip()
+            metadata["claude_code_conversation_id"] = conversation_id.strip()
         claude_code_cwd = request_metadata.get("claude_code_cwd")
         if isinstance(claude_code_cwd, str) and claude_code_cwd.strip():
-            session["metadata"]["claude_code_cwd"] = claude_code_cwd.strip()
+            metadata["claude_code_cwd"] = claude_code_cwd.strip()
         codex_conversation_id = request_metadata.get("codex_conversation_id")
         if isinstance(codex_conversation_id, str) and codex_conversation_id.strip():
-            session["metadata"]["codex_conversation_id"] = codex_conversation_id.strip()
+            metadata["codex_conversation_id"] = codex_conversation_id.strip()
         codex_cwd = request_metadata.get("codex_cwd")
         if isinstance(codex_cwd, str) and codex_cwd.strip():
-            session["metadata"]["codex_cwd"] = codex_cwd.strip()
+            metadata["codex_cwd"] = codex_cwd.strip()
+        system_prompt = _iris_system_prompt()
+        if system_prompt:
+            metadata["system_prompt"] = system_prompt
 
         session["model"] = model
 
         claude_code_mode = model.strip().lower() == "claude_code" or bool(
-            str(session["metadata"].get("claude_code_conversation_id") or "").strip()
+            str(metadata.get("claude_code_conversation_id") or "").strip()
         )
         if claude_code_mode:
             session["model"] = "claude_code"
-            try:
-                linked_result = _execute_linked_provider(
-                    session,
-                    provider="claude_code",
-                    prompt=message,
-                    device_id=device.get("id"),
-                    source_suffix="v1",
-                )
-            except ValueError as exc:
-                return jsonify({"error": str(exc)}), 400
-            except RuntimeError as exc:
-                return jsonify({"error": str(exc)}), 502
+            live = claude_commander.get_live_session()
+            if not live:
+                return jsonify({
+                    "error": "No live session. Run `claudei` in your project on the Mac.",
+                }), 503
+
+            socket_path = live.get("socket_path", claude_commander.DEFAULT_SOCKET_PATH)
+            ok = claude_commander.inject_text(message, socket_path)
+            if not ok:
+                return jsonify({"error": "Failed to inject into live session"}), 502
+            claude_commander.mark_busy()
 
             if is_first_prompt:
                 _auto_name_session(session, message)
@@ -2338,7 +1965,8 @@ def v1_agent() -> Any:
                     "session_id": session_id,
                     "session_name": session.get("name", ""),
                     "model": "claude_code",
-                    "text": linked_result["text"],
+                    "mode": "live",
+                    "text": "(sent to live Claude Code session)",
                     "events": [],
                     "timestamp": _now(),
                 },
@@ -2346,7 +1974,7 @@ def v1_agent() -> Any:
             )
 
         codex_mode = model.strip().lower() == "codex" or bool(
-            str(session["metadata"].get("codex_conversation_id") or "").strip()
+            str(metadata.get("codex_conversation_id") or "").strip()
         )
         if codex_mode:
             session["model"] = "codex"
@@ -2504,7 +2132,8 @@ def v1_agent() -> Any:
         if not ephemeral and session is not None:
             session.setdefault("widgets", []).append(widget_record)
 
-        # Route iPad diagrams to the place endpoint (rasterized SVG image)
+        # Route iPad diagrams to the place endpoint (rasterized SVG image).
+        # Never fall through to widget.open — iPad diagrams are always rasterized.
         is_ipad_diagram = (
             widget_record["type"] == "diagram"
             and widget_record["target"] == "ipad"
@@ -2520,18 +2149,18 @@ def v1_agent() -> Any:
                 widget_record,
                 ipad_base_urls=_candidate_ipad_urls(source_ip),
             )
+            place_succeeded = place_ok
+            _log_widget_push_debug(
+                session_id=session_id,
+                request_id=request_id,
+                model=model,
+                widget_record=widget_record,
+                raw_widget=w,
+                event_kind="place" if place_ok else "place_failed",
+                place_attempted=place_attempted,
+                place_succeeded=place_succeeded,
+            )
             if place_ok:
-                place_succeeded = True
-                _log_widget_push_debug(
-                    session_id=session_id,
-                    request_id=request_id,
-                    model=model,
-                    widget_record=widget_record,
-                    raw_widget=w,
-                    event_kind="place",
-                    place_attempted=place_attempted,
-                    place_succeeded=place_succeeded,
-                )
                 events.append({
                     "kind": "place",
                     "place": {
@@ -2543,8 +2172,7 @@ def v1_agent() -> Any:
                         "coordinate_space": widget_record["coordinate_space"],
                     },
                 })
-                continue
-            # Fall through to widget.open if place failed
+            continue
 
         _log_widget_push_debug(
             session_id=session_id,

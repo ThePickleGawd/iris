@@ -49,6 +49,10 @@ function normalizeMetadata(value: unknown): TrajectoryMetadata | null {
       .map((d) => asString(d).trim())
       .filter(Boolean);
   }
+  const systemPrompt = asString(row.system_prompt).trim();
+  if (systemPrompt) metadata.system_prompt = systemPrompt;
+  const sessionMetadata = asRecord(row.session_metadata);
+  if (sessionMetadata) metadata.session_metadata = sessionMetadata;
   return metadata;
 }
 
@@ -92,8 +96,41 @@ function normalizeToolCall(value: unknown, step: number, index: number): ToolCal
   if (Object.prototype.hasOwnProperty.call(row, "duration_ms")) {
     normalized.duration_ms = Math.max(0, Math.trunc(asNumber(row.duration_ms, 0)));
   }
+  const raw = asRecord(row.raw);
+  if (raw) normalized.raw = raw;
 
   return normalized;
+}
+
+function normalizeMessageMeta(
+  row: Record<string, unknown>
+): {
+  role?: string;
+  message_id?: string;
+  source?: string;
+  device_id?: string;
+  raw_message?: Record<string, unknown>;
+} {
+  const meta: {
+    role?: string;
+    message_id?: string;
+    source?: string;
+    device_id?: string;
+    raw_message?: Record<string, unknown>;
+  } = {};
+
+  const role = asString(row.role).trim();
+  if (role) meta.role = role;
+  const messageId = asString(row.message_id).trim();
+  if (messageId) meta.message_id = messageId;
+  const source = asString(row.source).trim();
+  if (source) meta.source = source;
+  const deviceId = asString(row.device_id).trim();
+  if (deviceId) meta.device_id = deviceId;
+  const rawMessage = asRecord(row.raw_message);
+  if (rawMessage) meta.raw_message = rawMessage;
+
+  return meta;
 }
 
 function normalizeStep(value: unknown, index: number): TrajectoryStep | null {
@@ -102,6 +139,7 @@ function normalizeStep(value: unknown, index: number): TrajectoryStep | null {
 
   const timestamp = asString(row.timestamp).trim() || new Date().toISOString();
   const step = Math.max(0, Math.trunc(asNumber(row.step, index)));
+  const messageMeta = normalizeMessageMeta(row);
 
   if (row.type === "user_message") {
     const screenshots = Array.isArray(row.screenshots)
@@ -131,6 +169,7 @@ function normalizeStep(value: unknown, index: number): TrajectoryStep | null {
       step,
       timestamp,
       content: asString(row.content),
+      ...messageMeta,
       ...(screenshots && screenshots.length > 0 ? { screenshots } : {}),
       ...(transcripts && transcripts.length > 0 ? { transcripts } : {}),
     };
@@ -148,8 +187,21 @@ function normalizeStep(value: unknown, index: number): TrajectoryStep | null {
       step,
       timestamp,
       thought: asString(row.thought),
+      ...messageMeta,
       tool_calls: toolCalls,
       duration_ms: Math.max(0, Math.trunc(asNumber(row.duration_ms, 0))),
+    };
+  }
+
+  if (row.type === "session_message") {
+    const role = asString(row.role).trim() || "unknown";
+    return {
+      type: "session_message",
+      step,
+      timestamp,
+      role,
+      content: asString(row.content),
+      ...messageMeta,
     };
   }
 
@@ -160,6 +212,7 @@ function normalizeStep(value: unknown, index: number): TrajectoryStep | null {
       timestamp,
       content: asString(row.content),
       total_duration_ms: Math.max(0, Math.trunc(asNumber(row.total_duration_ms, 0))),
+      ...messageMeta,
     };
   }
 
