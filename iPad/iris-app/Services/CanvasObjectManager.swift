@@ -1,4 +1,5 @@
 import Foundation
+import CoreText
 import PencilKit
 import UIKit
 
@@ -34,6 +35,224 @@ struct CanvasCoordinateSnapshot: Codable {
     let mostRecentStrokeCenterAxis: Point?
     let mostRecentStrokeBoundsAxis: Rect?
     let mostRecentStrokeUpdatedAt: String?
+}
+
+struct HandwrittenInkResult {
+    let strokes: [PKStroke]
+    let size: CGSize
+}
+
+enum HandwrittenInkRenderer {
+
+    static func render(
+        text: String,
+        origin: CGPoint,
+        maxWidth: CGFloat,
+        color: UIColor,
+        fontSize: CGFloat = 30,
+        strokeWidth: CGFloat = 2.2
+    ) -> HandwrittenInkResult {
+        let normalized = normalize(text)
+        guard !normalized.isEmpty else {
+            return HandwrittenInkResult(strokes: [], size: .zero)
+        }
+
+        let font = UIFont(name: "BradleyHandITCTT-Bold", size: fontSize)
+            ?? UIFont.italicSystemFont(ofSize: fontSize)
+        let ctFont = CTFontCreateWithName(font.fontName as CFString, font.pointSize, nil)
+        let lines = wrap(normalized, font: font, maxWidth: max(120, maxWidth))
+
+        let ink = PKInk(.pen, color: color)
+        let lineHeight = font.lineHeight * 1.2
+        let baselineStart = origin.y + font.ascender
+        let maxLineWidth = lines.reduce(CGFloat.zero) { partial, line in
+            max(partial, (line as NSString).size(withAttributes: [.font: font]).width)
+        }
+
+        var strokes: [PKStroke] = []
+        for (lineIndex, line) in lines.enumerated() {
+            let baselineY = baselineStart + (CGFloat(lineIndex) * lineHeight)
+            let outlines = glyphOutlines(for: line, ctFont: ctFont, origin: CGPoint(x: origin.x, y: baselineY))
+            for contour in outlines where contour.count >= 2 {
+                let points = contour.enumerated().map { idx, point in
+                    let jitter = handwritingJitter(index: idx)
+                    return PKStrokePoint(
+                        location: CGPoint(x: point.x + jitter.x, y: point.y + jitter.y),
+                        timeOffset: TimeInterval(idx) / 90.0,
+                        size: CGSize(width: strokeWidth, height: strokeWidth),
+                        opacity: 1,
+                        force: 1,
+                        azimuth: 0,
+                        altitude: .pi / 2
+                    )
+                }
+                let path = PKStrokePath(controlPoints: points, creationDate: Date())
+                strokes.append(PKStroke(ink: ink, path: path))
+            }
+        }
+
+        let height = max(lineHeight, CGFloat(lines.count) * lineHeight)
+        let size = CGSize(width: min(maxWidth, maxLineWidth), height: height)
+        return HandwrittenInkResult(strokes: strokes, size: size)
+    }
+
+    private static func wrap(_ text: String, font: UIFont, maxWidth: CGFloat) -> [String] {
+        var wrapped: [String] = []
+
+        for raw in text.components(separatedBy: .newlines) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty {
+                if wrapped.last != "" { wrapped.append("") }
+                continue
+            }
+
+            var current = ""
+            for word in line.split(separator: " ") {
+                let token = String(word)
+                let candidate = current.isEmpty ? token : "\(current) \(token)"
+                let width = (candidate as NSString).size(withAttributes: [.font: font]).width
+                if width <= maxWidth || current.isEmpty {
+                    current = candidate
+                } else {
+                    wrapped.append(current)
+                    current = token
+                }
+            }
+
+            if !current.isEmpty {
+                wrapped.append(current)
+            }
+        }
+
+        if wrapped.isEmpty {
+            return [text]
+        }
+        return wrapped
+    }
+
+    private static func glyphOutlines(for line: String, ctFont: CTFont, origin: CGPoint) -> [[CGPoint]] {
+        let chars = Array(line.utf16)
+        guard !chars.isEmpty else { return [] }
+
+        var glyphs = Array(repeating: CGGlyph(), count: chars.count)
+        let mapped = CTFontGetGlyphsForCharacters(ctFont, chars, &glyphs, chars.count)
+        guard mapped else { return [] }
+
+        var advances = Array(repeating: CGSize.zero, count: chars.count)
+        CTFontGetAdvancesForGlyphs(ctFont, .horizontal, glyphs, &advances, glyphs.count)
+
+        var contours: [[CGPoint]] = []
+        var cursorX: CGFloat = 0
+
+        for idx in glyphs.indices {
+            let glyph = glyphs[idx]
+            defer { cursorX += advances[idx].width }
+            guard glyph != 0, let path = CTFontCreatePathForGlyph(ctFont, glyph, nil) else { continue }
+
+            var transform = CGAffineTransform(translationX: origin.x + cursorX, y: origin.y)
+            transform = transform.scaledBy(x: 1, y: -1)
+            guard let transformed = path.copy(using: &transform) else { continue }
+
+            contours.append(contentsOf: flatten(transformed))
+        }
+
+        return contours
+    }
+
+    private static func flatten(_ path: CGPath) -> [[CGPoint]] {
+        var result: [[CGPoint]] = []
+        var current: [CGPoint] = []
+        var currentPoint = CGPoint.zero
+        var subpathStart = CGPoint.zero
+
+        path.applyWithBlock { pointer in
+            let element = pointer.pointee
+            switch element.type {
+            case .moveToPoint:
+                if current.count >= 2 { result.append(current) }
+                let p = element.points[0]
+                current = [p]
+                currentPoint = p
+                subpathStart = p
+
+            case .addLineToPoint:
+                let p = element.points[0]
+                current.append(p)
+                currentPoint = p
+
+            case .addQuadCurveToPoint:
+                let c = element.points[0]
+                let end = element.points[1]
+                current.append(contentsOf: sampleQuad(from: currentPoint, control: c, to: end, steps: 8))
+                currentPoint = end
+
+            case .addCurveToPoint:
+                let c1 = element.points[0]
+                let c2 = element.points[1]
+                let end = element.points[2]
+                current.append(contentsOf: sampleCubic(from: currentPoint, c1: c1, c2: c2, to: end, steps: 10))
+                currentPoint = end
+
+            case .closeSubpath:
+                current.append(subpathStart)
+                if current.count >= 2 { result.append(current) }
+                current = []
+                currentPoint = subpathStart
+
+            @unknown default:
+                break
+            }
+        }
+
+        if current.count >= 2 {
+            result.append(current)
+        }
+
+        return result
+    }
+
+    private static func sampleQuad(from p0: CGPoint, control p1: CGPoint, to p2: CGPoint, steps: Int) -> [CGPoint] {
+        guard steps > 0 else { return [p2] }
+        return (1...steps).map { step in
+            let t = CGFloat(step) / CGFloat(steps)
+            let mt = 1 - t
+            let x = (mt * mt * p0.x) + (2 * mt * t * p1.x) + (t * t * p2.x)
+            let y = (mt * mt * p0.y) + (2 * mt * t * p1.y) + (t * t * p2.y)
+            return CGPoint(x: x, y: y)
+        }
+    }
+
+    private static func sampleCubic(from p0: CGPoint, c1: CGPoint, c2: CGPoint, to p3: CGPoint, steps: Int) -> [CGPoint] {
+        guard steps > 0 else { return [p3] }
+        return (1...steps).map { step in
+            let t = CGFloat(step) / CGFloat(steps)
+            let mt = 1 - t
+            let x = (mt * mt * mt * p0.x)
+                + (3 * mt * mt * t * c1.x)
+                + (3 * mt * t * t * c2.x)
+                + (t * t * t * p3.x)
+            let y = (mt * mt * mt * p0.y)
+                + (3 * mt * mt * t * c1.y)
+                + (3 * mt * t * t * c2.y)
+                + (t * t * t * p3.y)
+            return CGPoint(x: x, y: y)
+        }
+    }
+
+    private static func handwritingJitter(index: Int) -> CGPoint {
+        let t = CGFloat(index)
+        return CGPoint(
+            x: sin(t * 0.43) * 0.18,
+            y: cos(t * 0.37) * 0.14
+        )
+    }
+
+    private static func normalize(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 struct CanvasSuggestion: Identifiable {

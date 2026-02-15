@@ -41,6 +41,7 @@ struct ContentView: View {
     private let proactiveAlwaysSaveScreenshots = false
     private let proactiveForceSuggestAfterTicks = 4
     private let screenshotAIProcessingEnabled = false
+    private let aiOutputInkEnabled = true
     private let proactiveTriageModel = "gemini-2.0-flash"
     private let proactiveWidgetModel = "gemini-2.0-flash"
     private var sessionID: String { document.resolvedSessionID }
@@ -288,27 +289,45 @@ struct ContentView: View {
                     serverURL: serverURL
                 )
 
-                // Place widgets on the canvas and track them
-                for widget in agentResponse.widgets {
-                    let pos = widgetOrigin(for: widget)
-                    await objectManager.place(
-                        html: widget.html,
-                        at: pos,
-                        size: CGSize(width: widget.width, height: widget.height),
-                        backendWidgetID: widget.id
-                    )
-                    renderedWidgetIDs.insert(widget.id)
-                }
-
+            if aiOutputInkEnabled {
+                let widgetInkAnchors = Dictionary(
+                    uniqueKeysWithValues: agentResponse.widgets.map { ($0.id, widgetOrigin(for: $0)) }
+                )
+                await renderAgentOutputAsHandwriting(
+                    response: agentResponse,
+                    prefix: screenshotUploadWarning,
+                    widgetAnchors: widgetInkAnchors
+                )
                 await MainActor.run {
-                    let text = agentResponse.text
-                    if let screenshotUploadWarning {
-                        withAnimation { lastResponse = "\(screenshotUploadWarning)\n\n\(text)" }
-                    } else {
-                        withAnimation { lastResponse = text }
+                    lastResponse = screenshotUploadWarning
+                        isProcessing = false
+                        if screenshotUploadWarning != nil {
+                            autoDismissResponse()
+                        }
                     }
-                    isProcessing = false
-                    autoDismissResponse()
+                } else {
+                    // Place widgets on the canvas and track them
+                    for widget in agentResponse.widgets {
+                        let pos = widgetOrigin(for: widget)
+                        await objectManager.place(
+                            html: widget.html,
+                            at: pos,
+                            size: CGSize(width: widget.width, height: widget.height),
+                            backendWidgetID: widget.id
+                        )
+                        renderedWidgetIDs.insert(widget.id)
+                    }
+
+                    await MainActor.run {
+                        let text = agentResponse.text
+                        if let screenshotUploadWarning {
+                            withAnimation { lastResponse = "\(screenshotUploadWarning)\n\n\(text)" }
+                        } else {
+                            withAnimation { lastResponse = text }
+                        }
+                        isProcessing = false
+                        autoDismissResponse()
+                    }
                 }
             } catch {
                 await MainActor.run {
@@ -378,19 +397,30 @@ struct ContentView: View {
                 serverURL: serverURL
             )
 
-            for widget in agentResponse.widgets {
-                let pos = widgetOrigin(for: widget)
-                await objectManager.place(
-                    html: widget.html,
-                    at: pos,
-                    size: CGSize(width: widget.width, height: widget.height),
-                    backendWidgetID: widget.id
+            if aiOutputInkEnabled {
+                let widgetInkAnchors = Dictionary(
+                    uniqueKeysWithValues: agentResponse.widgets.map { ($0.id, widgetOrigin(for: $0)) }
                 )
-                renderedWidgetIDs.insert(widget.id)
-            }
+                await renderAgentOutputAsHandwriting(
+                    response: agentResponse,
+                    widgetAnchors: widgetInkAnchors
+                )
+                withAnimation { lastResponse = nil }
+            } else {
+                for widget in agentResponse.widgets {
+                    let pos = widgetOrigin(for: widget)
+                    await objectManager.place(
+                        html: widget.html,
+                        at: pos,
+                        size: CGSize(width: widget.width, height: widget.height),
+                        backendWidgetID: widget.id
+                    )
+                    renderedWidgetIDs.insert(widget.id)
+                }
 
-            withAnimation { lastResponse = agentResponse.text }
-            autoDismissResponse()
+                withAnimation { lastResponse = agentResponse.text }
+                autoDismissResponse()
+            }
         } catch {
             withAnimation { lastResponse = "Error: \(error.localizedDescription)" }
             autoDismissResponse()
@@ -694,13 +724,21 @@ struct ContentView: View {
                 renderedWidgetIDs.insert(widget.id)
                 continue
             }
-            let pos = widgetOrigin(for: widget)
-            await objectManager.place(
-                html: widget.html,
-                at: pos,
-                size: CGSize(width: widget.width, height: widget.height),
-                backendWidgetID: widget.id
-            )
+            if aiOutputInkEnabled {
+                await renderAgentOutputAsHandwriting(
+                    response: AgentResponse(text: "", widgets: [widget]),
+                    prefix: nil,
+                    widgetAnchors: [widget.id: widgetOrigin(for: widget)]
+                )
+            } else {
+                let pos = widgetOrigin(for: widget)
+                await objectManager.place(
+                    html: widget.html,
+                    at: pos,
+                    size: CGSize(width: widget.width, height: widget.height),
+                    backendWidgetID: widget.id
+                )
+            }
             renderedWidgetIDs.insert(widget.id)
         }
     }
@@ -709,6 +747,107 @@ struct ContentView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
             withAnimation { lastResponse = nil }
         }
+    }
+
+    @MainActor
+    private func renderAgentOutputAsHandwriting(
+        response: AgentResponse,
+        prefix: String? = nil,
+        widgetAnchors: [String: CGPoint] = [:]
+    ) async {
+        var textBlocks: [String] = []
+        if let prefix {
+            let trimmed = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                textBlocks.append(trimmed)
+            }
+        }
+
+        let mainText = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !mainText.isEmpty {
+            textBlocks.append(mainText)
+        }
+
+        var widgetBlocks: [(text: String, anchor: CGPoint)] = []
+        for widget in response.widgets {
+            let extracted = extractPlainText(fromHTML: widget.html)
+            let text = extracted.isEmpty ? "Widget output" : extracted
+            let anchor = widgetAnchors[widget.id] ?? preferredAIInkAnchor(maxWidthHint: widget.width)
+            widgetBlocks.append((text: text, anchor: anchor))
+            renderedWidgetIDs.insert(widget.id)
+        }
+
+        guard !textBlocks.isEmpty || !widgetBlocks.isEmpty else { return }
+        if !textBlocks.isEmpty {
+            var anchor = preferredAIInkAnchor(maxWidthHint: 420)
+            let viewport = objectManager.viewportCanvasRect()
+            let maxWidth = min(520, max(240, viewport.width * 0.45))
+            anchor.x = min(max(anchor.x, viewport.minX + 16), viewport.maxX - maxWidth - 16)
+            anchor.y = max(anchor.y, viewport.minY + 16)
+
+            for block in textBlocks {
+                let clipped = String(block.prefix(900))
+                let drawn = await objectManager.drawHandwrittenText(
+                    clipped,
+                    at: anchor,
+                    maxWidth: maxWidth
+                )
+                anchor.y += max(48, drawn.height + 24)
+            }
+        }
+
+        for widget in widgetBlocks {
+            let clipped = String(widget.text.prefix(900))
+            _ = await objectManager.drawHandwrittenText(
+                clipped,
+                at: widget.anchor,
+                maxWidth: 420
+            )
+        }
+    }
+
+    private func preferredAIInkAnchor(maxWidthHint: CGFloat) -> CGPoint {
+        let snapshot = objectManager.makeCoordinateSnapshot(documentID: document.id)
+        if let bounds = snapshot.mostRecentStrokeBoundsAxis {
+            let axisAnchor = CGPoint(
+                x: bounds.x + bounds.width + 28,
+                y: bounds.y - 8
+            )
+            return objectManager.canvasPoint(forAxisPoint: axisAnchor)
+        }
+
+        let viewport = objectManager.viewportCanvasRect()
+        return CGPoint(
+            x: viewport.midX - (maxWidthHint * 0.5),
+            y: viewport.midY - 64
+        )
+    }
+
+    private func extractPlainText(fromHTML html: String) -> String {
+        let withBreaks = html.replacingOccurrences(
+            of: "(?i)<br\\s*/?>",
+            with: "\n",
+            options: .regularExpression
+        )
+        guard let data = withBreaks.data(using: .utf8) else { return "" }
+
+        let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+            .documentType: NSAttributedString.DocumentType.html,
+            .characterEncoding: String.Encoding.utf8.rawValue
+        ]
+        guard let attributed = try? NSAttributedString(
+            data: data,
+            options: options,
+            documentAttributes: nil
+        ) else {
+            return ""
+        }
+
+        let lines = attributed.string
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return lines.joined(separator: "\n")
     }
 
     private func responseToast(_ text: String) -> some View {

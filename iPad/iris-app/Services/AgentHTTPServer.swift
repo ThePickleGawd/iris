@@ -317,6 +317,7 @@ class AgentHTTPServer {
         let w     = numericValue(json["width"]) ?? 320
         let h     = numericValue(json["height"]) ?? 220
         let anim  = (json["animate"] as? Bool) ?? true
+        let renderMode = (json["render_mode"] as? String ?? "handwritten").lowercased()
         let coordinateSpace = (json["coordinate_space"] as? String ?? "viewport_offset").lowercased()
 
         guard let mgr = objectManager else {
@@ -334,19 +335,69 @@ class AgentHTTPServer {
             ) ?? mgr.viewportCenter
             let viewport = mgr.viewportCenter
             let size = CGSize(width: w, height: h)
+            let axis = mgr.axisPoint(forCanvasPoint: canvasPos)
+            let text = self?.extractPlainText(fromHTML: html) ?? ""
+            let wantsHandwritten = renderMode != "widget"
+
+            if wantsHandwritten, !text.isEmpty {
+                let inkSize = await mgr.drawHandwrittenText(
+                    text,
+                    at: canvasPos,
+                    maxWidth: size.width
+                )
+                self?.respondJSON(conn, status: 201, body: [
+                    "id": UUID().uuidString,
+                    "x": x, "y": y,
+                    "coordinate_space_used": canonicalSpace,
+                    "rendered_as": "handwritten_ink",
+                    "width": max(inkSize.width, size.width),
+                    "height": max(inkSize.height, 44),
+                    "viewport_center": ["x": viewport.x, "y": viewport.y],
+                    "canvas_position": ["x": canvasPos.x, "y": canvasPos.y],
+                    "document_axis_position": ["x": axis.x, "y": axis.y]
+                ])
+                return
+            }
 
             let obj = await mgr.place(html: html, at: canvasPos, size: size, animated: anim)
-            let axis = mgr.axisPoint(forCanvasPoint: canvasPos)
             self?.respondJSON(conn, status: 201, body: [
                 "id": obj.id.uuidString,
                 "x": x, "y": y,
                 "coordinate_space_used": canonicalSpace,
+                "rendered_as": "widget",
                 "width": w, "height": h,
                 "viewport_center": ["x": viewport.x, "y": viewport.y],
                 "canvas_position": ["x": canvasPos.x, "y": canvasPos.y],
                 "document_axis_position": ["x": axis.x, "y": axis.y]
             ])
         }
+    }
+
+    private func extractPlainText(fromHTML html: String) -> String {
+        let withBreaks = html.replacingOccurrences(
+            of: "(?i)<br\\s*/?>",
+            with: "\n",
+            options: .regularExpression
+        )
+        guard let data = withBreaks.data(using: .utf8) else { return "" }
+
+        let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+            .documentType: NSAttributedString.DocumentType.html,
+            .characterEncoding: String.Encoding.utf8.rawValue
+        ]
+        guard let attributed = try? NSAttributedString(
+            data: data,
+            options: options,
+            documentAttributes: nil
+        ) else {
+            return ""
+        }
+
+        return attributed.string
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
     }
 
     private func handleListObjects(_ conn: NWConnection) {
