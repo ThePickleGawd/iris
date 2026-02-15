@@ -2,6 +2,12 @@
 
 An AI assistant that sees, hears, and draws across your Apple devices.
 
+<a href="https://youtu.be/HxawNsre4xo" target="_blank">
+  <picture>
+    <img src="https://img.youtube.com/vi/HxawNsre4xo/maxresdefault.jpg" alt="Project Demo (YouTube)" />
+  </picture>
+</a>
+
 ## The Problem
 
 Siri can't look at your screen. It can't draw you a diagram. It can't watch what you're doing on your Mac and help you on your iPad at the same time. Current AI assistants are stuck in one device, one modality, one conversation.
