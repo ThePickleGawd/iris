@@ -64,3 +64,9 @@ iPad/iris-app/Configs/App.local.xcconfig
 
 # widgets testbed
 widgets/node_modules/
+
+# browser service local env/build artifacts
+browser/.venv/
+browser/node_modules/
+browser/__pycache__/
+browser/*.egg-info/
