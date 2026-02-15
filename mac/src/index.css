@@ -572,6 +572,17 @@ body {
   cursor: default;
 }
 
+.iris-send.iris-stop {
+  border-color: rgba(255, 59, 48, 0.4);
+  background: rgba(255, 59, 48, 0.15);
+  color: #ff3b30;
+}
+
+.iris-send.iris-stop:hover {
+  background: rgba(255, 59, 48, 0.3);
+  border-color: #ff3b30;
+}
+
 /* ─── Thinking Dots ─── */
 
 .iris-thinking {

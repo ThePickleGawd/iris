@@ -24,7 +24,7 @@ EventCallback = Callable[[dict[str, Any]], None] | None
 DEFAULT_MODEL = "gpt-5.2-mini"
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-5"
 DEFAULT_GEMINI_MODEL = "gemini-3-flash"
-MAX_TOOL_ROUNDS = 14
+MAX_TOOL_ROUNDS = 25
 BROWSER_TOOL_TIMEOUT_SECONDS = max(
     30, int(os.environ.get("BROWSER_TOOL_TIMEOUT_SECONDS", "180"))
 ) if os.environ.get("BROWSER_TOOL_TIMEOUT_SECONDS", "").strip().isdigit() else 180
@@ -126,7 +126,9 @@ You can run web actions using the run_browser_task tool when browsing is the mos
 ### Iris Browser Tool Mapping
 
 - Use `run_browser_task` for all browser-use actions.
-- Prefer high-level usage (`instruction`, `start_url`) unless specific browser-use subcommands are needed.
+- **Session continuity**: The browser stays open between calls. Every call reuses the same session (`iris-main` by default). Do NOT re-open or re-navigate to URLs that are already open — the browser remembers its state.
+- **Follow-up actions**: For actions on an already-open page (scroll, click, type, go back, etc.), use `command` + `command_args` directly — e.g. `{"command": "scroll", "command_args": ["down"]}`, `{"command": "click", "command_args": ["5"]}`. Do NOT wrap these in a high-level `instruction` with `start_url`, as that launches a new AI agent task.
+- **First visit only**: Use high-level `instruction` + `start_url` only for the initial navigation or complex multi-step tasks on a new page.
 - For direct browser-use command parity, pass `command` + `command_args`.
 - If `BROWSER_USE_API_KEY` is absent, Iris maps `OPENAI_API_KEY` to browser-use auth for compatibility.
 - Browser persistence policy: keep browser sessions alive after tasks complete.
@@ -416,8 +418,10 @@ TOOLS = [
             "name": "run_browser_task",
             "description": (
                 "Execute browser automation using browser-use CLI. "
-                "Supports high-level tasks (instruction/start_url) and direct browser-use subcommand parity "
-                "(command/command_args) for easy skill transition."
+                "The browser session persists between calls — reuse it for follow-ups. "
+                "For follow-up actions on an already-open page (scroll, click, type, back, state, screenshot), "
+                "use `command` + `command_args` directly (e.g. command='scroll', command_args=['down']). "
+                "Use high-level `instruction` + `start_url` only for the first visit or complex multi-step tasks."
             ),
             "parameters": {
                 "type": "object",
@@ -444,7 +448,7 @@ TOOLS = [
                     },
                     "start_url": {
                         "type": "string",
-                        "description": "Optional URL to open first.",
+                        "description": "Optional URL to open first. Omit for follow-up actions on an already-open page.",
                     },
                     "max_steps": {
                         "type": "number",

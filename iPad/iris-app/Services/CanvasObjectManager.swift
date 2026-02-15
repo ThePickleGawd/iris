@@ -285,14 +285,40 @@ final class CanvasObjectManager: ObservableObject {
     var onWidgetRemoved: ((String) -> Void)?
 
     let httpServer = AgentHTTPServer.shared
+    let cursorController = AgentCursorController()
 
     private weak var canvasView: NoteCanvasView?
     private var mostRecentStrokeBoundsCanvas: CGRect?
     private var mostRecentStrokeUpdatedAt: Date?
+    private var document: Document?
 
-    func attach(to canvas: NoteCanvasView) {
+    func attach(to canvas: NoteCanvasView, document: Document? = nil) {
         self.canvasView = canvas
+        self.document = document
         httpServer.start(objectManager: self)
+        if let document {
+            restoreWidgets(from: document)
+        }
+    }
+
+    private func persistWidgets() {
+        guard let document else { return }
+        document.saveWidgets(Array(objects.values))
+    }
+
+    private func restoreWidgets(from document: Document) {
+        let saved = document.loadWidgets()
+        for widget in saved {
+            Task { @MainActor in
+                await self.place(
+                    html: widget.htmlContent,
+                    at: widget.position,
+                    size: widget.size,
+                    backendWidgetID: widget.backendWidgetID,
+                    animated: false
+                )
+            }
+        }
     }
 
     var viewportCenter: CGPoint {
@@ -421,6 +447,11 @@ final class CanvasObjectManager: ObservableObject {
     ) async -> Result<CanvasObject, PlaceError> {
         guard let canvasView else { return .failure(.canvasNotAttached) }
 
+        if animated {
+            let center = CGPoint(x: position.x + size.width * 0.5, y: position.y + size.height * 0.5)
+            await cursorNavigateAndClick(to: center)
+        }
+
         let object = CanvasObject(
             position: position,
             size: size,
@@ -434,11 +465,13 @@ final class CanvasObjectManager: ObservableObject {
 
         widget.onDragEnded = { [weak self] id, origin in
             self?.objects[id]?.position = origin
+            self?.persistWidgets()
         }
 
         let syncObjectFrame: (UUID, CGRect) -> Void = { [weak self] id, frame in
             self?.objects[id]?.position = frame.origin
             self?.objects[id]?.size = frame.size
+            self?.persistWidgets()
         }
         widget.onResizeEnded = syncObjectFrame
         widget.onAutoResize = syncObjectFrame
@@ -457,6 +490,7 @@ final class CanvasObjectManager: ObservableObject {
 
         objects[object.id] = object
         objectViews[object.id] = widget
+        persistWidgets()
 
         if animated {
             widget.transform = CGAffineTransform(scaleX: 0.94, y: 0.94)
@@ -529,6 +563,7 @@ final class CanvasObjectManager: ObservableObject {
             })
             imageViews.removeValue(forKey: id)
             objects.removeValue(forKey: id)
+            persistWidgets()
             if let backendID, !backendID.isEmpty {
                 onWidgetRemoved?(backendID)
             }
@@ -544,6 +579,7 @@ final class CanvasObjectManager: ObservableObject {
         })
         objectViews.removeValue(forKey: id)
         objects.removeValue(forKey: id)
+        persistWidgets()
         if let backendID, !backendID.isEmpty {
             onWidgetRemoved?(backendID)
         }
@@ -626,7 +662,17 @@ final class CanvasObjectManager: ObservableObject {
     /// If the cursor is already visible it glides from its current position;
     /// otherwise it appears at a slight offset first.
     func cursorNavigateAndClick(to canvasPoint: CGPoint) async {
-        _ = canvasPoint
+        let target = screenPoint(forCanvasPoint: canvasPoint)
+
+        if !cursorController.isVisible {
+            let start = CGPoint(x: target.x - 120, y: target.y - 120)
+            cursorController.appear(at: start)
+            try? await Task.sleep(nanoseconds: 50_000_000) // 0.05s for appear to register
+        }
+
+        cursorController.moveAndClick(at: target, moveDuration: 0.5)
+        // Wait for movement (0.5s) + click settle (0.15s)
+        try? await Task.sleep(nanoseconds: 650_000_000)
     }
 
     /// Captures the current visible canvas viewport as PNG data.
@@ -685,6 +731,10 @@ final class CanvasObjectManager: ObservableObject {
             return .failure(.renderFailed)
         }
 
+        let finalPosition = clampToViewport ? clampedImageOrigin(position, imageSize: scaledSize) : position
+        let center = CGPoint(x: finalPosition.x + scaledSize.width * 0.5, y: finalPosition.y + scaledSize.height * 0.5)
+        await cursorNavigateAndClick(to: center)
+
         return placeRenderedImage(
             image: image,
             requestedSize: scaledSize,
@@ -718,6 +768,10 @@ final class CanvasObjectManager: ObservableObject {
         } else {
             rendered = image
         }
+
+        let finalPosition = clampToViewport ? clampedImageOrigin(position, imageSize: scaledSize) : position
+        let center = CGPoint(x: finalPosition.x + scaledSize.width * 0.5, y: finalPosition.y + scaledSize.height * 0.5)
+        await cursorNavigateAndClick(to: center)
 
         return placeRenderedImage(
             image: rendered,

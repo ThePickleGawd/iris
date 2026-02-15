@@ -154,6 +154,32 @@ struct Document: Identifiable, Codable, Hashable {
     func deleteDrawingFile() {
         try? FileManager.default.removeItem(at: drawingFileURL)
     }
+
+    // MARK: - Widget Persistence
+
+    private var widgetsFileURL: URL {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return docs.appendingPathComponent("\(id.uuidString).widgets")
+    }
+
+    func saveWidgets(_ widgets: [CanvasObject]) {
+        // Only persist widgets with actual HTML content (skip placed images)
+        let persistable = widgets.filter { !$0.htmlContent.isEmpty }
+        guard let data = try? JSONEncoder().encode(persistable) else { return }
+        try? data.write(to: widgetsFileURL)
+    }
+
+    func loadWidgets() -> [CanvasObject] {
+        guard let data = try? Data(contentsOf: widgetsFileURL),
+              let widgets = try? JSONDecoder().decode([CanvasObject].self, from: data) else {
+            return []
+        }
+        return widgets
+    }
+
+    func deleteWidgetsFile() {
+        try? FileManager.default.removeItem(at: widgetsFileURL)
+    }
 }
 
 class DocumentStore: ObservableObject {
@@ -188,6 +214,7 @@ class DocumentStore: ObservableObject {
 
     func deleteDocument(_ document: Document) {
         document.deleteDrawingFile()
+        document.deleteWidgetsFile()
         documents.removeAll { $0.id == document.id }
         saveDocuments()
     }

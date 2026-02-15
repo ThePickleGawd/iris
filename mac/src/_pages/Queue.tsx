@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { ChevronDown, ChevronLeft, ChevronUp, Loader2, MessageSquare, Plus, SendHorizontal, Terminal, X } from "lucide-react"
+import { ChevronDown, ChevronLeft, ChevronUp, Loader2, MessageSquare, Plus, SendHorizontal, Square, Terminal, X } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"
@@ -82,6 +82,28 @@ const generalModelChoices = [
 const CLAUDE_CODE_MODEL_ID = "claude_code"
 const CODEX_MODEL_ID = "codex"
 
+/** Convert persisted tool_calls into AgentStep[] for rendering. */
+function toolCallsToSteps(toolCalls: ToolCallInfo[] | undefined): AgentStep[] | undefined {
+  if (!toolCalls?.length) return undefined
+  const steps: AgentStep[] = []
+  for (const tc of toolCalls) {
+    steps.push({ kind: "tool.call", name: tc.name })
+    steps.push({ kind: "tool.result", name: tc.name, ok: true, summary: tc.target ? `→ ${tc.target}` : undefined })
+  }
+  return steps
+}
+
+/** Map a raw server message into a ChatMessage. */
+function mapServerMessage(m: any): ChatMessage {
+  const toolCalls = m.tool_calls?.length ? m.tool_calls as ToolCallInfo[] : undefined
+  return {
+    role: m.role as "user" | "assistant",
+    text: m.content,
+    _id: m.id,
+    ...(toolCalls ? { toolCalls, steps: toolCallsToSteps(toolCalls) } : {})
+  }
+}
+
 interface ClaudeCodeSession {
   name: string
   cwd: string
@@ -123,6 +145,7 @@ const Queue: React.FC = () => {
   const messageListRef = useRef<HTMLDivElement>(null)
   const chatInputRef = useRef<HTMLInputElement>(null)
   const activeStreamRequestRef = useRef<string | null>(null)
+  const abortControllerRef = useRef<AbortController | null>(null)
   const sessionToggleDragRef = useRef<{
     moved: boolean
     startX: number
@@ -204,12 +227,7 @@ const Queue: React.FC = () => {
     try {
       await window.electronAPI.setCurrentSession(info)
       const data = await window.electronAPI.getSessionMessages(session.id)
-      const messages = (data?.items || []).map((m: any) => ({
-        role: m.role as "user" | "assistant",
-        text: m.content,
-        _id: m.id,
-        ...(m.tool_calls?.length ? { toolCalls: m.tool_calls } : {})
-      }))
+      const messages = (data?.items || []).map(mapServerMessage)
       setChatMessages(messages)
     } catch {
       // Non-fatal
@@ -475,6 +493,8 @@ const Queue: React.FC = () => {
 
     const requestId = createRequestId()
     activeStreamRequestRef.current = requestId
+    const abortController = new AbortController()
+    abortControllerRef.current = abortController
     setChatMessages((msgs) => [...msgs, { role: "user", text: trimmed }, { role: "assistant", text: "" }])
     setChatLoading(true)
 
@@ -571,6 +591,7 @@ const Queue: React.FC = () => {
           requestId,
           message: trimmed,
           history: chatMessages,
+          signal: abortController.signal,
           callbacks: {
             onFinal: (text) => {
               if (activeStreamRequestRef.current !== requestId) return
@@ -628,19 +649,18 @@ const Queue: React.FC = () => {
         })
       }
     } catch (error: any) {
-      setAssistantText(`Error: ${error?.message || String(error)}`)
+      if (error?.name !== "AbortError") {
+        setAssistantText(`Error: ${error?.message || String(error)}`)
+      }
     } finally {
       activeStreamRequestRef.current = null
+      abortControllerRef.current = null
       setChatLoading(false)
 
       // Reload from server so all messages have _ids (prevents poller duplication)
       try {
         const data = await window.electronAPI.getSessionMessages(selectedSession.id)
-        const msgs = (data?.items || []).map((m: any) => ({
-          role: m.role as "user" | "assistant",
-          text: m.content,
-          _id: m.id
-        }))
+        const msgs = (data?.items || []).map(mapServerMessage)
         if (msgs.length > 0) setChatMessages(msgs)
       } catch {
         // keep local state
@@ -660,6 +680,13 @@ const Queue: React.FC = () => {
     await sendChatMessage(message)
   }
 
+  const handleStopGeneration = useCallback(() => {
+    abortControllerRef.current?.abort()
+    abortControllerRef.current = null
+    activeStreamRequestRef.current = null
+    setChatLoading(false)
+  }, [])
+
   useEffect(() => {
     refreshSessions()
     const interval = setInterval(refreshSessions, 10_000)
@@ -674,11 +701,7 @@ const Queue: React.FC = () => {
       try {
         const data = await window.electronAPI.getSessionMessages(currentSession.id)
         if (cancelled) return
-        const msgs = (data?.items || []).map((m: any) => ({
-          role: m.role as "user" | "assistant",
-          text: m.content,
-          _id: m.id
-        }))
+        const msgs = (data?.items || []).map(mapServerMessage)
         if (msgs.length > 0) setChatMessages(msgs)
       } catch {
         // non-fatal
@@ -691,12 +714,7 @@ const Queue: React.FC = () => {
     const cleanup = window.electronAPI.onSessionMessagesUpdate((data: { sessionId: string; messages: any[] }) => {
       if (!currentSession || data.sessionId !== currentSession.id) return
 
-      const incoming = (data.messages || []).map((m: any) => ({
-        role: m.role as "user" | "assistant",
-        text: m.content,
-        _id: m.id,
-        ...(m.tool_calls?.length ? { toolCalls: m.tool_calls } : {})
-      }))
+      const incoming = (data.messages || []).map(mapServerMessage)
 
       if (incoming.length === 0) return
 
@@ -1089,14 +1107,25 @@ const Queue: React.FC = () => {
                 onChange={(e) => setChatInput(e.target.value)}
                 disabled={chatLoading}
               />
-              <button
-                type="submit"
-                className="iris-send"
-                disabled={chatLoading || !chatInput.trim()}
-                aria-label="Send"
-              >
-                <SendHorizontal size={14} />
-              </button>
+              {chatLoading ? (
+                <button
+                  type="button"
+                  className="iris-send iris-stop"
+                  onClick={handleStopGeneration}
+                  aria-label="Stop"
+                >
+                  <Square size={12} />
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  className="iris-send"
+                  disabled={!chatInput.trim()}
+                  aria-label="Send"
+                >
+                  <SendHorizontal size={14} />
+                </button>
+              )}
             </form>
           </main>
         </div>

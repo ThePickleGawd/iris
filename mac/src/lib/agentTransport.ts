@@ -24,6 +24,7 @@ export async function requestAgentResponse(params: {
   message: string
   history: AgentMessage[]
   callbacks: AgentStreamCallbacks
+  signal?: AbortSignal
 }): Promise<void> {
   return requestViaBackend(params)
 }
@@ -53,8 +54,9 @@ async function requestViaBackend(params: {
   message: string
   history: AgentMessage[]
   callbacks: AgentStreamCallbacks
+  signal?: AbortSignal
 }): Promise<void> {
-  const { settings, requestId, message, history, callbacks } = params
+  const { settings, requestId, message, history, callbacks, signal } = params
 
   const envelope: AgentRequestEnvelope = buildAgentRequestEnvelope({
     requestId,
@@ -81,7 +83,8 @@ async function requestViaBackend(params: {
   const response = await fetch(url, {
     method: "POST",
     headers,
-    body: JSON.stringify(envelope)
+    body: JSON.stringify({ ...envelope, stream: true }),
+    signal
   })
 
   if (!response.ok) {

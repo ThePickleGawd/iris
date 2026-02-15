@@ -13,6 +13,7 @@ struct ContentView: View {
     @StateObject private var transcriber = SpeechTranscriber()
 
     @State private var activeRequestCount = 0
+    @State private var activeAgentTask: Task<Void, Never>?
     @State private var lastResponse: String?
     @State private var widgetSyncTimer: Timer?
     @State private var proactiveMonitorTimer: Timer?
@@ -71,6 +72,9 @@ struct ContentView: View {
         ZStack(alignment: .top) {
             CanvasView(document: document, objectManager: objectManager)
                 .environmentObject(canvasState)
+                .overlay {
+                    AgentCursorView(controller: objectManager.cursorController)
+                }
 
             SiriGlowView(isActive: canvasState.isRecording, audioLevel: audioService.audioLevel)
 
@@ -142,6 +146,8 @@ struct ContentView: View {
         .onDisappear {
             canvasState.isRecording = false
             audioService.stopCapture()
+            activeAgentTask?.cancel()
+            activeAgentTask = nil
             widgetSyncTimer?.invalidate()
             proactiveMonitorTimer?.invalidate()
             proactiveStrokeIdleTask?.cancel()
@@ -213,8 +219,12 @@ struct ContentView: View {
     private func stopRecordingAndSend() {
         audioService.stopCapture()
         let transcript = transcriber.stopTranscribing().trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !transcript.isEmpty else { return }
-        sendPromptToAgent(transcript)
+        if transcript.isEmpty {
+            // No speech detected — infer from the canvas screenshot alone
+            sendPromptToAgent("Analyze the current canvas screenshot and respond based on what you see.")
+        } else {
+            sendPromptToAgent(transcript)
+        }
     }
 
     private func sendPromptToAgent(_ prompt: String) {
@@ -232,10 +242,11 @@ struct ContentView: View {
                 return pngData.base64EncodedString()
             }()
             activeRequestCount += 1
-            Task {
+            activeAgentTask = Task {
                 defer {
                     Task { @MainActor in
                         activeRequestCount = max(0, activeRequestCount - 1)
+                        activeAgentTask = nil
                     }
                 }
                 // Register session best-effort
@@ -265,6 +276,7 @@ struct ContentView: View {
                     }
                     _ = agentResponse // response text is irrelevant for live mode
                 } catch {
+                    if Task.isCancelled { return }
                     await MainActor.run {
                         withAnimation { lastResponse = "Error: \(error.localizedDescription)" }
                         autoDismissResponse()
@@ -276,11 +288,12 @@ struct ContentView: View {
 
         let requestToken = UUID().uuidString
 
-        Task {
+        activeAgentTask = Task {
             await MainActor.run { activeRequestCount += 1 }
             defer {
                 Task { @MainActor in
                     activeRequestCount = max(0, activeRequestCount - 1)
+                    activeAgentTask = nil
                 }
             }
             do {
@@ -412,6 +425,7 @@ struct ContentView: View {
                     autoDismissResponse()
                 }
             } catch {
+                if Task.isCancelled { return }
                 await MainActor.run {
                     withAnimation { lastResponse = "[\(requestToken.prefix(6))] Error: \(error.localizedDescription)" }
                     autoDismissResponse()
@@ -1475,6 +1489,13 @@ struct ContentView: View {
         return Text(attributed)
     }
 
+    private func cancelActiveRequest() {
+        activeAgentTask?.cancel()
+        activeAgentTask = nil
+        activeRequestCount = 0
+        withAnimation { lastResponse = nil }
+    }
+
     private var processingIndicator: some View {
         VStack {
             Spacer()
@@ -1483,6 +1504,15 @@ struct ContentView: View {
                 Text("Thinking...")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(.white.opacity(0.8))
+
+                Button(action: cancelActiveRequest) {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.white.opacity(0.9))
+                        .frame(width: 24, height: 24)
+                        .background(Circle().fill(Color(red: 1.0, green: 0.23, blue: 0.19).opacity(0.85)))
+                }
+                .buttonStyle(.plain)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)

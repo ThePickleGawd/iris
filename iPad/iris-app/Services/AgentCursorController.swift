@@ -11,17 +11,22 @@ final class AgentCursorController: ObservableObject {
     var cursorColor: Color = Color(red: 0.69, green: 0.32, blue: 0.87)
     // Small calibration so the visible arrow tip sits on the stroke path.
     var hotspotOffset: CGPoint = CGPoint(x: 0.0, y: 10.0)
-    // 5x duration = 1/5 movement speed.
-    private let movementDurationScale: TimeInterval = 5.0
+
+    private let movementDurationScale: TimeInterval = 1.0
+    private var idleTimer: DispatchWorkItem?
+    private let idleTimeout: TimeInterval = 1.5
 
     func appear(at point: CGPoint) {
         position = point
         withAnimation(.easeOut(duration: 0.25)) {
             isVisible = true
         }
+        resetIdleTimer()
     }
 
     func disappear() {
+        idleTimer?.cancel()
+        idleTimer = nil
         withAnimation(.easeIn(duration: 0.2)) {
             isVisible = false
         }
@@ -32,6 +37,7 @@ final class AgentCursorController: ObservableObject {
         withAnimation(.spring(duration: adjusted, bounce: 0.12)) {
             position = point
         }
+        resetIdleTimer()
     }
 
     func moveAndClick(at point: CGPoint, moveDuration: TimeInterval = 0.6) {
@@ -52,6 +58,7 @@ final class AgentCursorController: ObservableObject {
                 self.isClicking = false
             }
         }
+        resetIdleTimer()
     }
 
     func moveThrough(_ points: [CGPoint], interval: TimeInterval = 0.7) {
@@ -61,5 +68,14 @@ final class AgentCursorController: ObservableObject {
                 self.moveTo(point, duration: interval * 0.85)
             }
         }
+    }
+
+    private func resetIdleTimer() {
+        idleTimer?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.disappear()
+        }
+        idleTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + idleTimeout, execute: work)
     }
 }
