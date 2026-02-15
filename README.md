@@ -22,6 +22,8 @@ Iris is an always-on AI that spans your Apple devices. It watches your screens, 
 - **Draws** — renders diagrams, widgets, and visual plans directly onto your iPad canvas with Apple Pencil interaction
 - **Thinks across devices** — your Mac and iPad are one unified workspace, not two isolated screens
 
+<img width="1298" height="1236" alt="27498" src="https://github.com/user-attachments/assets/a47374b9-a206-40c3-9d3d-8128757e4130" />
+
 ## Use Cases
 
 **Planning** — ask Iris to turn a plan into a diagram you can interact with on your iPad using Apple Pencil.
