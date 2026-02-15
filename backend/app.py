@@ -6,8 +6,10 @@ import json
 import logging
 import os
 import hashlib
+import queue
 import subprocess
 import tempfile
+import threading
 import traceback
 import urllib.request
 import uuid
@@ -109,6 +111,42 @@ def _save_session(session: dict) -> None:
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(session, ensure_ascii=False, indent=2))
     tmp.replace(path)
+
+
+# ---------------------------------------------------------------------------
+# Session message SSE pub/sub
+# ---------------------------------------------------------------------------
+_session_subscribers: dict[str, list[queue.Queue]] = {}
+_subscribers_lock = threading.Lock()
+
+
+def _subscribe(session_id: str) -> queue.Queue:
+    q: queue.Queue = queue.Queue()
+    with _subscribers_lock:
+        _session_subscribers.setdefault(session_id, []).append(q)
+    return q
+
+
+def _unsubscribe(session_id: str, q: queue.Queue) -> None:
+    with _subscribers_lock:
+        subs = _session_subscribers.get(session_id)
+        if subs:
+            try:
+                subs.remove(q)
+            except ValueError:
+                pass
+            if not subs:
+                del _session_subscribers[session_id]
+
+
+def _publish_messages(session_id: str, messages: list[dict]) -> None:
+    with _subscribers_lock:
+        subs = list(_session_subscribers.get(session_id, []))
+    for q in subs:
+        try:
+            q.put_nowait(messages)
+        except queue.Full:
+            pass
 
 
 def _list_sessions() -> list[dict]:
@@ -916,30 +954,33 @@ def _execute_linked_provider(
     has_assistant = _has_equivalent_message(
         session.get("messages", []), "assistant", text, _now()
     )
+    new_msgs = []
     if not has_user:
         user_ts = _now()
-        session.setdefault("messages", []).append(
-            {
-                "id": str(uuid.uuid4()),
-                "role": "user",
-                "content": prompt,
-                "created_at": user_ts,
-                "device_id": device_id,
-                "source": f"{provider}.{source_suffix}",
-            }
-        )
+        umsg = {
+            "id": str(uuid.uuid4()),
+            "role": "user",
+            "content": prompt,
+            "created_at": user_ts,
+            "device_id": device_id,
+            "source": f"{provider}.{source_suffix}",
+        }
+        session.setdefault("messages", []).append(umsg)
+        new_msgs.append(umsg)
     if not has_assistant:
         assistant_ts = _now()
-        session["messages"].append(
-            {
-                "id": str(uuid.uuid4()),
-                "role": "assistant",
-                "content": text,
-                "created_at": assistant_ts,
-                "device_id": provider,
-                "source": f"{provider}.{source_suffix}",
-            }
-        )
+        amsg = {
+            "id": str(uuid.uuid4()),
+            "role": "assistant",
+            "content": text,
+            "created_at": assistant_ts,
+            "device_id": provider,
+            "source": f"{provider}.{source_suffix}",
+        }
+        session["messages"].append(amsg)
+        new_msgs.append(amsg)
+    if new_msgs:
+        _publish_messages(session["id"], new_msgs)
     if not has_user or not has_assistant:
         inserted += int(not has_user) + int(not has_assistant)
 
@@ -1188,6 +1229,7 @@ def create_message(session_id: str) -> Any:
     session["messages"].sort(key=lambda m: str(m.get("created_at") or ""))
     session["updated_at"] = str(session["messages"][-1].get("created_at") or ts)
     _save_session(session)
+    _publish_messages(session_id, [msg])
     return jsonify(msg), 201
 
 
@@ -1214,6 +1256,40 @@ def list_messages(session_id: str) -> Any:
         msgs = msgs[-limit:]
 
     return jsonify({"items": msgs[:limit], "count": min(len(msgs), limit)})
+
+
+@app.get("/api/sessions/<session_id>/events")
+@app.get("/sessions/<session_id>/events")
+def session_events(session_id: str) -> Any:
+    """SSE stream — pushes new messages as they are appended to the session."""
+    q = _subscribe(session_id)
+
+    def generate():
+        try:
+            # Send a keepalive comment immediately so the client knows we're connected.
+            yield ": connected\n\n"
+            while True:
+                try:
+                    messages = q.get(timeout=25)
+                    payload = json.dumps(messages, ensure_ascii=False)
+                    yield f"data: {payload}\n\n"
+                except queue.Empty:
+                    # Keepalive every 25s to prevent connection timeout.
+                    yield ": keepalive\n\n"
+        except GeneratorExit:
+            pass
+        finally:
+            _unsubscribe(session_id, q)
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1454,6 +1530,7 @@ def claude_code_live_status() -> Any:
 
 
 @app.get("/api/claude-code/sessions")
+@app.get("/claude-code/sessions")
 def list_claude_code_sessions() -> Any:
     """List active claudei sessions for the iPad picker."""
     live = claude_commander.get_live_session()
@@ -2058,16 +2135,17 @@ def v1_agent() -> Any:
 
         # Append user message
         user_ts = _now()
-        session.setdefault("messages", []).append(
-            {
-                "id": str(uuid.uuid4()),
-                "role": "user",
-                "content": message,
-                "created_at": user_ts,
-                "device_id": device.get("id"),
-                "source": "agent.v1",
-            }
-        )
+        user_msg = {
+            "id": str(uuid.uuid4()),
+            "role": "user",
+            "content": message,
+            "created_at": user_ts,
+            "device_id": device.get("id"),
+            "source": "agent.v1",
+        }
+        session.setdefault("messages", []).append(user_msg)
+        _save_session(session)
+        _publish_messages(session_id, [user_msg])
     else:
         recent = (body.get("context") or {}).get("recent_messages") or []
         for msg in recent[-20:]:
@@ -2124,6 +2202,7 @@ def v1_agent() -> Any:
         if result.get("tool_calls"):
             assistant_msg["tool_calls"] = result["tool_calls"]
         session["messages"].append(assistant_msg)
+        _publish_messages(session_id, [assistant_msg])
 
     # Emit tool.call events + store widgets in session
     events: list[dict] = []

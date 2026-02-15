@@ -61,6 +61,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   let pollFailures = 0
   let widgetPollerInterval: ReturnType<typeof setInterval> | null = null
   let isPollingWidgets = false
+  let sseRequest: ReturnType<typeof http.get> | null = null
   const renderedWidgetIds = new Set<string>()
   let sessionsCache: { items: any[]; count: number } = { items: [], count: 0 }
   const widgetManager = new WidgetWindowManager()
@@ -549,6 +550,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     renderedWidgetIds.clear()
     startMessagePoller()
     startWidgetPoller()
+    startSSE()
     return { success: true }
   })
 
@@ -583,6 +585,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       renderedWidgetIds.clear()
       startMessagePoller()
       startWidgetPoller()
+      startSSE()
       return result
     } catch (error: any) {
       console.error("Failed to create session:", error)
@@ -895,6 +898,87 @@ export function initializeIpcHandlers(appState: AppState): void {
         isPollingWidgets = false
       }
     }, 5000)
+  }
+
+  function stopSSE() {
+    if (sseRequest) {
+      sseRequest.destroy()
+      sseRequest = null
+    }
+  }
+
+  function startSSE() {
+    stopSSE()
+    if (!currentSession) return
+
+    const sessionId = currentSession.id
+    const url = `${AGENT_SERVER_URL}/sessions/${sessionId}/events`
+    const parsed = new URL(url)
+    let buf = ""
+
+    const req = http.get(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port,
+        path: parsed.pathname,
+        headers: { Accept: "text/event-stream" },
+      },
+      (res) => {
+        if (res.statusCode !== 200) {
+          req.destroy()
+          sseRequest = null
+          return
+        }
+
+        res.setEncoding("utf8")
+        res.on("data", (chunk: string) => {
+          buf += chunk
+          // Process complete SSE messages (double-newline delimited)
+          const parts = buf.split("\n\n")
+          buf = parts.pop() || ""
+          for (const part of parts) {
+            const dataLine = part
+              .split("\n")
+              .find((l) => l.startsWith("data: "))
+            if (!dataLine) continue
+            try {
+              const messages = JSON.parse(dataLine.slice(6))
+              if (!Array.isArray(messages) || messages.length === 0) continue
+              // Update timestamp so the poller doesn't re-fetch these
+              const last = messages[messages.length - 1]
+              if (last?.created_at) {
+                lastMessageTimestamp = last.created_at
+              }
+              const mainWindow = appState.getMainWindow()
+              mainWindow?.webContents.send("session-messages-update", {
+                sessionId,
+                messages,
+              })
+            } catch {
+              // malformed JSON, skip
+            }
+          }
+        })
+
+        res.on("end", () => {
+          sseRequest = null
+          // Reconnect after a short delay if session is still active
+          if (currentSession?.id === sessionId) {
+            setTimeout(startSSE, 2000)
+          }
+        })
+      }
+    )
+
+    req.on("error", () => {
+      sseRequest = null
+      // Retry after delay — polling serves as fallback
+      if (currentSession?.id === sessionId) {
+        setTimeout(startSSE, 5000)
+      }
+    })
+
+    sseRequest = req
   }
 
   // Window movement handlers
