@@ -5,7 +5,7 @@ import path from "node:path"
 import { uploadScreenshotToBackend } from "./backendUploader"
 
 const AGENT_SERVER_URL = process.env.IRIS_AGENT_URL || "http://localhost:8000"
-const DEFAULT_MODEL = process.env.IRIS_MODEL || "gpt-5.2"
+const DEFAULT_MODEL = process.env.IRIS_MODEL || "gpt-5.2-mini"
 const AGENT_CHAT_PATH = "/v1/agent"
 
 interface ChatEnvelope {

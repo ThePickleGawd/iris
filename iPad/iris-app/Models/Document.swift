@@ -30,7 +30,7 @@ struct Document: Identifiable, Codable, Hashable {
     init(
         id: UUID = UUID(),
         name: String,
-        model: String = "gpt-5.2",
+        model: String = "gpt-5.2-mini",
         lastOpened: Date = Date(),
         preview: String = "",
         backendSessionID: String? = nil,
@@ -57,7 +57,7 @@ struct Document: Identifiable, Codable, Hashable {
         name = try container.decode(String.self, forKey: .name)
         model = try container.decodeIfPresent(String.self, forKey: .model)
             ?? (try container.decodeIfPresent(String.self, forKey: .agent))
-            ?? "gpt-5.2"
+            ?? "gpt-5.2-mini"
         lastOpened = try container.decode(Date.self, forKey: .lastOpened)
         preview = try container.decodeIfPresent(String.self, forKey: .preview) ?? ""
         backendSessionID = try container.decodeIfPresent(String.self, forKey: .backendSessionID)
@@ -86,9 +86,13 @@ struct Document: Identifiable, Codable, Hashable {
     /// Human-readable model display name
     var modelDisplayName: String {
         let lowered = model.lowercased()
+        if lowered == "gpt-5.2-mini" { return "GPT-5.2 Mini" }
         if lowered == "gpt-5.2" { return "GPT-5.2" }
         if lowered == "claude_code" { return "Claude Code" }
+        if lowered == "claude-opus-4-5" || lowered.hasPrefix("claude-opus-4-5") { return "Claude Opus 4.5" }
+        if lowered == "claude-sonnet-4-5" || lowered.hasPrefix("claude-sonnet-4-5") { return "Claude Sonnet 4.5" }
         if lowered.hasPrefix("claude") { return "Claude" }
+        if lowered == "gemini-3-flash" { return "Gemini 3 Flash" }
         if lowered.hasPrefix("gemini") { return "Gemini" }
         if lowered == "codex" { return "Codex" }
         return model
@@ -104,12 +108,19 @@ struct Document: Identifiable, Codable, Hashable {
             return "claude-sonnet-4-5-20250929"
         }
         if lowered == "gemini" || lowered == "gemini-flash" {
-            return "gemini-2.0-flash"
+            return "gemini-3-flash"
         }
         if lowered == "codex" {
-            return "gpt-5.2"
+            return "gpt-5.2-mini"
         }
+        // New model IDs pass through directly
         return model
+    }
+
+    /// Whether this is a general chat (not a linked session like Claude Code or Codex)
+    var isGeneralChat: Bool {
+        let lowered = model.lowercased()
+        return lowered != "claude_code" && lowered != "codex"
     }
 
     var resolvedSessionID: String {
@@ -159,7 +170,7 @@ class DocumentStore: ObservableObject {
     }
 
     @discardableResult
-    func addDocument(name: String, model: String = "gpt-5.2") -> Document {
+    func addDocument(name: String, model: String = "gpt-5.2-mini") -> Document {
         let doc = Document(name: name.isEmpty ? "Untitled" : name, model: model)
         documents.insert(doc, at: 0)
         saveDocuments()
@@ -175,6 +186,22 @@ class DocumentStore: ObservableObject {
     func updateLastOpened(_ document: Document) {
         if let index = documents.firstIndex(where: { $0.id == document.id }) {
             documents[index].lastOpened = Date()
+            saveDocuments()
+        }
+    }
+
+    func updateModel(_ document: Document, to model: String) {
+        if let index = documents.firstIndex(where: { $0.id == document.id }) {
+            documents[index].model = model
+            saveDocuments()
+        }
+    }
+
+    func renameDocument(_ document: Document, to newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "Untitled" else { return }
+        if let index = documents.firstIndex(where: { $0.id == document.id }) {
+            documents[index].name = trimmed
             saveDocuments()
         }
     }
@@ -202,7 +229,7 @@ class DocumentStore: ObservableObject {
 
                 let rawName = ((item["name"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 let name = rawName.isEmpty ? "Untitled" : rawName
-                let model = (item["model"] as? String) ?? (item["agent"] as? String) ?? "gpt-5.2"
+                let model = (item["model"] as? String) ?? (item["agent"] as? String) ?? "gpt-5.2-mini"
                 let preview = (item["last_message_preview"] as? String) ?? ""
                 let metadata = item["metadata"] as? [String: Any] ?? [:]
                 let codexConversationID = (metadata["codex_conversation_id"] as? String)?

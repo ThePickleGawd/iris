@@ -59,7 +59,7 @@ struct HomeView: View {
                 }
             }
             .navigationDestination(item: $selectedDocument) { doc in
-                CanvasScreen(document: doc)
+                CanvasScreen(document: doc, documentStore: documentStore)
             }
             .overlay {
                 if showingAddDocument {
@@ -148,8 +148,7 @@ private struct ModelChoice: Identifiable {
 }
 
 private let choices: [ModelChoice] = [
-    ModelChoice(id: "gpt-5.2", name: "GPT-5.2", subtitle: "OpenAI general-purpose model", isSessionLinked: false),
-    ModelChoice(id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", subtitle: "Fast multimodal model for lightweight tasks", isSessionLinked: false),
+    ModelChoice(id: "gpt-5.2-mini", name: "General", subtitle: "Start a new chat (GPT-5.2 Mini default)", isSessionLinked: false),
     ModelChoice(id: "claude_code", name: "Claude Code", subtitle: "Link to a Claude Code conversation", isSessionLinked: true),
     ModelChoice(id: "codex", name: "Codex", subtitle: "Link to a Codex conversation", isSessionLinked: true),
 ]
@@ -206,7 +205,7 @@ private struct AgentPickerOverlay: View {
                 .font(.system(size: 28, weight: .semibold, design: .rounded))
                 .foregroundColor(.white)
 
-            Text("Choose a model to start. The note title will be Untitled.")
+            Text("Choose a model to start. The note will be named after your first prompt.")
                 .font(.system(size: 14, weight: .regular))
                 .foregroundColor(.white.opacity(0.72))
                 .fixedSize(horizontal: false, vertical: true)
@@ -730,7 +729,7 @@ private struct AgentPickerOverlay: View {
     private func registerSessionOnBackend(_ doc: Document) {
         guard let urlStr = UserDefaults.standard.string(forKey: "iris_agent_server_url"),
               let serverURL = URL(string: urlStr) else { return }
-        let model = doc.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "gpt-5.2" : doc.model
+        let model = doc.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "gpt-5.2-mini" : doc.model
         var metadata: [String: Any] = [:]
         if let codexConversationID = doc.codexConversationID?.trimmingCharacters(in: .whitespacesAndNewlines),
            !codexConversationID.isEmpty {
@@ -781,32 +780,31 @@ private struct AgentPickerOverlay: View {
 
     private func modelAccent(for index: Int) -> Color {
         switch index {
-        case 0: return Color(red: 0.39, green: 0.62, blue: 1.0)    // GPT - blue
-        case 1: return Color(red: 0.43, green: 0.86, blue: 0.74)    // Gemini - green
-        case 2: return Color(red: 0.85, green: 0.55, blue: 0.35)    // Claude Code - orange
-        case 3: return Color(red: 0.62, green: 0.64, blue: 1.0)     // Codex - purple
-        default: return Color(red: 0.43, green: 0.86, blue: 0.74)
+        case 0: return Color(red: 0.39, green: 0.62, blue: 1.0)    // General - blue
+        case 1: return Color(red: 0.85, green: 0.55, blue: 0.35)    // Claude Code - orange
+        case 2: return Color(red: 0.62, green: 0.64, blue: 1.0)     // Codex - purple
+        default: return Color(red: 0.39, green: 0.62, blue: 1.0)
         }
     }
 
     private func modelSymbol(for index: Int) -> String {
         switch index {
-        case 0: return "circle.grid.2x2.fill"         // GPT
-        case 1: return "bolt.fill"                     // Gemini
-        case 2: return "terminal.fill"                 // Claude Code
-        case 3: return "square.stack.3d.down.forward.fill"  // Codex
-        default: return "square.stack.3d.down.forward.fill"
+        case 0: return "circle.grid.2x2.fill"         // General
+        case 1: return "terminal.fill"                 // Claude Code
+        case 2: return "square.stack.3d.down.forward.fill"  // Codex
+        default: return "circle.grid.2x2.fill"
         }
     }
 }
 
 struct CanvasScreen: View {
     let document: Document
+    @ObservedObject var documentStore: DocumentStore
     @StateObject private var canvasState = CanvasState()
     @Environment(\.dismiss) var dismiss
 
     var body: some View {
-        ContentView(document: document, onBack: { dismiss() })
+        ContentView(document: document, documentStore: documentStore, onBack: { dismiss() })
             .environmentObject(canvasState)
             .navigationBarBackButtonHidden(true)
     }

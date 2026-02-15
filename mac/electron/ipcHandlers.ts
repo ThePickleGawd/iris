@@ -97,7 +97,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   const resolveChatContext = () => ({
     chatId: currentSession?.id || `mac-${appState.deviceDiscovery.getDeviceId()}`,
-    model: currentSession?.model || "gpt-5.2"
+    model: currentSession?.model || "gpt-5.2-mini"
   })
 
   const uploadScreenshotForAgentContext = async (
@@ -515,7 +515,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       const data = await agentServerGet("/sessions?limit=50")
       if (data && Array.isArray(data.items)) {
         const normalizedItems = data.items.map((item: any) => {
-          const model = item?.model || item?.agent || "gpt-5.2"
+          const model = item?.model || item?.agent || "gpt-5.2-mini"
           return { ...item, model, agent: model }
         })
         sessionsCache = {
@@ -537,10 +537,10 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   ipcMain.handle("set-current-session", async (_, session: SessionInfo | null) => {
     if (session) {
-      const normalizedModel = (session.model || (session as any).agent || "gpt-5.2").trim()
+      const normalizedModel = (session.model || (session as any).agent || "gpt-5.2-mini").trim()
       currentSession = {
         ...session,
-        model: normalizedModel || "gpt-5.2",
+        model: normalizedModel || "gpt-5.2-mini",
       }
     } else {
       currentSession = null
@@ -569,7 +569,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
     ) => {
     try {
-      const model = (params.model || (params as any).agent || "gpt-5.2").trim() || "gpt-5.2"
+      const model = (params.model || (params as any).agent || "gpt-5.2-mini").trim() || "gpt-5.2-mini"
       const body = {
         id: params.id,
         name: params.name,

@@ -18,9 +18,9 @@ from typing import Any
 
 from openai import OpenAI
 
-DEFAULT_MODEL = "gpt-5.2"
-DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-5-20250929"
-DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
+DEFAULT_MODEL = "gpt-5.2-mini"
+DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-5"
+DEFAULT_GEMINI_MODEL = "gemini-3-flash"
 MAX_TOOL_ROUNDS = 6
 
 _WIDGETS_DIR = Path(__file__).resolve().parent.parent / "widgets"
@@ -1712,13 +1712,75 @@ def _provider_for_model(model: str) -> str:
 
 
 def _resolve_anthropic_model(model: str) -> str | None:
-    if model.lower() == "claude":
+    lowered = model.lower()
+    if lowered == "claude":
         return None
+    # Map short aliases to full model IDs
+    if lowered == "claude-opus-4-5":
+        return "claude-opus-4-5-20250514"
+    if lowered == "claude-sonnet-4-5":
+        return "claude-sonnet-4-5-20250929"
     return model
+
+
+def generate_session_title(user_message: str) -> str:
+    """Generate a brief (2-6 word) session title from the user's first message."""
+    truncated = user_message.strip()[:500]
+    if not truncated:
+        return "Untitled"
+
+    prompt = (
+        "Generate a very brief title (2-6 words) summarizing this user request. "
+        "Return ONLY the title text. No quotes, no ending punctuation.\n\n"
+        f"Request: {truncated}"
+    )
+
+    # Try Gemini first (fastest/cheapest)
+    gemini_key = (
+        os.environ.get("GEMINI_API_KEY", "").strip()
+        or os.environ.get("GOOGLE_API_KEY", "").strip()
+    )
+    if gemini_key:
+        try:
+            body = {
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.3, "maxOutputTokens": 30},
+            }
+            data = _gemini_post(DEFAULT_GEMINI_MODEL, body, gemini_key)
+            text = _extract_gemini_text(data).strip().strip('"\'').rstrip(".")
+            if text:
+                return text
+        except Exception:
+            pass
+
+    # Try OpenAI fallback
+    openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if openai_key:
+        try:
+            client = OpenAI(api_key=openai_key)
+            resp = client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=30,
+            )
+            text = (resp.choices[0].message.content or "").strip().strip('"\'').rstrip(".")
+            if text:
+                return text
+        except Exception:
+            pass
+
+    # Fallback: truncate message
+    clean = user_message.strip()
+    if len(clean) > 40:
+        clean = clean[:37] + "..."
+    return clean or "Untitled"
 
 
 def _resolve_gemini_model(model: str) -> str:
     lowered = model.lower()
     if lowered in {"gemini", "gemini-flash"}:
         return DEFAULT_GEMINI_MODEL
+    # Resolve short alias to full model ID
+    if lowered == "gemini-3-flash":
+        return "gemini-3.0-flash"
     return model

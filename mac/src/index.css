@@ -889,6 +889,107 @@ body {
   color: #f87171;
 }
 
+/* ─── Model Selector ─── */
+
+.iris-model-selector-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.iris-model-selector-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--edge);
+  background: var(--glass);
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 130ms ease;
+}
+
+.iris-model-selector-btn:hover {
+  background: var(--glass-hover);
+  border-color: var(--edge-hover);
+  color: var(--text);
+}
+
+.iris-model-selector-label {
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.iris-model-selector-chevron {
+  flex-shrink: 0;
+  opacity: 0.5;
+  transition: transform 200ms ease, opacity 200ms ease;
+}
+
+.iris-model-selector-chevron.open {
+  transform: rotate(180deg);
+  opacity: 0.8;
+}
+
+.iris-model-selector-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 49;
+}
+
+.iris-model-selector-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 50;
+  width: 180px;
+  padding: 4px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--edge);
+  background: var(--void-deep);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  animation: content-in 120ms ease-out;
+}
+
+.iris-model-selector-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 100ms ease;
+  text-align: left;
+}
+
+.iris-model-selector-option:hover {
+  background: var(--glass-hover);
+  color: var(--text);
+}
+
+.iris-model-selector-option.active {
+  color: #c4b5fd;
+  font-weight: 600;
+}
+
+.iris-model-check {
+  font-size: 10px;
+  color: var(--accent);
+}
+
 /* ─── Electron Window Drag ─── */
 
 .draggable-area {

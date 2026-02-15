@@ -5,6 +5,7 @@ struct ContentView: View {
     @EnvironmentObject var canvasState: CanvasState
 
     let document: Document
+    @ObservedObject var documentStore: DocumentStore
     var onBack: (() -> Void)?
 
     @StateObject private var objectManager = CanvasObjectManager()
@@ -35,6 +36,11 @@ struct ContentView: View {
     @State private var placementTapPrompt = "Tap where the response should start."
     @State private var placementTapContinuation: CheckedContinuation<CGPoint, Never>?
 
+    /// Live binding to the document in the store so UI updates when name/model changes.
+    private var liveDocument: Document {
+        documentStore.documents.first(where: { $0.id == document.id }) ?? document
+    }
+
     private let proactiveEnabled = false
     private let proactiveIntervalSeconds: TimeInterval = 5
     private let proactiveStrokePauseSeconds: TimeInterval = 0.75
@@ -47,22 +53,23 @@ struct ContentView: View {
     private let aiOutputInkEnabled = true
     private let proactiveTriageModel = "gemini-2.0-flash"
     private let proactiveWidgetModel = "gemini-2.0-flash"
-    private var sessionID: String { document.resolvedSessionID }
+    private var sessionID: String { liveDocument.resolvedSessionID }
     private var linkedSessionMetadata: [String: Any] {
+        let doc = liveDocument
         var metadata: [String: Any] = [:]
-        if let codexConversationID = document.codexConversationID?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if let codexConversationID = doc.codexConversationID?.trimmingCharacters(in: .whitespacesAndNewlines),
            !codexConversationID.isEmpty {
             metadata["codex_conversation_id"] = codexConversationID
         }
-        if let codexCWD = document.codexCWD?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if let codexCWD = doc.codexCWD?.trimmingCharacters(in: .whitespacesAndNewlines),
            !codexCWD.isEmpty {
             metadata["codex_cwd"] = codexCWD
         }
-        if let claudeCodeConversationID = document.claudeCodeConversationID?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if let claudeCodeConversationID = doc.claudeCodeConversationID?.trimmingCharacters(in: .whitespacesAndNewlines),
            !claudeCodeConversationID.isEmpty {
             metadata["claude_code_conversation_id"] = claudeCodeConversationID
         }
-        if let claudeCodeCWD = document.claudeCodeCWD?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if let claudeCodeCWD = doc.claudeCodeCWD?.trimmingCharacters(in: .whitespacesAndNewlines),
            !claudeCodeCWD.isEmpty {
             metadata["claude_code_cwd"] = claudeCodeCWD
         }
@@ -80,6 +87,8 @@ struct ContentView: View {
                 onBack: onBack,
                 onAITap: { canvasState.isRecording.toggle() },
                 isRecording: canvasState.isRecording,
+                document: liveDocument,
+                documentStore: documentStore,
                 onZoomIn: { objectManager.zoom(by: 0.06) },
                 onZoomOut: { objectManager.zoom(by: -0.06) },
                 onZoomReset: { objectManager.setZoomScale(1.0) },
@@ -89,26 +98,14 @@ struct ContentView: View {
             .zIndex(20)
 
             VStack {
-                HStack {
-                    Spacer()
-                    connectionStatusIndicator
-                        .padding(.top, 54)
-                        .padding(.trailing, 18)
-                }
-                Spacer()
-            }
-            .allowsHitTesting(false)
-            .zIndex(22)
-
-            VStack {
                 Spacer()
                 HStack {
                     Spacer()
-                    AIButton(isRecording: canvasState.isRecording) {
+                    AIButton(isRecording: canvasState.isRecording, isAvailable: isSpeechAvailable) {
                         canvasState.isRecording.toggle()
                     }
-                    .padding(.trailing, 16)
-                    .padding(.bottom, 26)
+                    .padding(.trailing, 18)
+                    .padding(.bottom, 28)
                 }
             }
             .zIndex(21)
@@ -170,28 +167,13 @@ struct ContentView: View {
         }
     }
 
-    private var connectionStatusIndicator: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(macConnectionStatus.indicatorColor)
-                .frame(width: 7, height: 7)
-            Text(macConnectionStatus.compactLabel)
-                .font(.system(size: 10.5, weight: .semibold))
-                .foregroundColor(.white.opacity(0.82))
+    private var isSpeechAvailable: Bool {
+        switch macConnectionStatus {
+        case .connected, .degraded, .checking:
+            return true
+        case .unlinked, .disconnected:
+            return false
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(
-            Capsule(style: .continuous)
-                .fill(Color(red: 0.03, green: 0.04, blue: 0.09).opacity(0.72))
-                .overlay(
-                    Capsule(style: .continuous)
-                        .strokeBorder(.white.opacity(0.14), lineWidth: 0.6)
-                )
-        )
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Mac connection")
-        .accessibilityValue(macConnectionStatus.accessibilityValue)
     }
 
     private var placementTapOverlay: some View {
@@ -303,11 +285,12 @@ struct ContentView: View {
                 }
 
                 // Session registration is best-effort and should not delay first-token latency.
+                let currentDoc = liveDocument
                 Task(priority: .utility) {
                     await AgentClient.registerSession(
                         id: sessionID,
-                        name: document.name,
-                        model: document.model,
+                        name: currentDoc.name,
+                        model: currentDoc.model,
                         metadata: linkedSessionMetadata,
                         serverURL: serverURL
                     )
@@ -329,15 +312,21 @@ struct ContentView: View {
                 }
                 let agentResponse = try await AgentClient.sendMessage(
                     message,
-                    model: document.resolvedModel,
+                    model: currentDoc.resolvedModel,
                     chatID: sessionID,
                     coordinateSnapshot: coordinateSnapshot,
-                    codexConversationID: document.codexConversationID,
-                    codexCWD: document.codexCWD,
-                    claudeCodeConversationID: document.claudeCodeConversationID,
-                    claudeCodeCWD: document.claudeCodeCWD,
+                    codexConversationID: currentDoc.codexConversationID,
+                    codexCWD: currentDoc.codexCWD,
+                    claudeCodeConversationID: currentDoc.claudeCodeConversationID,
+                    claudeCodeCWD: currentDoc.claudeCodeCWD,
                     serverURL: serverURL
                 )
+
+                if let newName = agentResponse.sessionName {
+                    await MainActor.run {
+                        documentStore.renameDocument(document, to: newName)
+                    }
+                }
 
             if aiOutputInkEnabled {
                 let widgetInkAnchors = Dictionary(
@@ -452,7 +441,7 @@ struct ContentView: View {
             let coordinateSnapshot = currentCoordinateSnapshotDict()
             let agentResponse = try await AgentClient.sendMessage(
                 message,
-                model: document.resolvedModel,
+                model: liveDocument.resolvedModel,
                 chatID: document.id.uuidString,
                 coordinateSnapshot: coordinateSnapshot,
                 serverURL: serverURL
@@ -649,10 +638,11 @@ struct ContentView: View {
             )
             proactiveCapturedIdleCycleID = proactiveIdleCycleID
 
+            let monitorDoc = liveDocument
             await AgentClient.registerSession(
                 id: sessionID,
-                name: document.name,
-                model: document.model,
+                name: monitorDoc.name,
+                model: monitorDoc.model,
                 metadata: linkedSessionMetadata,
                 serverURL: serverURL
             )
@@ -795,7 +785,7 @@ struct ContentView: View {
             }
             if aiOutputInkEnabled {
                 await renderAgentOutputAsHandwriting(
-                    response: AgentResponse(text: "", widgets: [widget]),
+                    response: AgentResponse(text: "", widgets: [widget], sessionName: nil),
                     prefix: nil,
                     widgetAnchors: [widget.id: widgetOrigin(for: widget)]
                 )
