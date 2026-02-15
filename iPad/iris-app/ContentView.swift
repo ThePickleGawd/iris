@@ -224,8 +224,13 @@ struct ContentView: View {
             return
         }
 
-        // Claude Code: fire-and-forget live injection — skip placement tap and screenshots
+        // Claude Code: fire-and-forget live injection with canvas screenshot
         if document.model == "claude_code" {
+            // Capture canvas screenshot on main thread before entering async context
+            let canvasImageBase64: String? = {
+                guard let pngData = objectManager.captureViewportPNGData() else { return nil }
+                return pngData.base64EncodedString()
+            }()
             activeRequestCount += 1
             Task {
                 defer {
@@ -246,11 +251,12 @@ struct ContentView: View {
                 do {
                     let agentResponse = try await AgentClient.sendMessage(
                         prompt,
-                        model: document.resolvedModel,
+                        model: document.model,
                         chatID: sessionID,
                         coordinateSnapshot: currentCoordinateSnapshotDict(),
                         claudeCodeConversationID: document.claudeCodeConversationID,
                         claudeCodeCWD: document.claudeCodeCWD,
+                        imageBase64: canvasImageBase64,
                         serverURL: serverURL
                     )
                     await MainActor.run {

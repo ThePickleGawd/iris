@@ -47,6 +47,7 @@ enum AgentClient {
         codexCWD: String? = nil,
         claudeCodeConversationID: String? = nil,
         claudeCodeCWD: String? = nil,
+        imageBase64: String? = nil,
         serverURL: URL
     ) async throws -> AgentResponse {
         let request = try makeAgentRequest(
@@ -59,6 +60,7 @@ enum AgentClient {
             codexCWD: codexCWD,
             claudeCodeConversationID: claudeCodeConversationID,
             claudeCodeCWD: claudeCodeCWD,
+            imageBase64: imageBase64,
             serverURL: serverURL,
             stream: false
         )
@@ -87,6 +89,7 @@ enum AgentClient {
         codexCWD: String? = nil,
         claudeCodeConversationID: String? = nil,
         claudeCodeCWD: String? = nil,
+        imageBase64: String? = nil,
         serverURL: URL,
         onDelta: ((String) async -> Void)? = nil
     ) async throws -> AgentResponse {
@@ -100,6 +103,7 @@ enum AgentClient {
             codexCWD: codexCWD,
             claudeCodeConversationID: claudeCodeConversationID,
             claudeCodeCWD: claudeCodeCWD,
+            imageBase64: imageBase64,
             serverURL: serverURL,
             stream: true
         )
@@ -227,6 +231,31 @@ enum AgentClient {
         _ = try? await session.data(for: request)
     }
 
+    /// Delete a backend session so it does not re-sync onto other devices.
+    /// Treats 404 as success because the target state is "session absent".
+    @discardableResult
+    static func deleteSession(
+        id: String,
+        serverURL: URL
+    ) async -> Bool {
+        let trimmedID = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedID.isEmpty else { return false }
+
+        let url = serverURL
+            .appendingPathComponent("sessions")
+            .appendingPathComponent(trimmedID)
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.timeoutInterval = 5
+
+        guard let (_, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse else {
+            return false
+        }
+
+        return (200...299).contains(http.statusCode) || http.statusCode == 404
+    }
+
     /// Delete a widget from the backend session so it doesn't reappear on sync.
     static func deleteSessionWidget(
         sessionID: String,
@@ -281,6 +310,7 @@ enum AgentClient {
         codexCWD: String?,
         claudeCodeConversationID: String?,
         claudeCodeCWD: String?,
+        imageBase64: String? = nil,
         serverURL: URL,
         stream: Bool
     ) throws -> URLRequest {
@@ -332,7 +362,7 @@ enum AgentClient {
                 metadata["claude_code_cwd"] = value
             }
         }
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "protocol_version": "1.0",
             "kind": "agent.request",
             "request_id": requestID,
@@ -356,6 +386,9 @@ enum AgentClient {
             "metadata": metadata,
             "stream": stream
         ]
+        if let imageBase64, !imageBase64.isEmpty {
+            payload["image_base64"] = imageBase64
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
         return request
     }

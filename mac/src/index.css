@@ -674,6 +674,164 @@ body {
   white-space: nowrap;
 }
 
+/* ─── Agent Picker: Session Phase ─── */
+
+.iris-agent-picker-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 0 4px;
+}
+
+.iris-agent-picker-header .iris-agent-picker-title {
+  padding: 0;
+}
+
+.iris-picker-back {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--edge);
+  background: var(--glass);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 130ms ease;
+  flex-shrink: 0;
+}
+
+.iris-picker-back:hover {
+  background: var(--glass-hover);
+  color: var(--text);
+  border-color: var(--edge-hover);
+}
+
+.iris-picker-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 0;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.iris-spinner {
+  animation: spin 0.8s linear infinite;
+}
+
+.iris-picker-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 20px 12px;
+  text-align: center;
+}
+
+.iris-picker-empty-icon {
+  color: var(--text-ghost);
+  margin-bottom: 2px;
+}
+
+.iris-picker-empty-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.iris-picker-empty-sub {
+  font-size: 10px;
+  color: var(--text-ghost);
+  line-height: 1.4;
+}
+
+.iris-picker-empty-sub code {
+  font-family: "SF Mono", ui-monospace, monospace;
+  font-size: 10px;
+  background: var(--glass);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--edge);
+  color: var(--text-dim);
+}
+
+.iris-picker-sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.iris-picker-session {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--edge);
+  background: var(--glass);
+  cursor: pointer;
+  transition: all 130ms ease;
+  text-align: left;
+}
+
+.iris-picker-session:hover {
+  background: var(--accent-ghost);
+  border-color: var(--edge-accent);
+}
+
+.iris-picker-session-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.iris-picker-session-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iris-picker-session-cwd {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-family: "SF Mono", ui-monospace, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iris-picker-session-status {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: var(--r-pill);
+  flex-shrink: 0;
+}
+
+.iris-picker-session-status.idle {
+  color: #86efac;
+  background: rgba(134, 239, 172, 0.1);
+}
+
+.iris-picker-session-status.busy {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.1);
+}
+
 /* ─── Session Toggle (header control) ─── */
 
 .iris-session-toggle {

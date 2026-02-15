@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { ChevronDown, ChevronUp, MessageSquare, Plus, SendHorizontal, X } from "lucide-react"
+import { ChevronDown, ChevronLeft, ChevronUp, Loader2, MessageSquare, Plus, SendHorizontal, Terminal, X } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"
@@ -62,7 +62,7 @@ function formatRelativeTime(iso: string): string {
 const chatTypeChoices = [
   { id: "gpt-5.2-mini", name: "General", subtitle: "New chat (GPT-5.2 Mini default)" },
   { id: "claude_code", name: "Claude Code", subtitle: "Link to a Claude Code conversation" },
-  { id: "codex", name: "Codex", subtitle: "Link to a Codex conversation" },
+  // { id: "codex", name: "Codex", subtitle: "Link to a Codex conversation" },
 ] as const
 
 const generalModelChoices = [
@@ -76,6 +76,17 @@ const generalModelChoices = [
 const CLAUDE_CODE_MODEL_ID = "claude_code"
 const CODEX_MODEL_ID = "codex"
 
+interface ClaudeCodeSession {
+  name: string
+  cwd: string
+  socket_path: string
+  pid?: number
+  started_at?: string
+  idle?: boolean
+}
+
+type PickerPhase = "choosing" | "loading_claude_code" | "claude_code_ready"
+
 const Queue: React.FC = () => {
   const [toastOpen, setToastOpen] = useState(false)
   const [toastMessage, setToastMessage] = useState<ToastMessage>({
@@ -88,8 +99,8 @@ const Queue: React.FC = () => {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatLoading, setChatLoading] = useState(false)
   const [showModelPicker, setShowModelPicker] = useState(false)
-  const [showClaudeCodeSessionPicker, setShowClaudeCodeSessionPicker] = useState(false)
-  const [showCodexSessionPicker, setShowCodexSessionPicker] = useState(false)
+  const [pickerPhase, setPickerPhase] = useState<PickerPhase>("choosing")
+  const [claudeCodeSessions, setClaudeCodeSessions] = useState<ClaudeCodeSession[]>([])
   const [showSessionDrawer, setShowSessionDrawer] = useState(false)
   const [showModelSelector, setShowModelSelector] = useState(false)
 
@@ -100,18 +111,6 @@ const Queue: React.FC = () => {
   const [backendAuthToken] = useState("")
 
   const [sessions, setSessions] = useState<SessionInfo[]>([])
-  const [claudeCodeSessions, setClaudeCodeSessions] = useState<Array<{
-    id: string
-    title: string
-    timestamp?: string
-    cwd?: string
-  }>>([])
-  const [codexSessions, setCodexSessions] = useState<Array<{
-    id: string
-    title: string
-    timestamp?: string
-    cwd?: string
-  }>>([])
   const [currentSession, setCurrentSession] = useState<SessionInfo | null>(null)
 
   const contentRef = useRef<HTMLDivElement>(null)
@@ -229,56 +228,51 @@ const Queue: React.FC = () => {
     }
   }, [refreshSessions])
 
-  const handleModelPick = useCallback(async (modelId: string) => {
-    setShowModelPicker(false)
-    setShowSessionDrawer(false)
-    if (modelId === CLAUDE_CODE_MODEL_ID) {
-      await refreshSessions()
-      const discovered = await window.electronAPI.getClaudeCodeSessions().catch(() => [])
-      setClaudeCodeSessions(discovered || [])
-      setShowClaudeCodeSessionPicker(true)
-      setShowCodexSessionPicker(false)
-      return
+  const fetchClaudeCodeSessions = useCallback(async () => {
+    setPickerPhase("loading_claude_code")
+    try {
+      const res = await fetch(`${backendBaseUrl}/api/claude-code/sessions`)
+      const data = await res.json()
+      setClaudeCodeSessions(data?.items || [])
+      setPickerPhase("claude_code_ready")
+    } catch {
+      setClaudeCodeSessions([])
+      setPickerPhase("claude_code_ready")
     }
-    if (modelId === CODEX_MODEL_ID) {
-      await refreshSessions()
-      const discovered = await window.electronAPI.getCodexSessions().catch(() => [])
-      setCodexSessions(discovered || [])
-      setShowCodexSessionPicker(true)
-      setShowClaudeCodeSessionPicker(false)
-      return
-    }
-    setShowClaudeCodeSessionPicker(false)
-    setShowCodexSessionPicker(false)
-    await handleNewChat(modelId)
-  }, [handleNewChat, refreshSessions])
+  }, [backendBaseUrl])
 
-  const handlePickClaudeCodeSession = useCallback(async (conversationId: string, cwd?: string) => {
-    setShowClaudeCodeSessionPicker(false)
-    setShowCodexSessionPicker(false)
+  const handleModelPick = useCallback(async (modelId: string) => {
+    if (modelId === CLAUDE_CODE_MODEL_ID) {
+      await fetchClaudeCodeSessions()
+      return
+    }
+    setShowModelPicker(false)
+    setPickerPhase("choosing")
+    setShowSessionDrawer(false)
+    await handleNewChat(modelId)
+  }, [handleNewChat, fetchClaudeCodeSessions])
+
+  const handlePickClaudeCodeSession = useCallback(async (session: ClaudeCodeSession) => {
+    setShowModelPicker(false)
+    setPickerPhase("choosing")
     setShowSessionDrawer(false)
     await handleNewChat(CLAUDE_CODE_MODEL_ID, {
-      claude_code_conversation_id: conversationId,
-      ...(cwd ? { claude_code_cwd: cwd } : {})
+      claude_code_conversation_id: session.socket_path,
+      claude_code_cwd: session.cwd,
     })
   }, [handleNewChat])
 
-  const handleCreateNewClaudeCodeSession = useCallback(async () => {
-    setShowClaudeCodeSessionPicker(false)
-    setShowCodexSessionPicker(false)
-    setShowSessionDrawer(false)
-    await handleNewChat(CLAUDE_CODE_MODEL_ID)
-  }, [handleNewChat])
+  const handlePickerBack = useCallback(() => {
+    setPickerPhase("choosing")
+    setClaudeCodeSessions([])
+  }, [])
 
-  const handlePickCodexSession = useCallback(async (conversationId: string, cwd?: string) => {
-    setShowCodexSessionPicker(false)
-    setShowClaudeCodeSessionPicker(false)
-    setShowSessionDrawer(false)
-    await handleNewChat(CODEX_MODEL_ID, {
-      codex_conversation_id: conversationId,
-      ...(cwd ? { codex_cwd: cwd } : {})
-    })
-  }, [handleNewChat])
+  const handlePickerClose = useCallback(() => {
+    setShowModelPicker(false)
+    setPickerPhase("choosing")
+    setClaudeCodeSessions([])
+  }, [])
+
 
   const handlePickSession = useCallback(async (session: SessionInfo) => {
     setShowSessionDrawer(false)
@@ -449,89 +443,6 @@ const Queue: React.FC = () => {
     })
   }, [sessions])
 
-  const timestampMs = useCallback((value?: string) => {
-    if (!value) return 0
-    const parsed = Date.parse(value)
-    return Number.isNaN(parsed) ? 0 : parsed
-  }, [])
-
-  const claudeCodeLinkChoices = useMemo(() => {
-    const byId = new Map<string, { conversationId: string; sessionName: string; cwd?: string; updatedAt: string }>()
-    const upsert = (choice: { conversationId: string; sessionName: string; cwd?: string; updatedAt: string }) => {
-      const existing = byId.get(choice.conversationId)
-      if (!existing || timestampMs(choice.updatedAt) >= timestampMs(existing.updatedAt)) {
-        byId.set(choice.conversationId, choice)
-      }
-    }
-
-    for (const s of sessions) {
-      const conversationId = (
-        s.metadata?.claude_code_conversation_id ||
-        (s.model === CLAUDE_CODE_MODEL_ID ? s.id : "")
-      ).trim()
-      if (!conversationId) continue
-      upsert({
-        conversationId,
-        sessionName: s.name || "Untitled",
-        cwd: s.metadata?.claude_code_cwd,
-        updatedAt: (s as any).updated_at || (s as any).created_at || ""
-      })
-    }
-
-    for (const discovered of claudeCodeSessions) {
-      const conversationId = (discovered.id || "").trim()
-      if (!conversationId) continue
-      upsert({
-        conversationId,
-        sessionName: discovered.title || "Claude Code Session",
-        cwd: discovered.cwd,
-        updatedAt: discovered.timestamp || ""
-      })
-    }
-
-    const choices = [...byId.values()]
-    choices.sort((a, b) => timestampMs(b.updatedAt) - timestampMs(a.updatedAt))
-    return choices.slice(0, 10)
-  }, [sessions, claudeCodeSessions, timestampMs])
-
-  const codexLinkChoices = useMemo(() => {
-    const byId = new Map<string, { conversationId: string; sessionName: string; cwd?: string; updatedAt: string }>()
-    const upsert = (choice: { conversationId: string; sessionName: string; cwd?: string; updatedAt: string }) => {
-      const existing = byId.get(choice.conversationId)
-      if (!existing || timestampMs(choice.updatedAt) >= timestampMs(existing.updatedAt)) {
-        byId.set(choice.conversationId, choice)
-      }
-    }
-
-    for (const s of sessions) {
-      const conversationId = (
-        s.metadata?.codex_conversation_id ||
-        (s.model === CODEX_MODEL_ID ? s.id : "")
-      ).trim()
-      if (!conversationId) continue
-      upsert({
-        conversationId,
-        sessionName: s.name || "Untitled",
-        cwd: s.metadata?.codex_cwd,
-        updatedAt: (s as any).updated_at || (s as any).created_at || ""
-      })
-    }
-
-    for (const discovered of codexSessions) {
-      const conversationId = (discovered.id || "").trim()
-      if (!conversationId) continue
-      upsert({
-        conversationId,
-        sessionName: discovered.title || "Codex Session",
-        cwd: discovered.cwd,
-        updatedAt: discovered.timestamp || ""
-      })
-    }
-
-    const choices = [...byId.values()]
-    choices.sort((a, b) => timestampMs(b.updatedAt) - timestampMs(a.updatedAt))
-    return choices.slice(0, 10)
-  }, [sessions, codexSessions, timestampMs])
 
   const sendChatMessage = async (message: string) => {
     const trimmed = message.trim()
@@ -823,83 +734,88 @@ const Queue: React.FC = () => {
       </Toast>
 
       {showModelPicker && (
-        <div className="iris-agent-picker-backdrop interactive" onClick={() => setShowModelPicker(false)}>
+        <div className="iris-agent-picker-backdrop interactive" onClick={handlePickerClose}>
           <div className="iris-agent-picker" onClick={(e) => e.stopPropagation()}>
-            <div className="iris-agent-picker-title">New Chat</div>
-            {chatTypeChoices.map((choice) => (
-              <button
-                key={choice.id}
-                type="button"
-                className="iris-agent-picker-option interactive"
-                onClick={() => handleModelPick(choice.id)}
-              >
-                <span className="iris-agent-picker-name">{choice.name}</span>
-                <span className="iris-agent-picker-sub">{choice.subtitle}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
+            {pickerPhase === "choosing" && (
+              <>
+                <div className="iris-agent-picker-title">New Chat</div>
+                {chatTypeChoices.map((choice) => (
+                  <button
+                    key={choice.id}
+                    type="button"
+                    className="iris-agent-picker-option interactive"
+                    onClick={() => handleModelPick(choice.id)}
+                  >
+                    <span className="iris-agent-picker-name">{choice.name}</span>
+                    <span className="iris-agent-picker-sub">{choice.subtitle}</span>
+                  </button>
+                ))}
+              </>
+            )}
 
-      {showClaudeCodeSessionPicker && (
-        <div
-          className="iris-agent-picker-backdrop interactive"
-          onClick={() => setShowClaudeCodeSessionPicker(false)}
-        >
-          <div className="iris-agent-picker" onClick={(e) => e.stopPropagation()}>
-            <div className="iris-agent-picker-title">Link Claude Code Session</div>
-            <button
-              type="button"
-              className="iris-agent-picker-option interactive"
-              onClick={handleCreateNewClaudeCodeSession}
-            >
-              <span className="iris-agent-picker-name">New Claude Code Session</span>
-              <span className="iris-agent-picker-sub">Start a fresh Claude session</span>
-            </button>
-            {claudeCodeLinkChoices.length === 0 ? (
-              <div className="iris-session-empty">No linked Claude Code sessions found yet.</div>
-            ) : (
-              claudeCodeLinkChoices.map((choice) => (
-                <button
-                  key={choice.conversationId}
-                  type="button"
-                  className="iris-agent-picker-option interactive"
-                  onClick={() => handlePickClaudeCodeSession(choice.conversationId, choice.cwd)}
-                >
-                  <span className="iris-agent-picker-name">{choice.sessionName}</span>
-                  <span className="iris-agent-picker-sub">{choice.conversationId}</span>
-                </button>
-              ))
+            {pickerPhase === "loading_claude_code" && (
+              <>
+                <div className="iris-agent-picker-header">
+                  <button type="button" className="iris-picker-back interactive" onClick={handlePickerBack}>
+                    <ChevronLeft size={12} />
+                  </button>
+                  <div className="iris-agent-picker-title">Claude Code</div>
+                </div>
+                <div className="iris-picker-loading">
+                  <Loader2 size={16} className="iris-spinner" />
+                  <span>Finding sessions...</span>
+                </div>
+              </>
+            )}
+
+            {pickerPhase === "claude_code_ready" && (
+              <>
+                <div className="iris-agent-picker-header">
+                  <button type="button" className="iris-picker-back interactive" onClick={handlePickerBack}>
+                    <ChevronLeft size={12} />
+                  </button>
+                  <div className="iris-agent-picker-title">Claude Code</div>
+                </div>
+                {claudeCodeSessions.length === 0 ? (
+                  <div className="iris-picker-empty">
+                    <Terminal size={18} className="iris-picker-empty-icon" />
+                    <span className="iris-picker-empty-title">No sessions found</span>
+                    <span className="iris-picker-empty-sub">
+                      Run <code>claudei</code> in a project on your Mac
+                    </span>
+                  </div>
+                ) : (
+                  <div className="iris-picker-sessions">
+                    {claudeCodeSessions.map((s) => (
+                      <button
+                        key={s.socket_path}
+                        type="button"
+                        className="iris-picker-session interactive"
+                        onClick={() => handlePickClaudeCodeSession(s)}
+                      >
+                        <div className="iris-picker-session-info">
+                          <span className="iris-picker-session-name">{s.name || "Claude Code"}</span>
+                          {s.cwd && (
+                            <span className="iris-picker-session-cwd">
+                              {s.cwd.replace(/^\/Users\/[^/]+/, "~")}
+                            </span>
+                          )}
+                        </div>
+                        {s.idle !== undefined && (
+                          <span className={`iris-picker-session-status ${s.idle ? "idle" : "busy"}`}>
+                            {s.idle ? "idle" : "busy"}
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
       )}
 
-      {showCodexSessionPicker && (
-        <div
-          className="iris-agent-picker-backdrop interactive"
-          onClick={() => setShowCodexSessionPicker(false)}
-        >
-          <div className="iris-agent-picker" onClick={(e) => e.stopPropagation()}>
-            <div className="iris-agent-picker-title">Link Codex Session</div>
-            {codexLinkChoices.length === 0 ? (
-              <div className="iris-session-empty">No linked Codex sessions found yet.</div>
-            ) : (
-              codexLinkChoices.map((choice) => (
-                <button
-                  key={choice.conversationId}
-                  type="button"
-                  className="iris-agent-picker-option interactive"
-                  onClick={() => handlePickCodexSession(choice.conversationId, choice.cwd)}
-                >
-                  <span className="iris-agent-picker-name">{choice.sessionName}</span>
-                  <span className="iris-agent-picker-sub">{choice.conversationId}</span>
-                </button>
-              ))
-            )}
-          </div>
-        </div>
-      )}
 
       {!isExpanded ? (
         /* Collapsed: compact bar with convo name and close */

@@ -42,7 +42,7 @@ struct HomeView: View {
                                     }
                                     .contextMenu {
                                         Button(role: .destructive) {
-                                            documentStore.deleteDocument(doc)
+                                            deleteDocumentEverywhere(doc)
                                         } label: {
                                             Label("Delete", systemImage: "trash")
                                         }
@@ -89,6 +89,18 @@ struct HomeView: View {
         guard let urlStr = UserDefaults.standard.string(forKey: "iris_agent_server_url"),
               let url = URL(string: urlStr) else { return }
         documentStore.syncSessions(agentServerURL: url)
+    }
+
+    private func deleteDocumentEverywhere(_ doc: Document) {
+        let sessionID = doc.resolvedSessionID
+        documentStore.deleteDocument(doc)
+
+        guard let urlStr = UserDefaults.standard.string(forKey: "iris_agent_server_url"),
+              let serverURL = URL(string: urlStr) else { return }
+
+        Task {
+            _ = await AgentClient.deleteSession(id: sessionID, serverURL: serverURL)
+        }
     }
 }
 
@@ -161,11 +173,13 @@ private struct AgentPickerOverlay: View {
 
     @State private var phase = Phase.choosing
     @State private var codexSessions: [RemoteSession] = []
+    @State private var claudeCodeSessions: [RemoteSession] = []
     @State private var errorText: String?
 
     private enum Phase: Equatable {
         case choosing
-        case checkingLive
+        case loadingClaudeCode
+        case claudeCodeReady
         case loadingCodex
         case codexReady
         case creatingCodex
@@ -174,7 +188,7 @@ private struct AgentPickerOverlay: View {
     private var activeMode: String? {
         switch phase {
         case .choosing: return nil
-        case .checkingLive: return "claude_code"
+        case .loadingClaudeCode, .claudeCodeReady: return "claude_code"
         case .loadingCodex, .codexReady, .creatingCodex: return "codex"
         }
     }
@@ -184,7 +198,7 @@ private struct AgentPickerOverlay: View {
             Color.black.opacity(0.5)
                 .ignoresSafeArea()
                 .onTapGesture {
-                    guard phase == .choosing || phase == .codexReady else { return }
+                    guard phase == .choosing || phase == .codexReady || phase == .claudeCodeReady else { return }
                     withAnimation(.easeOut(duration: 0.18)) { isPresented = false }
                 }
 
@@ -228,13 +242,13 @@ private struct AgentPickerOverlay: View {
                     subtitle: "Live session",
                     accent: Color(red: 0.92, green: 0.6, blue: 0.3)
                 )
-                modeCard(
-                    id: "codex",
-                    icon: "cube.fill",
-                    title: "Codex",
-                    subtitle: "Link session",
-                    accent: Color(red: 0.6, green: 0.55, blue: 1.0)
-                )
+                // modeCard(
+                //     id: "codex",
+                //     icon: "cube.fill",
+                //     title: "Codex",
+                //     subtitle: "Link session",
+                //     accent: Color(red: 0.6, green: 0.55, blue: 1.0)
+                // )
             }
 
             // Expandable detail area
@@ -321,7 +335,7 @@ private struct AgentPickerOverlay: View {
             )
         }
         .buttonStyle(.plain)
-        .disabled(dimmed && phase != .codexReady)
+        .disabled(dimmed && phase != .codexReady && phase != .claudeCodeReady)
         .opacity(dimmed ? 0.35 : 1.0)
     }
 
@@ -334,8 +348,11 @@ private struct AgentPickerOverlay: View {
             case .choosing:
                 EmptyView()
 
-            case .checkingLive:
-                statusRow(text: "Connecting to live session...", showSpinner: true)
+            case .loadingClaudeCode:
+                statusRow(text: "Looking for sessions...", showSpinner: true)
+
+            case .claudeCodeReady:
+                claudeCodeSessionsList
 
             case .loadingCodex:
                 statusRow(text: "Loading sessions...", showSpinner: true)
@@ -362,6 +379,7 @@ private struct AgentPickerOverlay: View {
                             phase = .choosing
                             errorText = nil
                             codexSessions = []
+                            claudeCodeSessions = []
                         }
                     } label: {
                         HStack(spacing: 4) {
@@ -473,7 +491,7 @@ private struct AgentPickerOverlay: View {
             registerSessionOnBackend(doc)
 
         case "claude_code":
-            checkClaudeCodeLiveSession()
+            fetchClaudeCodeSessionsList()
 
         case "codex":
             fetchCodexSessionsList()
@@ -485,7 +503,7 @@ private struct AgentPickerOverlay: View {
 
     // MARK: - Claude Code
 
-    private func checkClaudeCodeLiveSession() {
+    private func fetchClaudeCodeSessionsList() {
         guard let urlStr = UserDefaults.standard.string(forKey: "iris_agent_server_url"),
               let serverURL = URL(string: urlStr) else {
             errorText = "No server URL configured."
@@ -493,43 +511,125 @@ private struct AgentPickerOverlay: View {
         }
 
         withAnimation(.easeInOut(duration: 0.25)) {
-            phase = .checkingLive
+            phase = .loadingClaudeCode
             errorText = nil
         }
 
         Task {
             let endpoint = serverURL
                 .appendingPathComponent("claude-code")
-                .appendingPathComponent("live-status")
+                .appendingPathComponent("sessions")
             var request = URLRequest(url: endpoint)
             request.timeoutInterval = 5
 
-            var isLive = false
-            var liveCWD: String?
+            var sessions: [RemoteSession] = []
 
             if let (data, response) = try? await URLSession.shared.data(for: request),
                let http = response as? HTTPURLResponse,
                (200...299).contains(http.statusCode),
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                isLive = (json["live"] as? Bool) == true
-                liveCWD = json["cwd"] as? String
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let items = json["items"] as? [[String: Any]] {
+                sessions = items.compactMap { item in
+                    let socketPath = ((item["socket_path"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !socketPath.isEmpty else { return nil }
+                    let name = ((item["name"] as? String) ?? "Claude Code").trimmingCharacters(in: .whitespacesAndNewlines)
+                    let cwd = ((item["cwd"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    let startedAt = ((item["started_at"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    return RemoteSession(
+                        id: socketPath,
+                        sessionID: socketPath,
+                        name: name.isEmpty ? "Claude Code" : name,
+                        model: "claude_code",
+                        updatedAt: startedAt,
+                        preview: cwd,
+                        conversationID: nil,
+                        cwd: cwd.isEmpty ? nil : cwd
+                    )
+                }
             }
 
             await MainActor.run {
-                if isLive {
-                    let sessionName = liveCWD.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Claude Code"
-                    let doc = documentStore.addDocument(name: sessionName, model: "claude_code")
-                    registerSessionOnBackend(doc)
-                    isPresented = false
-                    onCreated(doc)
-                } else {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        phase = .choosing
-                        errorText = "No live session. Run claudei on your Mac first."
+                claudeCodeSessions = sessions
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    if sessions.isEmpty {
+                        phase = .claudeCodeReady
+                        errorText = "No live sessions. Run claudei on your Mac first."
+                    } else {
+                        phase = .claudeCodeReady
                     }
                 }
             }
         }
+    }
+
+    private var claudeCodeSessionsList: some View {
+        VStack(spacing: 6) {
+            if claudeCodeSessions.isEmpty {
+                Text("No sessions found")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.white.opacity(0.3))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 18)
+            } else {
+                ScrollView {
+                    VStack(spacing: 6) {
+                        ForEach(claudeCodeSessions) { session in
+                            claudeCodeSessionRow(session)
+                        }
+                    }
+                }
+                .frame(maxHeight: 200)
+            }
+        }
+    }
+
+    private func claudeCodeSessionRow(_ session: RemoteSession) -> some View {
+        Button {
+            selectClaudeCodeSession(session)
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(session.name)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .lineLimit(1)
+                    if !session.preview.isEmpty {
+                        Text(session.preview)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.3))
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.18))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.white.opacity(0.04))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.05), lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func selectClaudeCodeSession(_ session: RemoteSession) {
+        let doc = Document(
+            name: session.name,
+            model: "claude_code",
+            claudeCodeCWD: session.cwd
+        )
+        documentStore.documents.insert(doc, at: 0)
+        documentStore.updateLastOpened(doc)
+        registerSessionOnBackend(doc)
+        isPresented = false
+        onCreated(doc)
     }
 
     // MARK: - Codex

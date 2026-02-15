@@ -1453,6 +1453,34 @@ def claude_code_live_status() -> Any:
     })
 
 
+@app.get("/api/claude-code/sessions")
+def list_claude_code_sessions() -> Any:
+    """List active claudei sessions for the iPad picker."""
+    live = claude_commander.get_live_session()
+    if not live:
+        return jsonify({"items": []})
+
+    socket_path = live.get("socket_path", claude_commander.DEFAULT_SOCKET_PATH)
+    cwd = live.get("cwd") or ""
+    pid = live.get("pid")
+    registered_at = live.get("registered_at")
+    started_at = live.get("started_at") or ""
+
+    name = os.path.basename(cwd) if cwd else "Claude Code"
+
+    items = [{
+        "id": socket_path,
+        "name": name,
+        "cwd": cwd,
+        "pid": pid,
+        "socket_path": socket_path,
+        "started_at": started_at,
+        "registered_at": registered_at,
+        "idle": claude_commander.is_idle(),
+    }]
+    return jsonify({"items": items})
+
+
 @app.post("/api/claude-code/sessions/register")
 def register_claude_code_session() -> Any:
     """Register a live claude-commander session (called by tools/claudei)."""
@@ -1950,7 +1978,15 @@ def v1_agent() -> Any:
                 }), 503
 
             socket_path = live.get("socket_path", claude_commander.DEFAULT_SOCKET_PATH)
-            ok = claude_commander.inject_text(message, socket_path)
+            image_b64 = (body.get("image_base64") or "").strip()
+            if image_b64:
+                ok = claude_commander.inject_image(
+                    image_base64=image_b64,
+                    prompt=message,
+                    socket_path=socket_path,
+                )
+            else:
+                ok = claude_commander.inject_text(message, socket_path)
             if not ok:
                 return jsonify({"error": "Failed to inject into live session"}), 502
             claude_commander.mark_busy()

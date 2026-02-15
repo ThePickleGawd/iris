@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tools/claudei — Launch a claude-commander session for Iris.
+# tools/claudei — Launch a Claude Code session for Iris with PTY proxy.
 #
 # Usage:
 #   claudei                              # new session in current directory
@@ -10,7 +10,6 @@
 # Environment:
 #   IRIS_BACKEND_URL   Backend base URL (default: http://localhost:8000)
 #   CLAUDE_CMD         Claude Code binary (default: claude)
-#   CLAUDEC_BIN        claude-commander binary (default: claudec)
 
 set -euo pipefail
 
@@ -20,14 +19,13 @@ Usage:
   claudei
   claudei --cwd /some/project
   claudei --resume <session_id>
-  claudei [claudec args...]
+  claudei [claude args...]
   claudei install
 EOF
 }
 
 IRIS_BACKEND_URL="${IRIS_BACKEND_URL:-http://localhost:8000}"
 export CLAUDE_CMD="${CLAUDE_CMD:-claude}"
-CLAUDEC_BIN="${CLAUDEC_BIN:-claudec}"
 SOCKET_PATH="/tmp/iris-claude.sock"
 META_FILE="/tmp/iris-claude-meta.json"
 IMAGES_DIR="/tmp/iris/images"
@@ -164,25 +162,29 @@ fi
 # Ensure images directory exists for the image pipeline
 mkdir -p "$IMAGES_DIR"
 
-# Check for claudec binary
-if ! command -v "$CLAUDEC_BIN" &>/dev/null; then
-    echo "ERROR: claude-commander ($CLAUDEC_BIN) not found."
-    echo ""
-    echo "Install it:"
-    echo "  ARCH=\$(uname -m)"
-    echo "  [[ \"\$ARCH\" == \"arm64\" ]] && ASSET=claudec-macos-arm64 || ASSET=claudec-macos-x86_64"
-    echo "  curl -L https://github.com/sstraus/claude-commander/releases/latest/download/\$ASSET -o /usr/local/bin/claudec"
-    echo "  chmod +x /usr/local/bin/claudec"
-    echo ""
-    echo "Or build from source:"
-    echo "  cargo install --git https://github.com/sstraus/claude-commander"
+# Resolve the path to claudec-iris (sibling of this script, following symlinks)
+_SELF="${BASH_SOURCE[0]}"
+while [[ -L "$_SELF" ]]; do
+    _DIR="$(cd -P "$(dirname "$_SELF")" && pwd)"
+    _TARGET="$(readlink "$_SELF")"
+    if [[ "$_TARGET" == /* ]]; then
+        _SELF="$_TARGET"
+    else
+        _SELF="$_DIR/$_TARGET"
+    fi
+done
+REAL_SCRIPT_DIR="$(cd -P "$(dirname "$_SELF")" && pwd)"
+CLAUDEC_IRIS="$REAL_SCRIPT_DIR/claudec-iris"
+
+if [[ ! -x "$CLAUDEC_IRIS" ]]; then
+    echo "ERROR: claudec-iris not found at $CLAUDEC_IRIS"
     exit 1
 fi
 
 # Clean up stale socket only if it's not live.
 if [[ -S "$SOCKET_PATH" ]]; then
     if socket_is_live >/dev/null 2>&1; then
-        echo "ERROR: an active claudei/claudec session is already using $SOCKET_PATH"
+        echo "ERROR: an active claudei session is already using $SOCKET_PATH"
         echo "Stop the existing session before starting a new one."
         exit 1
     fi
@@ -190,16 +192,16 @@ if [[ -S "$SOCKET_PATH" ]]; then
     rm -f "$SOCKET_PATH"
 fi
 
-# Set the fixed socket path (avoids claude-commander's session ID detection + Unicode bug)
+# Export socket path for the Python proxy
 export CLAUDE_SOCKET="$SOCKET_PATH"
 
-# Build claudec args
-CLAUDEC_ARGS=(-d "$CWD")
+# Build claudec-iris args
+PROXY_ARGS=(-d "$CWD")
 if [[ -n "$RESUME_ID" ]]; then
-    CLAUDEC_ARGS+=(--resume "$RESUME_ID")
+    PROXY_ARGS+=(--resume "$RESUME_ID")
 fi
 if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
-    CLAUDEC_ARGS+=("${EXTRA_ARGS[@]}")
+    PROXY_ARGS+=("${EXTRA_ARGS[@]}")
 fi
 
 # Write meta file before launching so the backend can discover the socket
@@ -239,9 +241,9 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Launch claude-commander
+# Launch PTY proxy
 set +e
-"$CLAUDEC_BIN" "${CLAUDEC_ARGS[@]}"
-CLAUDEC_EXIT_CODE=$?
+"$CLAUDEC_IRIS" "${PROXY_ARGS[@]}"
+PROXY_EXIT_CODE=$?
 set -e
-exit "$CLAUDEC_EXIT_CODE"
+exit "$PROXY_EXIT_CODE"
