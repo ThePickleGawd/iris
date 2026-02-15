@@ -66,6 +66,12 @@ CLAUDE_CODE_SESSIONS_ROOT = Path(
 )
 CLAUDE_CODE_CLI_BIN = os.environ.get("CLAUDE_CODE_CLI_BIN", "claude")
 CODEX_MESSAGE_DEDUP_WINDOW_SECONDS = 20
+
+try:
+    SCREENSHOT_RETENTION_LIMIT = max(1, int(os.environ.get("IRIS_SCREENSHOT_RETENTION_LIMIT", "50")))
+except ValueError:
+    SCREENSHOT_RETENTION_LIMIT = 50
+
 _codex_rollout_cache: dict[str, Path] = {}
 _claude_code_rollout_cache: dict[str, Path] = {}
 
@@ -1244,6 +1250,28 @@ def _save_proactive_description(payload: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _delete_screenshot_row(row: dict[str, Any]) -> None:
+    screenshot_id = str(row.get("id") or "").strip()
+    if screenshot_id:
+        _screenshot_meta_path(screenshot_id).unlink(missing_ok=True)
+        (PROACTIVE_DESCRIPTIONS_DIR / f"{screenshot_id}.json").unlink(missing_ok=True)
+
+    file_path = Path(str(row.get("file_path") or ""))
+    if file_path.name:
+        file_path.unlink(missing_ok=True)
+
+
+def _prune_screenshots(limit: int = SCREENSHOT_RETENTION_LIMIT) -> int:
+    rows = _list_screenshots()
+    if len(rows) <= limit:
+        return 0
+    rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    to_delete = rows[limit:]
+    for row in to_delete:
+        _delete_screenshot_row(row)
+    return len(to_delete)
+
+
 # ---------------------------------------------------------------------------
 # Flask app
 # ---------------------------------------------------------------------------
@@ -1638,6 +1666,7 @@ def upload_screenshot() -> Any:
         "notes": notes,
     }
     _save_screenshot(row)
+    _prune_screenshots()
     return jsonify(row), 201
 
 
@@ -1750,9 +1779,7 @@ def delete_screenshot(screenshot_id: str) -> Any:
     row = _load_screenshot(screenshot_id)
     if not row:
         return jsonify({"error": "not found"}), 404
-    _screenshot_meta_path(screenshot_id).unlink(missing_ok=True)
-    fp = Path(row.get("file_path", ""))
-    fp.unlink(missing_ok=True)
+    _delete_screenshot_row(row)
     return jsonify({"id": screenshot_id, "deleted": True})
 
 
